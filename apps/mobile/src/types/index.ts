@@ -1,6 +1,12 @@
 /** Shared domain types for podcast finder + skip-map. */
 
 export type AdSegmentType =
+  | 'advertisement'
+  | 'intro_outro'
+  | 'self_promotion';
+
+/** Legacy segment types that may appear in cached skip maps. */
+export type LegacyAdSegmentType =
   | 'sponsor'
   | 'midroll'
   | 'preroll'
@@ -12,8 +18,22 @@ export type AdSegmentType =
 export interface AdSegment {
   start_ms: number;
   end_ms: number;
-  type: AdSegmentType;
+  type: AdSegmentType | LegacyAdSegmentType;
   confidence: number;
+}
+
+/** Per-show skip settings for the three segment kinds. */
+export interface PodcastSkipSettings {
+  collectionId?: number;
+  feedUrl?: string;
+  /** Master toggle: if false, no skipping at all for this show. */
+  skipEnabled: boolean;
+  /** Skip advertisement segments. */
+  skipAdvertisement: boolean;
+  /** Skip intro/outro segments. */
+  skipIntroOutro: boolean;
+  /** Skip self-promotion segments. */
+  skipSelfPromotion: boolean;
 }
 
 export type SkipMapStatus = 'ready' | 'pending' | 'missing' | 'error' | 'queued';

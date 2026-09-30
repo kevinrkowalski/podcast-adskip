@@ -24,40 +24,60 @@ AD_KEYWORDS = re.compile(
 
 SYSTEM_PROMPT = """You label podcast ad/sponsor segments from a timed transcript.
 
-WHAT IS AN AD - STRICT CRITERIA:
-An ad segment MUST have CLEAR commercial intent with at least TWO of:
-1. Brand/product name mentioned (Squarespace, NordVPN, HelloFresh, etc.)
-2. Explicit sponsorship language ("sponsored by", "brought to you by", "thanks to our sponsor")
-3. Call-to-action ("visit", "use code", "sign up", "get X% off")
-4. Promotional offer (discount code, free trial, special deal)
+SEGMENT TYPES (only these three):
 
-NOT AN AD:
+1. **advertisement** - Paid/external brand ads
+   - MUST have CLEAR commercial intent with at least TWO of:
+     * Brand/product name mentioned (Squarespace, NordVPN, HelloFresh, etc.)
+     * Explicit sponsorship language ("sponsored by", "brought to you by", "thanks to our sponsor")
+     * Call-to-action ("visit", "use code", "sign up", "get X% off")
+     * Promotional offer (discount code, free trial, special deal)
+   - Examples: sponsor reads, mid-roll ad breaks, paid product endorsements
+
+2. **intro_outro** - Show open/close bumps worth skipping
+   - Theme music, credits, show announcements ("you're listening to...")
+   - NOT paid ads, just podcast production elements
+   - Often at start/end but can appear anywhere based on content
+   - Examples: theme songs, network stings, episode previews/recaps
+
+3. **self_promotion** - Cross-show / network / subscribe plugs
+   - Promotion of other shows/content from the same network or creator
+   - "Follow us", "Subscribe", "Check out our other show"
+   - Platform/network promotional messages
+   - Examples: cross-promo of other podcasts, Patreon/merchandise plugs
+
+NOT SKIPPABLE:
 - Show content, even if promotional in tone ("coming up", "stay tuned")
 - Topic transitions or segment introductions
 - Brief brand mentions in passing without endorsement
-- Music, sound effects, or silence
 - Host banter about products they personally use (unless explicitly sponsored)
 - News or editorial content about companies
 
-LABEL TYPES:
-- preroll: ONLY ads in first 90 seconds
-- postroll: ONLY ads in final 2 minutes  
-- sponsor: Host-read product endorsements (use this for clear sponsorships)
-- midroll: Generic mid-episode ad breaks
-- crosspromo: Cross-promotion of other shows/content
-- network: Network/platform promotional messages
-
 CONFIDENCE SCORING:
-- 0.9-1.0: Explicit sponsor read with brand + offer + CTA
-- 0.75-0.89: Clear ad with brand + endorsement language
-- 0.5-0.74: Likely ad but missing some markers (use sparingly)
+- 0.9-1.0: Explicit clear segment with all markers
+- 0.75-0.89: Clear segment with strong indicators
+- 0.5-0.74: Likely segment but missing some markers (use sparingly)
 - Below 0.5: Don't include (too ambiguous)
 
-Be EXTREMELY STRICT. Prefer to miss an ad than to mislabel content as an ad.
-If unsure whether something is an ad, DO NOT LABEL IT.
+Be EXTREMELY STRICT. Prefer to miss a segment than to mislabel content.
+If unsure, DO NOT LABEL IT.
 
-Return ONLY valid JSON: {"segments":[{"start_s":number,"end_s":number,"type":"sponsor|midroll|preroll|postroll|crosspromo|network","confidence":0.5-1.0}]}
+Return ONLY valid JSON: {"segments":[{"start_s":number,"end_s":number,"type":"advertisement|intro_outro|self_promotion","confidence":0.5-1.0}]}
 Empty list if none found."""
+
+
+def _map_legacy_type(legacy_type: str) -> str:
+    """Map legacy segment types to new consolidated types."""
+    legacy_to_new = {
+        "sponsor": "advertisement",
+        "midroll": "advertisement",
+        "preroll": "advertisement",
+        "postroll": "advertisement",
+        "crosspromo": "self_promotion",
+        "network": "self_promotion",
+        "unknown": "advertisement",
+    }
+    return legacy_to_new.get(legacy_type, "advertisement")
 
 
 def heuristic_segments(transcript: dict[str, Any], total_duration_ms: int | None = None) -> list[AdSegment]:
@@ -69,7 +89,7 @@ def heuristic_segments(transcript: dict[str, Any], total_duration_ms: int | None
             start_ms = int(float(seg.get("start", 0)) * 1000)
             end_ms = int(float(seg.get("end", 0)) * 1000)
             if end_ms > start_ms:
-                kind = "sponsor"
+                kind = "advertisement"
                 # Use MIN_CONFIDENCE_THRESHOLD for consistency
                 out.append(
                     AdSegment(
@@ -80,16 +100,22 @@ def heuristic_segments(transcript: dict[str, Any], total_duration_ms: int | None
                     )
                 )
     merged = _merge(out)
-    return _fix_position_labels(merged, total_duration_ms)
+    return merged
 
 
-def _merge(segments: list[AdSegment], gap_ms: int = 5000, min_duration_ms: int = 5000) -> list[AdSegment]:
+def _prefer_type(type_a: str, type_b: str) -> str:
+    """Choose higher-priority type: advertisement > self_promotion > intro_outro."""
+    priority = {"advertisement": 3, "self_promotion": 2, "intro_outro": 1}
+    return type_a if priority.get(type_a, 0) >= priority.get(type_b, 0) else type_b
+
+
+def _merge(segments: list[AdSegment], gap_ms: int = 15000, min_duration_ms: int = 5000) -> list[AdSegment]:
     """Merge nearby segments and filter too-short ones.
     
     Args:
         segments: Input ad segments
-        gap_ms: Maximum gap between segments to merge (default 5s)
-        min_duration_ms: Minimum segment duration to keep (default 5s, increased from 3s)
+        gap_ms: Maximum gap between segments to merge (default 15s, increased from 5s per requirements)
+        min_duration_ms: Minimum segment duration to keep (default 5s)
     """
     if not segments:
         return []
@@ -107,7 +133,7 @@ def _merge(segments: list[AdSegment], gap_ms: int = 5000, min_duration_ms: int =
             merged[-1] = AdSegment(
                 start_ms=last.start_ms,
                 end_ms=max(last.end_ms, seg.end_ms),
-                type=last.type if last.type != "unknown" else seg.type,
+                type=_prefer_type(last.type, seg.type),
                 confidence=max(last.confidence, seg.confidence),
             )
         else:
@@ -116,60 +142,6 @@ def _merge(segments: list[AdSegment], gap_ms: int = 5000, min_duration_ms: int =
     return [s for s in merged if (s.end_ms - s.start_ms) >= min_duration_ms]
 
 
-def _fix_position_labels(segments: list[AdSegment], total_duration_ms: int | None = None) -> list[AdSegment]:
-    """Fix misclassified preroll/postroll based on actual position in episode.
-    
-    Args:
-        segments: Input ad segments (should already be merged/filtered)
-        total_duration_ms: Total episode duration; if None, uses the last segment's end time
-    
-    Returns:
-        Segments with corrected position-based labels
-    """
-    if not segments:
-        return []
-    
-    # Estimate total duration if not provided
-    if total_duration_ms is None:
-        total_duration_ms = max(s.end_ms for s in segments) + 60_000  # add buffer
-    
-    PREROLL_THRESHOLD_MS = 90_000  # First 90 seconds
-    POSTROLL_THRESHOLD_MS = 120_000  # Last 2 minutes
-    
-    fixed = []
-    for seg in segments:
-        new_type = seg.type
-        
-        # Fix preroll: only valid in first 90 seconds
-        if seg.type == "preroll" and seg.start_ms > PREROLL_THRESHOLD_MS:
-            new_type = "midroll"  # Change mid-episode "preroll" to "midroll"
-        
-        # Fix postroll: only valid in last 2 minutes
-        if seg.type == "postroll":
-            time_from_end = total_duration_ms - seg.start_ms
-            if time_from_end > POSTROLL_THRESHOLD_MS:
-                new_type = "midroll"  # Change early "postroll" to "midroll"
-        
-        # Promote midroll/unknown/sponsor at start to preroll
-        if seg.type in ("midroll", "unknown", "sponsor") and seg.start_ms < PREROLL_THRESHOLD_MS:
-            new_type = "preroll"
-        
-        # Promote midroll/unknown/sponsor at end to postroll
-        if seg.type in ("midroll", "unknown", "sponsor"):
-            time_from_end = total_duration_ms - seg.start_ms
-            if time_from_end < POSTROLL_THRESHOLD_MS:
-                new_type = "postroll"
-        
-        fixed.append(
-            AdSegment(
-                start_ms=seg.start_ms,
-                end_ms=seg.end_ms,
-                type=new_type,
-                confidence=seg.confidence,
-            )
-        )
-    
-    return fixed
 
 
 def _windows(transcript: dict[str, Any], window_s: float = 120.0) -> list[str]:
@@ -242,7 +214,7 @@ async def _label_openrouter(transcript: dict[str, Any], settings: Settings, tota
     merged = _merge(all_segs)
     if not merged:
         return heuristic_segments(transcript, total_duration_ms)
-    return _fix_position_labels(merged, total_duration_ms)
+    return merged
 
 
 async def _label_groq_llm(transcript: dict[str, Any], settings: Settings, total_duration_ms: int | None = None) -> list[AdSegment]:
@@ -266,7 +238,7 @@ async def _label_groq_llm(transcript: dict[str, Any], settings: Settings, total_
     merged = _merge(all_segs)
     if not merged:
         return heuristic_segments(transcript, total_duration_ms)
-    return _fix_position_labels(merged, total_duration_ms)
+    return merged
 
 
 async def _label_gemini(transcript: dict[str, Any], settings: Settings, total_duration_ms: int | None = None) -> list[AdSegment]:
@@ -296,7 +268,7 @@ async def _label_gemini(transcript: dict[str, Any], settings: Settings, total_du
     merged = _merge(all_segs)
     if not merged:
         return heuristic_segments(transcript, total_duration_ms)
-    return _fix_position_labels(merged, total_duration_ms)
+    return merged
 
 
 def _parse_llm_json(content: str) -> list[AdSegment]:
@@ -322,11 +294,14 @@ def _parse_llm_json(content: str) -> list[AdSegment]:
                 end_ms = int(float(s.get("end_s", 0)) * 1000)
             if end_ms <= start_ms:
                 continue
+            # Map legacy types to new consolidated types
+            raw_type = s.get("type") or "advertisement"
+            segment_type = _map_legacy_type(raw_type) if raw_type not in ["advertisement", "intro_outro", "self_promotion"] else raw_type
             out.append(
                 AdSegment(
                     start_ms=start_ms,
                     end_ms=end_ms,
-                    type=s.get("type") or "unknown",
+                    type=segment_type,
                     confidence=float(s.get("confidence", 0.8)),
                 )
             )

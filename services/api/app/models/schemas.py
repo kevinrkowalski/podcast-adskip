@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 class AdSegment(BaseModel):
     start_ms: int = Field(..., ge=0)
     end_ms: int = Field(..., ge=0)
-    type: Literal["sponsor", "midroll", "preroll", "postroll", "crosspromo", "network", "unknown"] = "unknown"
+    type: Literal["advertisement", "intro_outro", "self_promotion"] = "advertisement"
     confidence: float = Field(0.75, ge=0.0, le=1.0)
 
 
