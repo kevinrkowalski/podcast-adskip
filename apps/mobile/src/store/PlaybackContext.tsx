@@ -158,6 +158,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     setSkipMap(null);
     skipMapRef.current = null;
     setAnalyzeStatus(status);
+    setAudioMismatchWarning(null);
+    setUploadProgress(null);
     player.setAdDetectionEnabled(false);
     player.setSkipSegments([]);
   }, []);
@@ -517,23 +519,36 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   // Uses client-side download + upload to ensure analyzed audio matches playback.
   const requestAnalyze = useCallback(
     async (force = false) => {
-      if (!episode?.enclosureUrl) return;
+      if (!episode?.enclosureUrl) {
+        console.warn('[playback] requestAnalyze: no episode or enclosureUrl');
+        return;
+      }
       if (!(await canCallAdDetectionApi())) {
         // Global kill-switch: no ad-detection API calls.
+        console.log('[playback] requestAnalyze: blocked by global kill-switch');
         return;
       }
       
+      console.log('[playback] requestAnalyze: starting download/upload flow for', episode.guid);
+      
+      // Immediately update UI state so user sees feedback
       setAdDetectionEnabledState(true);
       player.setAdDetectionEnabled(true);
       setAnalyzeStatus('downloading');
       setUploadProgress({ downloaded: 0, uploaded: 0, total: 100 });
+      setAudioMismatchWarning(null);
       
       try {
+        // Re-check global setting after state updates
         if (!(await canCallAdDetectionApi())) {
+          console.log('[playback] requestAnalyze: global kill-switch turned off during setup');
+          setAnalyzeStatus('disabled');
+          setUploadProgress(null);
           return;
         }
         
         // Download audio locally
+        console.log('[playback] requestAnalyze: downloading audio');
         const localPath = await downloadAudioForAnalysis(
           episode.guid,
           episode.enclosureUrl,
@@ -549,6 +564,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           },
         );
         
+        console.log('[playback] requestAnalyze: download complete, uploading to API');
         setAnalyzeStatus('uploading');
         
         // Upload to API for analysis
@@ -576,6 +592,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           },
         );
         
+        console.log('[playback] requestAnalyze: upload complete, status:', result.status);
         setUploadProgress(null);
         setSkipMap(result);
         skipMapRef.current = result;
@@ -596,6 +613,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         console.error('[playback] Analyze (upload) failed:', err);
         setAnalyzeStatus('error');
         setUploadProgress(null);
+        setAudioMismatchWarning(null);
       }
     },
     [canCallAdDetectionApi, episode],

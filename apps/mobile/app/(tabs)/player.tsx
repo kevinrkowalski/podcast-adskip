@@ -437,7 +437,9 @@ export default function PlayerScreen() {
                 onPress={() => requestAnalyze(true)}
                 hitSlop={6}
                 accessibilityLabel="Prepare ad analysis"
-                // Global Settings kill-switch only; per-show OFF must still allow Prepare.
+                // Prepare button is ONLY disabled by global Settings kill-switch.
+                // When global is ON but per-show detection is OFF, Prepare still works
+                // (it enables detection for this user-initiated analysis).
                 disabled={!autoSkip}>
                 <SymbolView
                   name={{ ios: 'sparkles', android: 'auto_awesome', web: 'auto_awesome' }}
