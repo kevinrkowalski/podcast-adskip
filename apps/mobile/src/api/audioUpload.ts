@@ -5,7 +5,7 @@
  * avoiding dynamic ad insertion mismatches.
  */
 
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
 
 const AUDIO_CACHE_DIR = `${FileSystem.cacheDirectory}podcast-audio/`;
