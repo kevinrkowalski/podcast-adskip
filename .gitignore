@@ -1,0 +1,27 @@
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/.venv/
+**/venv/
+**/.pytest_cache/
+**/data/*.db
+**/.env
+!**/.env.example
+
+# Node / Expo
+**/node_modules/
+**/.expo/
+**/dist/
+**/web-build/
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+*.orig.*
+apps/mobile/expo-env.d.ts
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.log

@@ -1,0 +1,10 @@
+node_modules/
+.expo/
+dist/
+web-build/
+.env
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+expo-env.d.ts
