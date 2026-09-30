@@ -350,7 +350,7 @@ export default function PodcastDetailScreen() {
                   <Text style={styles.adDetectionLabel}>Ad detection for this show</Text>
                   <Text style={styles.adDetectionHint}>
                     {adDetectionEnabled
-                      ? 'Auto-analyze on play and auto-skip detected ads'
+                      ? 'Auto-analyze on play'
                       : 'Off · no auto-analyze on play; Prepare still works in the player'}
                   </Text>
                 </View>
@@ -362,7 +362,7 @@ export default function PodcastDetailScreen() {
                 />
               </View>
               
-              {adDetectionEnabled && skipSettings && (
+              {skipSettings && (
                 <View style={styles.skipSettingsCard}>
                   <Text style={styles.skipSettingsHeading}>Auto-skip segments</Text>
                   <Text style={styles.skipSettingsHint}>
