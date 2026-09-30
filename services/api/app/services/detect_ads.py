@@ -83,12 +83,34 @@ def heuristic_segments(transcript: dict[str, Any], total_duration_ms: int | None
     return _fix_position_labels(merged, total_duration_ms)
 
 
-def _merge(segments: list[AdSegment], gap_ms: int = 5000, min_duration_ms: int = 5000) -> list[AdSegment]:
+def _prefer_type(type1: str, type2: str) -> str:
+    """Choose the more specific ad type when merging segments.
+    
+    Preference order (most to least specific):
+    1. sponsor - explicit sponsor reads
+    2. crosspromo - cross-promotion content
+    3. network - network promotional messages
+    4. midroll/preroll/postroll - generic ad breaks
+    5. unknown - fallback
+    """
+    priority = {
+        "sponsor": 5,
+        "crosspromo": 4,
+        "network": 3,
+        "preroll": 2,
+        "postroll": 2,
+        "midroll": 2,
+        "unknown": 1,
+    }
+    return type1 if priority.get(type1, 0) >= priority.get(type2, 0) else type2
+
+
+def _merge(segments: list[AdSegment], gap_ms: int = 15000, min_duration_ms: int = 5000) -> list[AdSegment]:
     """Merge nearby segments and filter too-short ones.
     
     Args:
         segments: Input ad segments
-        gap_ms: Maximum gap between segments to merge (default 5s)
+        gap_ms: Maximum gap between segments to merge (default 15s, covers typical midroll+sponsor pairs)
         min_duration_ms: Minimum segment duration to keep (default 5s, increased from 3s)
     """
     if not segments:
@@ -107,7 +129,7 @@ def _merge(segments: list[AdSegment], gap_ms: int = 5000, min_duration_ms: int =
             merged[-1] = AdSegment(
                 start_ms=last.start_ms,
                 end_ms=max(last.end_ms, seg.end_ms),
-                type=last.type if last.type != "unknown" else seg.type,
+                type=_prefer_type(last.type, seg.type),
                 confidence=max(last.confidence, seg.confidence),
             )
         else:
