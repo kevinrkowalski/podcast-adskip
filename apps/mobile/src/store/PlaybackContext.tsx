@@ -318,32 +318,41 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       await player.loadAndPlay(ep, { startPositionMs, localFilePath: localFilePath || undefined });
       lastSavedAt.current = Date.now();
       lastSavedPos.current = startPositionMs;
-      await loadSkipMap(ep, detectionEnabled);
-      // Fire-and-forget analyze if no map yet, but only while both gates are on.
-      if (detectionEnabled && ep.enclosureUrl) {
+      
+      // Load skip map and auto-analyze in parallel without blocking return.
+      // This ensures UI navigation happens immediately while analysis proceeds in background.
+      void (async () => {
         try {
-          if (!(await canUseAdDetection(ep))) {
-            clearAdDetection();
-            return;
+          await loadSkipMap(ep, detectionEnabled);
+          // Fire-and-forget analyze if no map yet, but only while both gates are on.
+          if (detectionEnabled && ep.enclosureUrl) {
+            try {
+              if (!(await canUseAdDetection(ep))) {
+                clearAdDetection();
+                return;
+              }
+              const existing = await getSkipMap(ep.guid);
+              if (existing.status === 'missing' || existing.status === 'error') {
+                setAnalyzeStatus('queued');
+                const queued = await analyzeEpisode({
+                  episode_guid: ep.guid,
+                  audio_url: ep.enclosureUrl,
+                  title: ep.title,
+                  duration_ms: ep.durationMs,
+                  feed_url: ep.feedUrl,
+                });
+                setSkipMap(queued);
+                skipMapRef.current = queued;
+                setAnalyzeStatus(queued.status);
+              }
+            } catch {
+              /* backend optional while browsing */
+            }
           }
-          const existing = await getSkipMap(ep.guid);
-          if (existing.status === 'missing' || existing.status === 'error') {
-            setAnalyzeStatus('queued');
-            const queued = await analyzeEpisode({
-              episode_guid: ep.guid,
-              audio_url: ep.enclosureUrl,
-              title: ep.title,
-              duration_ms: ep.durationMs,
-              feed_url: ep.feedUrl,
-            });
-            setSkipMap(queued);
-            skipMapRef.current = queued;
-            setAnalyzeStatus(queued.status);
-          }
-        } catch {
-          /* backend optional while browsing */
+        } catch (err) {
+          console.warn('[playback] Skip map loading failed:', err);
         }
-      }
+      })();
     },
     [canUseAdDetection, clearAdDetection, loadSkipMap, persistPosition],
   );
