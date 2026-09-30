@@ -236,8 +236,14 @@ export default function PodcastDetailScreen() {
   };
 
   const onPlay = async (ep: Episode) => {
-    await playEpisode(ep);
+    // Navigate immediately for responsive feedback
     router.push('/(tabs)/player');
+    // Load episode in background
+    try {
+      await playEpisode(ep);
+    } catch (err) {
+      console.error('[podcast-detail] Failed to play episode:', err);
+    }
   };
 
   const loadMore = useCallback(async () => {

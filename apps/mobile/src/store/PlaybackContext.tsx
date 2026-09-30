@@ -309,15 +309,25 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       // If so, play from cache to ensure we play the SAME audio we analyzed.
       let localFilePath: string | null = null;
       if (ep.enclosureUrl) {
-        localFilePath = await getCachedAudioPath(ep.guid, ep.enclosureUrl);
-        if (localFilePath) {
-          console.log('[playback] Using cached audio file for playback:', localFilePath);
+        try {
+          localFilePath = await getCachedAudioPath(ep.guid, ep.enclosureUrl);
+          if (localFilePath) {
+            console.log('[playback] Using cached audio file for playback:', localFilePath);
+          }
+        } catch (err) {
+          console.warn('[playback] Failed to check cached audio, will stream:', err);
+          localFilePath = null;
         }
       }
 
-      await player.loadAndPlay(ep, { startPositionMs, localFilePath: localFilePath || undefined });
-      lastSavedAt.current = Date.now();
-      lastSavedPos.current = startPositionMs;
+      try {
+        await player.loadAndPlay(ep, { startPositionMs, localFilePath: localFilePath || undefined });
+        lastSavedAt.current = Date.now();
+        lastSavedPos.current = startPositionMs;
+      } catch (err) {
+        console.error('[playback] Failed to load and play episode:', err);
+        // Continue with skip map loading even if player fails (stub mode may still work)
+      }
       
       // Load skip map and auto-analyze in parallel without blocking return.
       // This ensures UI navigation happens immediately while analysis proceeds in background.
