@@ -7,7 +7,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import type { Episode, SkipMap } from '@/src/types';
+import type { AdSegment, Episode, SkipMap } from '@/src/types';
 import * as player from '@/src/player/trackPlayer';
 import { analyzeEpisode, getSkipMap } from '@/src/api/backend';
 import {
@@ -755,7 +755,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         manualPrepareInFlight.current = false;
       }
     },
-    [canCallAdDetectionApi, episode],
+    [applySkipFilter, canCallAdDetectionApi, episode],
   );
 
   // While analyze is in flight, poll skip-map for stage / ETA (Prepare + auto-queue).
