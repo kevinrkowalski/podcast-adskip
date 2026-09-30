@@ -434,7 +434,14 @@ export default function PlayerScreen() {
 
               <Pressable
                 style={styles.actionItem}
-                onPress={() => requestAnalyze(true)}
+                onPress={() => {
+                  // Defensive check: only call if global settings allow
+                  if (autoSkip) {
+                    requestAnalyze(true);
+                  } else {
+                    console.log('[player] Prepare blocked: global auto-skip is OFF');
+                  }
+                }}
                 hitSlop={6}
                 accessibilityLabel="Prepare ad analysis"
                 // Prepare button is ONLY disabled by global Settings kill-switch.
