@@ -12,30 +12,30 @@ from app.services.detect_ads import _fix_position_labels, _merge, heuristic_segm
 def test_merge_with_min_duration_filter():
     """Test that segments shorter than min_duration_ms are filtered out."""
     segments = [
-        AdSegment(start_ms=0, end_ms=1000, type="preroll", confidence=0.8),  # 1s - too short alone
-        AdSegment(start_ms=5000, end_ms=8500, type="sponsor", confidence=0.9),  # 3.5s - within 5s gap
-        AdSegment(start_ms=10000, end_ms=10500, type="midroll", confidence=0.7),  # 0.5s - within 5s gap
-        AdSegment(start_ms=20000, end_ms=25000, type="sponsor", confidence=0.85),  # 5s - separate (>5s gap)
+        AdSegment(start_ms=0, end_ms=2000, type="preroll", confidence=0.8),  # 2s - too short alone
+        AdSegment(start_ms=5000, end_ms=10000, type="sponsor", confidence=0.9),  # 5s - within 5s gap, meets min
+        AdSegment(start_ms=12000, end_ms=14000, type="midroll", confidence=0.8),  # 2s - within 5s gap
+        AdSegment(start_ms=25000, end_ms=31000, type="sponsor", confidence=0.85),  # 6s - separate (>5s gap)
     ]
     
-    # Default min_duration_ms = 3000 (3 seconds), gap_ms = 5000
+    # Default min_duration_ms = 5000 (5 seconds), gap_ms = 5000
     # First three merge together (all within 5s gaps), fourth stays separate
     result = _merge(segments)
     
     assert len(result) == 2
-    # First merged segment: 0-10500 (10.5s total, merges short segments together)
+    # First merged segment: 0-14000 (14s total, merges short segments together)
     assert result[0].start_ms == 0
-    assert result[0].end_ms == 10500
+    assert result[0].end_ms == 14000
     # Second segment stays separate
-    assert result[1].start_ms == 20000
-    assert result[1].end_ms == 25000
+    assert result[1].start_ms == 25000
+    assert result[1].end_ms == 31000
 
 
 def test_merge_filters_standalone_short_segments():
     """Test that standalone short segments are filtered out."""
     segments = [
-        AdSegment(start_ms=0, end_ms=1000, type="preroll", confidence=0.8),  # 1s - too short, isolated
-        AdSegment(start_ms=50000, end_ms=55000, type="sponsor", confidence=0.9),  # 5s - OK, isolated
+        AdSegment(start_ms=0, end_ms=2000, type="preroll", confidence=0.8),  # 2s - too short, isolated
+        AdSegment(start_ms=50000, end_ms=56000, type="sponsor", confidence=0.9),  # 6s - OK, isolated
     ]
     
     result = _merge(segments)
@@ -43,7 +43,26 @@ def test_merge_filters_standalone_short_segments():
     # First segment is too short and can't merge with anything, so it's filtered
     assert len(result) == 1
     assert result[0].start_ms == 50000
-    assert result[0].end_ms == 55000
+    assert result[0].end_ms == 56000
+
+
+def test_merge_filters_low_confidence_segments():
+    """Test that segments below MIN_CONFIDENCE_THRESHOLD are filtered out."""
+    segments = [
+        AdSegment(start_ms=0, end_ms=10000, type="preroll", confidence=0.6),  # Low confidence - filtered
+        AdSegment(start_ms=20000, end_ms=30000, type="sponsor", confidence=0.74),  # Just below threshold - filtered
+        AdSegment(start_ms=40000, end_ms=50000, type="sponsor", confidence=0.75),  # At threshold - kept
+        AdSegment(start_ms=60000, end_ms=70000, type="midroll", confidence=0.9),  # High confidence - kept
+    ]
+    
+    result = _merge(segments)
+    
+    # Only segments with confidence >= 0.75 should remain
+    assert len(result) == 2
+    assert result[0].start_ms == 40000
+    assert result[0].confidence >= 0.75
+    assert result[1].start_ms == 60000
+    assert result[1].confidence >= 0.75
 
 
 def test_merge_nearby_segments():
@@ -158,7 +177,7 @@ def test_heuristic_segments_with_duration():
         "segments": [
             {"start": 10.0, "end": 12.0, "text": "This episode is sponsored by Squarespace"},
             {"start": 12.0, "end": 13.0, "text": "Use code PODCAST for 10% off"},
-            {"start": 13.5, "end": 14.5, "text": "Sign up today"},
+            {"start": 13.5, "end": 16.0, "text": "Visit squarespace.com to sign up today"},  # Has keyword
             {"start": 300.0, "end": 301.0, "text": "And now a word from our sponsor"},  # Too short alone
             {"start": 600.0, "end": 610.0, "text": "Thanks to NordVPN for sponsoring this episode"},
         ]
@@ -167,9 +186,9 @@ def test_heuristic_segments_with_duration():
     total_duration_ms = 1800000  # 30 minutes
     result = heuristic_segments(transcript, total_duration_ms)
     
-    # First three should merge into one segment (small gaps)
-    # 300s segment is too short after merge rules
-    # Last segment should stay
+    # First three should merge into one segment (small gaps), meets 5s minimum (10-16s = 6s)
+    # 300s segment is too short after merge rules (1s, isolated)
+    # Last segment should stay (10s duration)
     assert len(result) >= 1
     
     # First segment should be labeled preroll (starts at 10s)
@@ -186,8 +205,8 @@ def test_heuristic_segments_with_duration():
 def test_merge_preserves_type_priority():
     """Test that merge prefers specific types over 'unknown'."""
     segments = [
-        AdSegment(start_ms=10000, end_ms=13000, type="unknown", confidence=0.6),
-        AdSegment(start_ms=14000, end_ms=17000, type="sponsor", confidence=0.8),
+        AdSegment(start_ms=10000, end_ms=13000, type="unknown", confidence=0.8),
+        AdSegment(start_ms=14000, end_ms=19000, type="sponsor", confidence=0.85),
     ]
     
     result = _merge(segments)
@@ -210,7 +229,7 @@ def test_realistic_bad_detection_scenario():
         AdSegment(start_ms=792000, end_ms=793000, type="preroll", confidence=0.9),  # 13:12-13:13 (1s)
         AdSegment(start_ms=798000, end_ms=798000, type="preroll", confidence=0.9),  # 13:18-13:18 (0s!)
         # Slightly longer segment but still mid-episode
-        AdSegment(start_ms=900000, end_ms=906000, type="preroll", confidence=0.9),  # 15:00-15:06 (6s)
+        AdSegment(start_ms=900000, end_ms=908000, type="preroll", confidence=0.9),  # 15:00-15:08 (8s)
         # Long sponsor segment
         AdSegment(start_ms=802000, end_ms=894000, type="sponsor", confidence=0.9),  # 13:22-14:54 (92s)
     ]
@@ -220,7 +239,7 @@ def test_realistic_bad_detection_scenario():
     # First apply merge (should drop very short segments and merge nearby ones)
     merged = _merge(segments)
     
-    # Should filter out the 0s and 1s segments (< 3s threshold)
+    # Should filter out the 0s and 1s segments (< 5s threshold)
     # Remaining segments should be fixed for position
     fixed = _fix_position_labels(merged, total_duration_ms)
     
@@ -230,9 +249,9 @@ def test_realistic_bad_detection_scenario():
         if seg.start_ms > 90000:  # After 90 seconds
             assert seg.type != "preroll", f"Found preroll at {seg.start_ms}ms - should be midroll/sponsor"
         
-        # All segments should be at least 3 seconds
+        # All segments should be at least 5 seconds
         duration = seg.end_ms - seg.start_ms
-        assert duration >= 3000, f"Segment duration {duration}ms is too short"
+        assert duration >= 5000, f"Segment duration {duration}ms is too short"
     
     # Should have merged some of the nearby segments
     assert len(fixed) <= 2, "Should have merged nearby segments"

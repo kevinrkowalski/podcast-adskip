@@ -12,6 +12,9 @@ from app.models.schemas import AdSegment
 
 logger = logging.getLogger(__name__)
 
+# Minimum confidence threshold to emit an ad segment
+MIN_CONFIDENCE_THRESHOLD = 0.75
+
 AD_KEYWORDS = re.compile(
     r"\b(sponsor|sponsored|brought to you by|advertisement|ad break|"
     r"use code|promo code|squarespace|nordvpn|audible|hellofresh|"
@@ -21,18 +24,39 @@ AD_KEYWORDS = re.compile(
 
 SYSTEM_PROMPT = """You label podcast ad/sponsor segments from a timed transcript.
 
-LABEL RULES:
-- preroll: ONLY ads in the first 90 seconds of the episode
-- postroll: ONLY ads in the final 2 minutes of the episode
-- midroll/sponsor: all ads in the middle (use "sponsor" for product endorsements, "midroll" for generic mid-episode ads)
-- crosspromo: cross-promotion of other shows/content
-- network: network/platform promotional messages
-- unknown: when unsure
+WHAT IS AN AD - STRICT CRITERIA:
+An ad segment MUST have CLEAR commercial intent with at least TWO of:
+1. Brand/product name mentioned (Squarespace, NordVPN, HelloFresh, etc.)
+2. Explicit sponsorship language ("sponsored by", "brought to you by", "thanks to our sponsor")
+3. Call-to-action ("visit", "use code", "sign up", "get X% off")
+4. Promotional offer (discount code, free trial, special deal)
 
-Be STRICT about preroll/postroll positions. Merge consecutive ad sentences into one segment. 
-Prefer precision over recall - only mark clear advertisements, not casual mentions.
+NOT AN AD:
+- Show content, even if promotional in tone ("coming up", "stay tuned")
+- Topic transitions or segment introductions
+- Brief brand mentions in passing without endorsement
+- Music, sound effects, or silence
+- Host banter about products they personally use (unless explicitly sponsored)
+- News or editorial content about companies
 
-Return ONLY valid JSON: {"segments":[{"start_s":number,"end_s":number,"type":"sponsor|midroll|preroll|postroll|crosspromo|network|unknown","confidence":0-1}]}
+LABEL TYPES:
+- preroll: ONLY ads in first 90 seconds
+- postroll: ONLY ads in final 2 minutes  
+- sponsor: Host-read product endorsements (use this for clear sponsorships)
+- midroll: Generic mid-episode ad breaks
+- crosspromo: Cross-promotion of other shows/content
+- network: Network/platform promotional messages
+
+CONFIDENCE SCORING:
+- 0.9-1.0: Explicit sponsor read with brand + offer + CTA
+- 0.75-0.89: Clear ad with brand + endorsement language
+- 0.5-0.74: Likely ad but missing some markers (use sparingly)
+- Below 0.5: Don't include (too ambiguous)
+
+Be EXTREMELY STRICT. Prefer to miss an ad than to mislabel content as an ad.
+If unsure whether something is an ad, DO NOT LABEL IT.
+
+Return ONLY valid JSON: {"segments":[{"start_s":number,"end_s":number,"type":"sponsor|midroll|preroll|postroll|crosspromo|network","confidence":0.5-1.0}]}
 Empty list if none found."""
 
 
@@ -45,36 +69,41 @@ def heuristic_segments(transcript: dict[str, Any], total_duration_ms: int | None
             start_ms = int(float(seg.get("start", 0)) * 1000)
             end_ms = int(float(seg.get("end", 0)) * 1000)
             if end_ms > start_ms:
-                # Use generic "sponsor" label; position fixing will adjust it
                 kind = "sponsor"
+                # Use MIN_CONFIDENCE_THRESHOLD for consistency
                 out.append(
                     AdSegment(
                         start_ms=start_ms,
                         end_ms=end_ms,
                         type=kind,
-                        confidence=0.7,
+                        confidence=MIN_CONFIDENCE_THRESHOLD,
                     )
                 )
     merged = _merge(out)
     return _fix_position_labels(merged, total_duration_ms)
 
 
-def _merge(segments: list[AdSegment], gap_ms: int = 5000, min_duration_ms: int = 3000) -> list[AdSegment]:
+def _merge(segments: list[AdSegment], gap_ms: int = 5000, min_duration_ms: int = 5000) -> list[AdSegment]:
     """Merge nearby segments and filter too-short ones.
     
     Args:
         segments: Input ad segments
-        gap_ms: Maximum gap between segments to merge (default 5s, was 2s)
-        min_duration_ms: Minimum segment duration to keep (default 3s)
+        gap_ms: Maximum gap between segments to merge (default 5s)
+        min_duration_ms: Minimum segment duration to keep (default 5s, increased from 3s)
     """
     if not segments:
         return []
-    ordered = sorted(segments, key=lambda s: s.start_ms)
+    
+    # First filter by confidence threshold
+    filtered = [s for s in segments if s.confidence >= MIN_CONFIDENCE_THRESHOLD]
+    if not filtered:
+        return []
+    
+    ordered = sorted(filtered, key=lambda s: s.start_ms)
     merged = [ordered[0]]
     for seg in ordered[1:]:
         last = merged[-1]
         if seg.start_ms <= last.end_ms + gap_ms:
-            # Merge: keep the more specific type (non-unknown) and higher confidence
             merged[-1] = AdSegment(
                 start_ms=last.start_ms,
                 end_ms=max(last.end_ms, seg.end_ms),
