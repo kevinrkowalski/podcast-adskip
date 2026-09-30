@@ -157,11 +157,7 @@ export default function PlayerScreen() {
         : null;
 
   const adSkipHint = useMemo(() => {
-    if (!adDetectionEnabled) return 'Off';
-    if (!autoSkip) return 'Manual';
-    if (analyzeStatus === 'ready') {
-      return segs.length ? `${segs.length} ads` : 'Clean';
-    }
+    // Show current analysis state if in progress or completed
     if (isAnalyzing) {
       if (analyzeEtaLabel) {
         // Compact strip label: "~2m"
@@ -172,8 +168,18 @@ export default function PlayerScreen() {
       }
       return '…';
     }
+    if (analyzeStatus === 'ready') {
+      return segs.length ? `${segs.length} ads` : 'Clean';
+    }
     if (analyzeStatus === 'offline') return 'Offline';
     if (analyzeStatus === 'error') return 'Error';
+    
+    // Show state when not analyzing
+    if (!autoSkip) return 'Manual';
+    if (!adDetectionEnabled) {
+      // Per-show OFF but global ON: Prepare is still available
+      return 'Prep';
+    }
     return 'Prep';
   }, [adDetectionEnabled, autoSkip, analyzeStatus, segs.length, isAnalyzing, analyzeEtaLabel]);
 
@@ -434,10 +440,19 @@ export default function PlayerScreen() {
 
               <Pressable
                 style={styles.actionItem}
-                onPress={() => requestAnalyze(true)}
+                onPress={() => {
+                  // Defensive check: only call if global settings allow
+                  if (autoSkip) {
+                    requestAnalyze(true);
+                  } else {
+                    console.log('[player] Prepare blocked: global auto-skip is OFF');
+                  }
+                }}
                 hitSlop={6}
                 accessibilityLabel="Prepare ad analysis"
-                // Global Settings kill-switch only; per-show OFF must still allow Prepare.
+                // Prepare button is ONLY disabled by global Settings kill-switch.
+                // When global is ON but per-show detection is OFF, Prepare still works
+                // (it enables detection for this user-initiated analysis).
                 disabled={!autoSkip}>
                 <SymbolView
                   name={{ ios: 'sparkles', android: 'auto_awesome', web: 'auto_awesome' }}
