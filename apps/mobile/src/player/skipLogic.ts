@@ -95,13 +95,12 @@ const LEGACY_SEGMENT_TYPE_LABELS: Record<LegacyAdSegmentType, string> = {
 
 /** Human-readable label for a skip-map segment type. */
 export function segmentTypeLabel(type: AdSegmentType | LegacyAdSegmentType | string): string {
-  // Check new types first
-  if (type in SEGMENT_TYPE_LABELS) {
-    return SEGMENT_TYPE_LABELS[type as AdSegmentType];
+  // Normalize legacy types first, so cached maps show new labels
+  const normalizedType = mapLegacySegmentType(type);
+  
+  if (normalizedType in SEGMENT_TYPE_LABELS) {
+    return SEGMENT_TYPE_LABELS[normalizedType as AdSegmentType];
   }
-  // Check legacy types
-  if (type in LEGACY_SEGMENT_TYPE_LABELS) {
-    return LEGACY_SEGMENT_TYPE_LABELS[type as LegacyAdSegmentType];
-  }
+  
   return 'Ad segment';
 }

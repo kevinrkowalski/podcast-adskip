@@ -364,10 +364,25 @@ export default function PodcastDetailScreen() {
               
               {adDetectionEnabled && skipSettings && (
                 <View style={styles.skipSettingsCard}>
-                  <Text style={styles.skipSettingsHeading}>Skip segments</Text>
+                  <Text style={styles.skipSettingsHeading}>Auto-skip segments</Text>
                   <Text style={styles.skipSettingsHint}>
-                    Choose which types of segments to skip automatically
+                    Master toggle and per-type skip controls
                   </Text>
+                  
+                  <View style={styles.skipSettingsRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.skipSettingsLabel}>Skip segments for this show</Text>
+                      <Text style={styles.skipSettingsSubtext}>
+                        Master toggle · disable to skip nothing
+                      </Text>
+                    </View>
+                    <Switch
+                      value={skipSettings.skipEnabled}
+                      onValueChange={(v) => onToggleSkipSetting('skipEnabled', v)}
+                      trackColor={{ false: theme.border, true: theme.accentSoft }}
+                      thumbColor={skipSettings.skipEnabled ? theme.accent : '#ccc'}
+                    />
+                  </View>
                   
                   <View style={styles.skipSettingsRow}>
                     <View style={{ flex: 1 }}>

@@ -22,20 +22,6 @@ export interface AdSegment {
   confidence: number;
 }
 
-/** Per-show skip settings for the three segment kinds. */
-export interface PodcastSkipSettings {
-  collectionId?: number;
-  feedUrl?: string;
-  /** Master toggle: if false, no skipping at all for this show. */
-  skipEnabled: boolean;
-  /** Skip advertisement segments. */
-  skipAdvertisement: boolean;
-  /** Skip intro/outro segments. */
-  skipIntroOutro: boolean;
-  /** Skip self-promotion segments. */
-  skipSelfPromotion: boolean;
-}
-
 export type SkipMapStatus = 'ready' | 'pending' | 'missing' | 'error' | 'queued';
 
 /** Pipeline stage from analyze job progress (server). */

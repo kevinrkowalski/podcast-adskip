@@ -6,6 +6,18 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Episode, SkipMap, Subscription } from '@/src/types';
 
+/** Per-show skip settings (master + 3 kind toggles). */
+export type PodcastSkipSettings = {
+  /** Master toggle: if false, no skipping at all for this show. */
+  skipEnabled: boolean;
+  /** Skip advertisement segments (default: true). */
+  skipAdvertisement: boolean;
+  /** Skip intro/outro segments (default: true). */
+  skipIntroOutro: boolean;
+  /** Skip self-promotion segments (default: true). */
+  skipSelfPromotion: boolean;
+};
+
 const KEYS = {
   subscriptions: '@podcast-adskip/subscriptions',
   episodes: '@podcast-adskip/episodes/',
@@ -225,18 +237,6 @@ export async function setPodcastAdDetectionEnabled(
   }
   await AsyncStorage.setItem(KEYS.adDetectionDisabled, JSON.stringify([...disabled]));
 }
-
-/** Per-show skip settings (master + 3 kind toggles). */
-export type PodcastSkipSettings = {
-  /** Master toggle: if false, no skipping at all for this show. */
-  skipEnabled: boolean;
-  /** Skip advertisement segments (default: true). */
-  skipAdvertisement: boolean;
-  /** Skip intro/outro segments (default: true). */
-  skipIntroOutro: boolean;
-  /** Skip self-promotion segments (default: true). */
-  skipSelfPromotion: boolean;
-};
 
 const DEFAULT_SKIP_SETTINGS: PodcastSkipSettings = {
   skipEnabled: true,

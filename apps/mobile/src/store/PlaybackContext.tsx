@@ -723,7 +723,14 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           } catch (cacheErr) {
             console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
           }
-          player.setSkipSegments(result.segments);
+          // Load settings and apply filter
+          const settings = await getPodcastSkipSettings({
+            collectionId: episode.collectionId,
+            feedUrl: episode.feedUrl,
+          });
+          setSkipSettingsState(settings);
+          const filtered = applySkipFilter(result.segments, settings);
+          player.setSkipSegments(filtered);
           const warnings = detectAudioMismatch(episode, result);
           const summary = formatMismatchSummary(warnings);
           setAudioMismatchWarning(summary);
