@@ -20,11 +20,23 @@ AD_KEYWORDS = re.compile(
 )
 
 SYSTEM_PROMPT = """You label podcast ad/sponsor segments from a timed transcript.
+
+LABEL RULES:
+- preroll: ONLY ads in the first 90 seconds of the episode
+- postroll: ONLY ads in the final 2 minutes of the episode
+- midroll/sponsor: all ads in the middle (use "sponsor" for product endorsements, "midroll" for generic mid-episode ads)
+- crosspromo: cross-promotion of other shows/content
+- network: network/platform promotional messages
+- unknown: when unsure
+
+Be STRICT about preroll/postroll positions. Merge consecutive ad sentences into one segment. 
+Prefer precision over recall - only mark clear advertisements, not casual mentions.
+
 Return ONLY valid JSON: {"segments":[{"start_s":number,"end_s":number,"type":"sponsor|midroll|preroll|postroll|crosspromo|network|unknown","confidence":0-1}]}
-Merge contiguous ad talk. Prefer precision over recall. Empty list if none."""
+Empty list if none found."""
 
 
-def heuristic_segments(transcript: dict[str, Any]) -> list[AdSegment]:
+def heuristic_segments(transcript: dict[str, Any], total_duration_ms: int | None = None) -> list[AdSegment]:
     """Keyword/heuristic fallback used when no LLM key (and for mock smoke tests)."""
     out: list[AdSegment] = []
     for seg in transcript.get("segments") or []:
@@ -33,7 +45,8 @@ def heuristic_segments(transcript: dict[str, Any]) -> list[AdSegment]:
             start_ms = int(float(seg.get("start", 0)) * 1000)
             end_ms = int(float(seg.get("end", 0)) * 1000)
             if end_ms > start_ms:
-                kind = "preroll" if start_ms < 30_000 else "sponsor"
+                # Use generic "sponsor" label; position fixing will adjust it
+                kind = "sponsor"
                 out.append(
                     AdSegment(
                         start_ms=start_ms,
@@ -42,10 +55,18 @@ def heuristic_segments(transcript: dict[str, Any]) -> list[AdSegment]:
                         confidence=0.7,
                     )
                 )
-    return _merge(out)
+    merged = _merge(out)
+    return _fix_position_labels(merged, total_duration_ms)
 
 
-def _merge(segments: list[AdSegment], gap_ms: int = 2000) -> list[AdSegment]:
+def _merge(segments: list[AdSegment], gap_ms: int = 5000, min_duration_ms: int = 3000) -> list[AdSegment]:
+    """Merge nearby segments and filter too-short ones.
+    
+    Args:
+        segments: Input ad segments
+        gap_ms: Maximum gap between segments to merge (default 5s, was 2s)
+        min_duration_ms: Minimum segment duration to keep (default 3s)
+    """
     if not segments:
         return []
     ordered = sorted(segments, key=lambda s: s.start_ms)
@@ -53,6 +74,7 @@ def _merge(segments: list[AdSegment], gap_ms: int = 2000) -> list[AdSegment]:
     for seg in ordered[1:]:
         last = merged[-1]
         if seg.start_ms <= last.end_ms + gap_ms:
+            # Merge: keep the more specific type (non-unknown) and higher confidence
             merged[-1] = AdSegment(
                 start_ms=last.start_ms,
                 end_ms=max(last.end_ms, seg.end_ms),
@@ -61,7 +83,64 @@ def _merge(segments: list[AdSegment], gap_ms: int = 2000) -> list[AdSegment]:
             )
         else:
             merged.append(seg)
-    return merged
+    # Filter out segments shorter than min_duration_ms
+    return [s for s in merged if (s.end_ms - s.start_ms) >= min_duration_ms]
+
+
+def _fix_position_labels(segments: list[AdSegment], total_duration_ms: int | None = None) -> list[AdSegment]:
+    """Fix misclassified preroll/postroll based on actual position in episode.
+    
+    Args:
+        segments: Input ad segments (should already be merged/filtered)
+        total_duration_ms: Total episode duration; if None, uses the last segment's end time
+    
+    Returns:
+        Segments with corrected position-based labels
+    """
+    if not segments:
+        return []
+    
+    # Estimate total duration if not provided
+    if total_duration_ms is None:
+        total_duration_ms = max(s.end_ms for s in segments) + 60_000  # add buffer
+    
+    PREROLL_THRESHOLD_MS = 90_000  # First 90 seconds
+    POSTROLL_THRESHOLD_MS = 120_000  # Last 2 minutes
+    
+    fixed = []
+    for seg in segments:
+        new_type = seg.type
+        
+        # Fix preroll: only valid in first 90 seconds
+        if seg.type == "preroll" and seg.start_ms > PREROLL_THRESHOLD_MS:
+            new_type = "midroll"  # Change mid-episode "preroll" to "midroll"
+        
+        # Fix postroll: only valid in last 2 minutes
+        if seg.type == "postroll":
+            time_from_end = total_duration_ms - seg.start_ms
+            if time_from_end > POSTROLL_THRESHOLD_MS:
+                new_type = "midroll"  # Change early "postroll" to "midroll"
+        
+        # Promote midroll/unknown/sponsor at start to preroll
+        if seg.type in ("midroll", "unknown", "sponsor") and seg.start_ms < PREROLL_THRESHOLD_MS:
+            new_type = "preroll"
+        
+        # Promote midroll/unknown/sponsor at end to postroll
+        if seg.type in ("midroll", "unknown", "sponsor"):
+            time_from_end = total_duration_ms - seg.start_ms
+            if time_from_end < POSTROLL_THRESHOLD_MS:
+                new_type = "postroll"
+        
+        fixed.append(
+            AdSegment(
+                start_ms=seg.start_ms,
+                end_ms=seg.end_ms,
+                type=new_type,
+                confidence=seg.confidence,
+            )
+        )
+    
+    return fixed
 
 
 def _windows(transcript: dict[str, Any], window_s: float = 120.0) -> list[str]:
@@ -84,19 +163,19 @@ def _windows(transcript: dict[str, Any], window_s: float = 120.0) -> list[str]:
     return chunks or ["\n".join(lines)]
 
 
-async def label_ads_llm(transcript: dict[str, Any], settings: Settings) -> list[AdSegment]:
+async def label_ads_llm(transcript: dict[str, Any], settings: Settings, total_duration_ms: int | None = None) -> list[AdSegment]:
     """Label ads: OpenRouter chat (default) → Gemini direct → Groq LLM → heuristics."""
     if settings.llm_provider == "gemini" and settings.gemini_ready:
-        return await _label_gemini(transcript, settings)
+        return await _label_gemini(transcript, settings, total_duration_ms)
     if settings.llm_provider == "groq" and settings.groq_llm_ready:
-        return await _label_groq_llm(transcript, settings)
+        return await _label_groq_llm(transcript, settings, total_duration_ms)
     if settings.openrouter_llm_ready:
-        return await _label_openrouter(transcript, settings)
+        return await _label_openrouter(transcript, settings, total_duration_ms)
     if settings.groq_llm_ready:
-        return await _label_groq_llm(transcript, settings)
+        return await _label_groq_llm(transcript, settings, total_duration_ms)
     if settings.gemini_ready:
-        return await _label_gemini(transcript, settings)
-    return heuristic_segments(transcript)
+        return await _label_gemini(transcript, settings, total_duration_ms)
+    return heuristic_segments(transcript, total_duration_ms)
 
 
 def _openrouter_headers(settings: Settings) -> dict[str, str]:
@@ -108,7 +187,7 @@ def _openrouter_headers(settings: Settings) -> dict[str, str]:
     return headers
 
 
-async def _label_openrouter(transcript: dict[str, Any], settings: Settings) -> list[AdSegment]:
+async def _label_openrouter(transcript: dict[str, Any], settings: Settings, total_duration_ms: int | None = None) -> list[AdSegment]:
     """Cheap OpenRouter chat model (default google/gemini-2.5-flash)."""
     from openai import OpenAI
 
@@ -131,10 +210,13 @@ async def _label_openrouter(transcript: dict[str, Any], settings: Settings) -> l
         )
         content = completion.choices[0].message.content or "{}"
         all_segs.extend(_parse_llm_json(content))
-    return _merge(all_segs) or heuristic_segments(transcript)
+    merged = _merge(all_segs)
+    if not merged:
+        return heuristic_segments(transcript, total_duration_ms)
+    return _fix_position_labels(merged, total_duration_ms)
 
 
-async def _label_groq_llm(transcript: dict[str, Any], settings: Settings) -> list[AdSegment]:
+async def _label_groq_llm(transcript: dict[str, Any], settings: Settings, total_duration_ms: int | None = None) -> list[AdSegment]:
     """Legacy Groq Llama labeling."""
     from groq import Groq
 
@@ -152,10 +234,13 @@ async def _label_groq_llm(transcript: dict[str, Any], settings: Settings) -> lis
         )
         content = completion.choices[0].message.content or "{}"
         all_segs.extend(_parse_llm_json(content))
-    return _merge(all_segs) or heuristic_segments(transcript)
+    merged = _merge(all_segs)
+    if not merged:
+        return heuristic_segments(transcript, total_duration_ms)
+    return _fix_position_labels(merged, total_duration_ms)
 
 
-async def _label_gemini(transcript: dict[str, Any], settings: Settings) -> list[AdSegment]:
+async def _label_gemini(transcript: dict[str, Any], settings: Settings, total_duration_ms: int | None = None) -> list[AdSegment]:
     """Optional direct Gemini path. Uses REST to avoid hard dependency on google-genai."""
     import httpx
 
@@ -179,7 +264,10 @@ async def _label_gemini(transcript: dict[str, Any], settings: Settings) -> list[
                 .get("text", "{}")
             )
             all_segs.extend(_parse_llm_json(text))
-    return _merge(all_segs) or heuristic_segments(transcript)
+    merged = _merge(all_segs)
+    if not merged:
+        return heuristic_segments(transcript, total_duration_ms)
+    return _fix_position_labels(merged, total_duration_ms)
 
 
 def _parse_llm_json(content: str) -> list[AdSegment]:

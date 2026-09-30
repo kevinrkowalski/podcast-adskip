@@ -98,10 +98,10 @@ async def run_analyze(
                 duration_ms=duration_ms,
             )
             if settings.has_llm:
-                segments = await label_ads_llm(transcript, settings)
+                segments = await label_ads_llm(transcript, settings, duration_ms)
                 model_parts.append(_llm_model_label(settings))
             else:
-                segments = heuristic_segments(transcript)
+                segments = heuristic_segments(transcript, duration_ms)
                 model_parts.append("heuristic")
             model = "+".join(model_parts)
         else:
@@ -117,7 +117,7 @@ async def run_analyze(
                 "labeling",
                 duration_ms=duration_ms,
             )
-            segments = heuristic_segments(transcript)
+            segments = heuristic_segments(transcript, duration_ms)
             model = "stub-whisper+heuristic"
 
         await _stage(episode_guid, "saving", duration_ms=duration_ms)
