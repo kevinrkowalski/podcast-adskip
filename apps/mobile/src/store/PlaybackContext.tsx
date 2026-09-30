@@ -7,7 +7,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import type { Episode, SkipMap } from '@/src/types';
+import type { AdSegment, Episode, SkipMap } from '@/src/types';
 import * as player from '@/src/player/trackPlayer';
 import { analyzeEpisode, getSkipMap } from '@/src/api/backend';
 import {
@@ -19,7 +19,10 @@ import {
   setAutoSkipEnabled,
   isPodcastAdDetectionEnabled,
   setPodcastAdDetectionEnabled,
+  getPodcastSkipSettings,
+  setPodcastSkipSettings,
   type AdDetectionTarget,
+  type PodcastSkipSettings,
 } from '@/src/db/storage';
 import { detectAudioMismatch, formatMismatchSummary } from '@/src/player/audioValidation';
 import {
@@ -30,6 +33,7 @@ import {
   type UploadProgress,
 } from '@/src/api/audioUpload';
 import { getApiBaseUrl, getResolvedAppKey } from '@/src/api/backend';
+import { filterSkippableSegments, normalizeSegment } from '@/src/player/skipLogic';
 
 type Ctx = {
   episode: Episode | null;
@@ -40,6 +44,7 @@ type Ctx = {
   autoSkip: boolean;
   adDetectionEnabled: boolean;
   skipMap: SkipMap | null;
+  skipSettings: PodcastSkipSettings | null;
   analyzeStatus: string | null;
   analyzeError: string | null;
   audioMismatchWarning: string | null;
@@ -50,6 +55,7 @@ type Ctx = {
   cyclePlaybackRate: () => void;
   setAutoSkip: (v: boolean) => Promise<void>;
   setPodcastAdDetection: (target: AdDetectionTarget, enabled: boolean) => Promise<void>;
+  setPodcastSkipSetting: (target: AdDetectionTarget, settings: Partial<PodcastSkipSettings>) => Promise<void>;
   requestAnalyze: (force?: boolean) => Promise<void>;
 };
 
@@ -71,6 +77,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const [autoSkip, setAutoSkipState] = useState(true);
   const [adDetectionEnabled, setAdDetectionEnabledState] = useState(true);
   const [skipMap, setSkipMap] = useState<SkipMap | null>(null);
+  const [skipSettings, setSkipSettingsState] = useState<PodcastSkipSettings | null>(null);
   const [analyzeStatus, setAnalyzeStatus] = useState<string | null>(null);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
   const [audioMismatchWarning, setAudioMismatchWarning] = useState<string | null>(null);
@@ -189,6 +196,28 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   }, [canCallAdDetectionApi]);
 
   /**
+   * Apply per-show skip settings to filter segments.
+   * Returns segments that should actually be skipped based on settings.
+   */
+  const applySkipFilter = useCallback((
+    segments: AdSegment[],
+    settings: PodcastSkipSettings | null,
+  ): AdSegment[] => {
+    if (!settings || !settings.skipEnabled) {
+      // Master toggle is off: no skipping
+      return [];
+    }
+    
+    // Normalize legacy types and filter by per-kind toggles
+    const normalized = segments.map(normalizeSegment);
+    return filterSkippableSegments(normalized, {
+      skipAdvertisement: settings.skipAdvertisement,
+      skipIntroOutro: settings.skipIntroOutro,
+      skipSelfPromotion: settings.skipSelfPromotion,
+    });
+  }, []);
+
+  /**
    * Abort an in-flight skip-map load without wiping a cached ready map.
    * Toggling global auto-skip off mid-await used to call clearAdDetection() and
    * permanently break the segment sheet until a full re-analyze.
@@ -225,6 +254,14 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     }
     if (!stillCurrent()) return null;
 
+    // Load skip settings for this episode
+    const settings = await getPodcastSkipSettings({
+      collectionId: ep.collectionId,
+      feedUrl: ep.feedUrl,
+    });
+    if (!stillCurrent()) return null;
+    setSkipSettingsState(settings);
+
     setAdDetectionEnabledState(true);
     player.setAdDetectionEnabled(true);
     const local = await getCachedSkipMap(ep.guid);
@@ -241,7 +278,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     if (local?.status === 'ready') {
       setSkipMap(local);
       skipMapRef.current = local;
-      player.setSkipSegments(local.segments);
+      // Apply skip filter before passing to player
+      const filtered = applySkipFilter(local.segments, settings);
+      player.setSkipSegments(filtered);
       setAnalyzeStatus('ready');
       const warnings = detectAudioMismatch(ep, local);
       const summary = formatMismatchSummary(warnings);
@@ -272,7 +311,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
         }
         if (!stillCurrent()) return null;
-        player.setSkipSegments(remote.segments);
+        // Apply skip filter before passing to player
+        const filtered = applySkipFilter(remote.segments, settings);
+        player.setSkipSegments(filtered);
         setAnalyzeStatus('ready');
         const warnings = detectAudioMismatch(ep, remote);
         const summary = formatMismatchSummary(warnings);
@@ -292,7 +333,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       player.setSkipSegments([]);
       return null;
     }
-  }, [abortLoadKeepCache, canUseAdDetection, clearAdDetection]);
+  }, [abortLoadKeepCache, applySkipFilter, canUseAdDetection, clearAdDetection]);
 
   const playEpisode = useCallback(
     async (ep: Episode) => {
@@ -303,6 +344,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       episodeRef.current = ep;
       setSkipMap(null);
       skipMapRef.current = null;
+      setSkipSettingsState(null);
       setAnalyzeStatus(null);
       setAnalyzeError(null);
       setAudioMismatchWarning(null);
@@ -323,6 +365,15 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       setAdDetectionEnabledState(detectionEnabled);
       player.setAdDetectionEnabled(detectionEnabled);
       if (!detectionEnabled) player.setSkipSegments([]);
+
+      // Load skip settings early so they're available for filtering
+      if (detectionEnabled) {
+        const settings = await getPodcastSkipSettings({
+          collectionId: ep.collectionId,
+          feedUrl: ep.feedUrl,
+        });
+        setSkipSettingsState(settings);
+      }
 
       const saved = await getPlaybackPosition(ep.guid);
       const startPositionMs = saved?.positionMs ?? 0;
@@ -451,8 +502,16 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         cached.status === 'ready' &&
         cached.episode_guid === current.guid
       ) {
+        // Load skip settings and apply filter
+        const settings = await getPodcastSkipSettings({
+          collectionId: current.collectionId,
+          feedUrl: current.feedUrl,
+        });
+        if (gen !== skipLoadGen.current) return;
+        setSkipSettingsState(settings);
         setSkipMap(cached);
-        player.setSkipSegments(cached.segments ?? []);
+        const filtered = applySkipFilter(cached.segments ?? [], settings);
+        player.setSkipSegments(filtered);
         setAnalyzeStatus('ready');
         const warnings = detectAudioMismatch(current, cached);
         const summary = formatMismatchSummary(warnings);
@@ -497,7 +556,14 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
               console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
             }
             if (gen !== skipLoadGen.current) return;
-            player.setSkipSegments(queued.segments);
+            // Load settings and apply filter
+            const settings = await getPodcastSkipSettings({
+              collectionId: current.collectionId,
+              feedUrl: current.feedUrl,
+            });
+            if (gen !== skipLoadGen.current) return;
+            const filtered = applySkipFilter(queued.segments, settings);
+            player.setSkipSegments(filtered);
             const warnings = detectAudioMismatch(current, queued);
             const summary = formatMismatchSummary(warnings);
             setAudioMismatchWarning(summary);
@@ -534,6 +600,30 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       }
     },
     [clearAdDetection],
+  );
+
+  const setPodcastSkipSetting = useCallback(
+    async (target: AdDetectionTarget, settings: Partial<PodcastSkipSettings>) => {
+      await setPodcastSkipSettings(target, settings);
+      const current = episodeRef.current;
+      if (!current) return;
+      const matches =
+        (target.collectionId != null && current.collectionId === target.collectionId) ||
+        (!!target.feedUrl && current.feedUrl === target.feedUrl);
+      if (!matches) return;
+
+      // Update in-memory settings
+      const updated = await getPodcastSkipSettings(target);
+      setSkipSettingsState(updated);
+
+      // Re-filter segments with new settings
+      const cached = skipMapRef.current;
+      if (cached && cached.status === 'ready') {
+        const filtered = applySkipFilter(cached.segments, updated);
+        player.setSkipSegments(filtered);
+      }
+    },
+    [applySkipFilter],
   );
 
   // Explicit Prepare / force-analyze: gated by global Settings only.
@@ -633,7 +723,14 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           } catch (cacheErr) {
             console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
           }
-          player.setSkipSegments(result.segments);
+          // Load settings and apply filter
+          const settings = await getPodcastSkipSettings({
+            collectionId: episode.collectionId,
+            feedUrl: episode.feedUrl,
+          });
+          setSkipSettingsState(settings);
+          const filtered = applySkipFilter(result.segments, settings);
+          player.setSkipSegments(filtered);
           const warnings = detectAudioMismatch(episode, result);
           const summary = formatMismatchSummary(warnings);
           setAudioMismatchWarning(summary);
@@ -658,7 +755,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         manualPrepareInFlight.current = false;
       }
     },
-    [canCallAdDetectionApi, episode],
+    [applySkipFilter, canCallAdDetectionApi, episode],
   );
 
   // While analyze is in flight, poll skip-map for stage / ETA (Prepare + auto-queue).
@@ -691,9 +788,15 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
             } catch (cacheErr) {
               console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
             }
-            player.setSkipSegments(map.segments);
             const ep = episodeRef.current;
             if (ep) {
+              // Load settings and apply filter
+              const settings = await getPodcastSkipSettings({
+                collectionId: ep.collectionId,
+                feedUrl: ep.feedUrl,
+              });
+              const filtered = applySkipFilter(map.segments, settings);
+              player.setSkipSegments(filtered);
               const warnings = detectAudioMismatch(ep, map);
               const summary = formatMismatchSummary(warnings);
               setAudioMismatchWarning(summary);
@@ -726,6 +829,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       autoSkip,
       adDetectionEnabled,
       skipMap,
+      skipSettings,
       analyzeStatus,
       analyzeError,
       audioMismatchWarning,
@@ -736,6 +840,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       cyclePlaybackRate,
       setAutoSkip,
       setPodcastAdDetection,
+      setPodcastSkipSetting,
       requestAnalyze,
     }),
     [
@@ -747,6 +852,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       autoSkip,
       adDetectionEnabled,
       skipMap,
+      skipSettings,
       analyzeStatus,
       analyzeError,
       audioMismatchWarning,
@@ -757,6 +863,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       cyclePlaybackRate,
       setAutoSkip,
       setPodcastAdDetection,
+      setPodcastSkipSetting,
       requestAnalyze,
     ],
   );

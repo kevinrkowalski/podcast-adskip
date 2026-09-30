@@ -6,6 +6,18 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Episode, SkipMap, Subscription } from '@/src/types';
 
+/** Per-show skip settings (master + 3 kind toggles). */
+export type PodcastSkipSettings = {
+  /** Master toggle: if false, no skipping at all for this show. */
+  skipEnabled: boolean;
+  /** Skip advertisement segments (default: true). */
+  skipAdvertisement: boolean;
+  /** Skip intro/outro segments (default: true). */
+  skipIntroOutro: boolean;
+  /** Skip self-promotion segments (default: true). */
+  skipSelfPromotion: boolean;
+};
+
 const KEYS = {
   subscriptions: '@podcast-adskip/subscriptions',
   episodes: '@podcast-adskip/episodes/',
@@ -14,6 +26,8 @@ const KEYS = {
   positions: '@podcast-adskip/pos/',
   autoSkip: '@podcast-adskip/autoSkip',
   adDetectionDisabled: '@podcast-adskip/adDetectionDisabled',
+  /** Per-show skip settings (master + 3 kind toggles). */
+  podcastSkipSettings: '@podcast-adskip/podcastSkipSettings',
   apiUrl: '@podcast-adskip/apiUrl',
   appKey: '@podcast-adskip/appKey',
 } as const;
@@ -222,6 +236,72 @@ export async function setPodcastAdDetectionEnabled(
     else disabled.add(key);
   }
   await AsyncStorage.setItem(KEYS.adDetectionDisabled, JSON.stringify([...disabled]));
+}
+
+const DEFAULT_SKIP_SETTINGS: PodcastSkipSettings = {
+  skipEnabled: true,
+  skipAdvertisement: true,
+  skipIntroOutro: true,
+  skipSelfPromotion: true,
+};
+
+function skipSettingsKey(target: AdDetectionTarget): string | null {
+  if (target.collectionId != null && Number.isFinite(target.collectionId)) {
+    return `collection:${target.collectionId}`;
+  }
+  const feedUrl = target.feedUrl?.trim();
+  if (feedUrl) return `feed:${feedUrl}`;
+  return null;
+}
+
+/** Get per-show skip settings (defaults to all enabled). */
+export async function getPodcastSkipSettings(target: AdDetectionTarget): Promise<PodcastSkipSettings> {
+  const key = skipSettingsKey(target);
+  if (!key) return { ...DEFAULT_SKIP_SETTINGS };
+  
+  try {
+    const raw = await AsyncStorage.getItem(KEYS.podcastSkipSettings);
+    if (!raw) return { ...DEFAULT_SKIP_SETTINGS };
+    const all = JSON.parse(raw) as Record<string, Partial<PodcastSkipSettings>>;
+    const stored = all[key];
+    if (!stored) return { ...DEFAULT_SKIP_SETTINGS };
+    
+    // Merge with defaults to handle partial stored settings
+    return {
+      skipEnabled: stored.skipEnabled ?? DEFAULT_SKIP_SETTINGS.skipEnabled,
+      skipAdvertisement: stored.skipAdvertisement ?? DEFAULT_SKIP_SETTINGS.skipAdvertisement,
+      skipIntroOutro: stored.skipIntroOutro ?? DEFAULT_SKIP_SETTINGS.skipIntroOutro,
+      skipSelfPromotion: stored.skipSelfPromotion ?? DEFAULT_SKIP_SETTINGS.skipSelfPromotion,
+    };
+  } catch {
+    return { ...DEFAULT_SKIP_SETTINGS };
+  }
+}
+
+/** Set per-show skip settings. */
+export async function setPodcastSkipSettings(
+  target: AdDetectionTarget,
+  settings: Partial<PodcastSkipSettings>,
+): Promise<void> {
+  const key = skipSettingsKey(target);
+  if (!key) return;
+  
+  try {
+    const raw = await AsyncStorage.getItem(KEYS.podcastSkipSettings);
+    const all: Record<string, PodcastSkipSettings> = raw ? JSON.parse(raw) : {};
+    const current = all[key] || { ...DEFAULT_SKIP_SETTINGS };
+    
+    all[key] = {
+      skipEnabled: settings.skipEnabled ?? current.skipEnabled,
+      skipAdvertisement: settings.skipAdvertisement ?? current.skipAdvertisement,
+      skipIntroOutro: settings.skipIntroOutro ?? current.skipIntroOutro,
+      skipSelfPromotion: settings.skipSelfPromotion ?? current.skipSelfPromotion,
+    };
+    
+    await AsyncStorage.setItem(KEYS.podcastSkipSettings, JSON.stringify(all));
+  } catch (error) {
+    console.warn('[storage] Failed to save podcast skip settings:', error);
+  }
 }
 
 export async function getApiUrl(): Promise<string> {

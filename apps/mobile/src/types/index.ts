@@ -1,6 +1,12 @@
 /** Shared domain types for podcast finder + skip-map. */
 
 export type AdSegmentType =
+  | 'advertisement'
+  | 'intro_outro'
+  | 'self_promotion';
+
+/** Legacy segment types that may appear in cached skip maps. */
+export type LegacyAdSegmentType =
   | 'sponsor'
   | 'midroll'
   | 'preroll'
@@ -12,7 +18,7 @@ export type AdSegmentType =
 export interface AdSegment {
   start_ms: number;
   end_ms: number;
-  type: AdSegmentType;
+  type: AdSegmentType | LegacyAdSegmentType;
   confidence: number;
 }
 
