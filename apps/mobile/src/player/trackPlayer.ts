@@ -70,6 +70,8 @@ type ExpoAudioMod = {
 const SEEK_CATCHUP_MS = 1200;
 /** Drop pending seek pin after this long even if native never matches. */
 const SEEK_PIN_MAX_MS = 2500;
+/** Block auto-skip for this long after a manual seek (ms). */
+const MANUAL_SEEK_GRACE_MS = 3000;
 
 let status: PlayerStatus = {
   isPlaying: false,
@@ -90,6 +92,8 @@ let seeking = false;
 /** Optimistic position after seek; overrides stale native reports until catch-up. */
 let pendingSeekMs: number | null = null;
 let pendingSeekAt = 0;
+/** Timestamp of last manual seek; blocks auto-skip for a grace period. */
+let lastManualSeekAt = 0;
 let audioModeReady = false;
 let player: ExpoAudioPlayer | null = null;
 let statusSub: { remove: () => void } | null = null;
@@ -254,9 +258,15 @@ function startTick() {
     }
 
     if (autoSkip && adDetectionEnabled && segments.length && status.isPlaying && pendingSeekMs == null) {
-      const target = seekTargetIfInAd(status.positionMs, segments);
-      if (target != null) {
-        await seekTo(target);
+      // Skip auto-skip if we're within the grace period after a manual seek.
+      const timeSinceManualSeek = Date.now() - lastManualSeekAt;
+      if (timeSinceManualSeek < MANUAL_SEEK_GRACE_MS) {
+        // Let user stay at their manually chosen position for a few seconds.
+      } else {
+        const target = seekTargetIfInAd(status.positionMs, segments);
+        if (target != null) {
+          await seekTo(target, true);
+        }
       }
     }
     emit();
@@ -419,10 +429,15 @@ export async function pause(): Promise<void> {
   emit();
 }
 
-export async function seekTo(positionMs: number): Promise<void> {
+export async function seekTo(positionMs: number, isAutoSkip = false): Promise<void> {
   const target = Math.max(0, Math.floor(positionMs));
   const capped =
     status.durationMs > 0 ? Math.min(target, status.durationMs) : target;
+
+  // Track manual seeks to prevent immediate auto-skip after user interaction.
+  if (!isAutoSkip) {
+    lastManualSeekAt = Date.now();
+  }
 
   seeking = true;
   pendingSeekMs = capped;

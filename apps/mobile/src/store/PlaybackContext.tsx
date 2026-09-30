@@ -266,7 +266,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       setSkipMap(remote);
       skipMapRef.current = remote;
       if (remote.status === 'ready') {
-        await cacheSkipMap(ep.guid, remote);
+        try {
+          await cacheSkipMap(ep.guid, remote);
+        } catch (cacheErr) {
+          console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
+        }
         if (!stillCurrent()) return null;
         player.setSkipSegments(remote.segments);
         setAnalyzeStatus('ready');
@@ -487,7 +491,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           skipMapRef.current = queued;
           setAnalyzeStatus(queued.status);
           if (queued.status === 'ready') {
-            await cacheSkipMap(current.guid, queued);
+            try {
+              await cacheSkipMap(current.guid, queued);
+            } catch (cacheErr) {
+              console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
+            }
             if (gen !== skipLoadGen.current) return;
             player.setSkipSegments(queued.segments);
             const warnings = detectAudioMismatch(current, queued);
@@ -619,7 +627,12 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         setAnalyzeStatus(result.status);
         
         if (result.status === 'ready') {
-          await cacheSkipMap(episode.guid, result);
+          // Cache skip map; don't let storage failure break the analyze flow.
+          try {
+            await cacheSkipMap(episode.guid, result);
+          } catch (cacheErr) {
+            console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
+          }
           player.setSkipSegments(result.segments);
           const warnings = detectAudioMismatch(episode, result);
           const summary = formatMismatchSummary(warnings);
@@ -673,7 +686,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           skipMapRef.current = map;
           setAnalyzeStatus(map.status);
           if (map.status === 'ready') {
-            await cacheSkipMap(guid, map);
+            try {
+              await cacheSkipMap(guid, map);
+            } catch (cacheErr) {
+              console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
+            }
             player.setSkipSegments(map.segments);
             const ep = episodeRef.current;
             if (ep) {
