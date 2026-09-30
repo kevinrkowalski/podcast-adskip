@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -110,6 +110,7 @@ export default function PlayerScreen() {
     adDetectionEnabled,
     skipMap,
     analyzeStatus,
+    analyzeError,
     audioMismatchWarning,
     uploadProgress,
     togglePlay,
@@ -127,6 +128,12 @@ export default function PlayerScreen() {
   const remainingMs = Math.max(0, durationMs - displayPos);
   const showNotes = useMemo(() => formatShowNotes(episode?.description), [episode?.description]);
   const showNotesParts = useMemo(() => parseShowNotesParts(showNotes), [showNotes]);
+
+  useEffect(() => {
+    if (analyzeError) {
+      Alert.alert('Analysis failed', analyzeError);
+    }
+  }, [analyzeError]);
 
   const seekToTimestamp = (ms: number) => {
     const max = durationMs > 0 ? durationMs : ms;
@@ -172,7 +179,12 @@ export default function PlayerScreen() {
       return segs.length ? `${segs.length} ads` : 'Clean';
     }
     if (analyzeStatus === 'offline') return 'Offline';
-    if (analyzeStatus === 'error') return 'Error';
+    if (analyzeStatus === 'error') {
+      if (analyzeError && analyzeError.length <= 20) {
+        return analyzeError;
+      }
+      return 'Error';
+    }
     
     // Show state when not analyzing
     if (!autoSkip) return 'Manual';
@@ -181,7 +193,7 @@ export default function PlayerScreen() {
       return 'Prep';
     }
     return 'Prep';
-  }, [adDetectionEnabled, autoSkip, analyzeStatus, segs.length, isAnalyzing, analyzeEtaLabel]);
+  }, [adDetectionEnabled, autoSkip, analyzeStatus, analyzeError, segs.length, isAnalyzing, analyzeEtaLabel]);
 
   if (!episode) {
     return (

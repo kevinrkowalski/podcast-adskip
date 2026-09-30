@@ -41,6 +41,7 @@ type Ctx = {
   adDetectionEnabled: boolean;
   skipMap: SkipMap | null;
   analyzeStatus: string | null;
+  analyzeError: string | null;
   audioMismatchWarning: string | null;
   uploadProgress: { downloaded: number; uploaded: number; total: number } | null;
   playEpisode: (ep: Episode) => Promise<void>;
@@ -71,6 +72,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const [adDetectionEnabled, setAdDetectionEnabledState] = useState(true);
   const [skipMap, setSkipMap] = useState<SkipMap | null>(null);
   const [analyzeStatus, setAnalyzeStatus] = useState<string | null>(null);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
   const [audioMismatchWarning, setAudioMismatchWarning] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<{
     downloaded: number;
@@ -165,6 +167,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     setSkipMap(null);
     skipMapRef.current = null;
     setAnalyzeStatus(status);
+    setAnalyzeError(null);
     setAudioMismatchWarning(null);
     setUploadProgress(null);
     player.setAdDetectionEnabled(false);
@@ -297,6 +300,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       setSkipMap(null);
       skipMapRef.current = null;
       setAnalyzeStatus(null);
+      setAnalyzeError(null);
       setAudioMismatchWarning(null);
       skipLoadGen.current += 1;
 
@@ -550,6 +554,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       setAdDetectionEnabledState(true);
       player.setAdDetectionEnabled(true);
       setAnalyzeStatus('downloading');
+      setAnalyzeError(null);
       setUploadProgress({ downloaded: 0, uploaded: 0, total: 100 });
       setAudioMismatchWarning(null);
       
@@ -629,8 +634,10 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         console.log('[playback] requestAnalyze: complete, keeping adDetectionEnabled=true');
         // queued/pending: shared poll effect below keeps ETA/stage fresh.
       } catch (err: any) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
         console.error('[playback] Analyze (upload) failed:', err);
         setAnalyzeStatus('error');
+        setAnalyzeError(errorMsg);
         setUploadProgress(null);
         setAudioMismatchWarning(null);
       } finally {
@@ -703,6 +710,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       adDetectionEnabled,
       skipMap,
       analyzeStatus,
+      analyzeError,
       audioMismatchWarning,
       uploadProgress,
       playEpisode,
@@ -723,6 +731,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       adDetectionEnabled,
       skipMap,
       analyzeStatus,
+      analyzeError,
       audioMismatchWarning,
       uploadProgress,
       playEpisode,
