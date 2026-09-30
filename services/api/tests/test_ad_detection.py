@@ -13,13 +13,13 @@ def test_merge_with_min_duration_filter():
     """Test that segments shorter than min_duration_ms are filtered out."""
     segments = [
         AdSegment(start_ms=0, end_ms=2000, type="preroll", confidence=0.8),  # 2s - too short alone
-        AdSegment(start_ms=5000, end_ms=10000, type="sponsor", confidence=0.9),  # 5s - within 5s gap, meets min
-        AdSegment(start_ms=12000, end_ms=14000, type="midroll", confidence=0.8),  # 2s - within 5s gap
-        AdSegment(start_ms=25000, end_ms=31000, type="sponsor", confidence=0.85),  # 6s - separate (>5s gap)
+        AdSegment(start_ms=5000, end_ms=10000, type="sponsor", confidence=0.9),  # 5s - within 15s gap, meets min
+        AdSegment(start_ms=12000, end_ms=14000, type="midroll", confidence=0.8),  # 2s - within 15s gap
+        AdSegment(start_ms=35000, end_ms=41000, type="sponsor", confidence=0.85),  # 6s - separate (>15s gap)
     ]
     
-    # Default min_duration_ms = 5000 (5 seconds), gap_ms = 5000
-    # First three merge together (all within 5s gaps), fourth stays separate
+    # Default min_duration_ms = 5000 (5 seconds), gap_ms = 15000 (15 seconds)
+    # First three merge together (all within 15s gaps), fourth stays separate
     result = _merge(segments)
     
     assert len(result) == 2
@@ -27,8 +27,8 @@ def test_merge_with_min_duration_filter():
     assert result[0].start_ms == 0
     assert result[0].end_ms == 14000
     # Second segment stays separate
-    assert result[1].start_ms == 25000
-    assert result[1].end_ms == 31000
+    assert result[1].start_ms == 35000
+    assert result[1].end_ms == 41000
 
 
 def test_merge_filters_standalone_short_segments():
@@ -51,17 +51,17 @@ def test_merge_filters_low_confidence_segments():
     segments = [
         AdSegment(start_ms=0, end_ms=10000, type="preroll", confidence=0.6),  # Low confidence - filtered
         AdSegment(start_ms=20000, end_ms=30000, type="sponsor", confidence=0.74),  # Just below threshold - filtered
-        AdSegment(start_ms=40000, end_ms=50000, type="sponsor", confidence=0.75),  # At threshold - kept
-        AdSegment(start_ms=60000, end_ms=70000, type="midroll", confidence=0.9),  # High confidence - kept
+        AdSegment(start_ms=50000, end_ms=60000, type="sponsor", confidence=0.75),  # At threshold - kept (30s gap)
+        AdSegment(start_ms=80000, end_ms=90000, type="midroll", confidence=0.9),  # High confidence - kept (30s gap)
     ]
     
     result = _merge(segments)
     
     # Only segments with confidence >= 0.75 should remain
     assert len(result) == 2
-    assert result[0].start_ms == 40000
+    assert result[0].start_ms == 50000
     assert result[0].confidence >= 0.75
-    assert result[1].start_ms == 60000
+    assert result[1].start_ms == 80000
     assert result[1].confidence >= 0.75
 
 
@@ -73,10 +73,10 @@ def test_merge_nearby_segments():
         AdSegment(start_ms=69000, end_ms=72000, type="sponsor", confidence=0.85),  # 1s gap
     ]
     
-    # Default gap_ms = 5000 (5 seconds)
+    # Default gap_ms = 15000 (15 seconds)
     result = _merge(segments)
     
-    # All three should merge into one because gaps are < 5s
+    # All three should merge into one because gaps are < 15s
     assert len(result) == 1
     assert result[0].start_ms == 60000
     assert result[0].end_ms == 72000
@@ -87,14 +87,14 @@ def test_merge_distant_segments_stay_separate():
     """Test that segments with large gaps remain separate."""
     segments = [
         AdSegment(start_ms=10000, end_ms=15000, type="sponsor", confidence=0.8),
-        AdSegment(start_ms=25000, end_ms=30000, type="midroll", confidence=0.9),  # 10s gap
+        AdSegment(start_ms=35000, end_ms=40000, type="midroll", confidence=0.9),  # 20s gap (>15s)
     ]
     
     result = _merge(segments)
     
     assert len(result) == 2
     assert result[0].start_ms == 10000
-    assert result[1].start_ms == 25000
+    assert result[1].start_ms == 35000
 
 
 def test_fix_position_labels_preroll_in_middle():
@@ -203,7 +203,8 @@ def test_heuristic_segments_with_duration():
 
 
 def test_merge_preserves_type_priority():
-    """Test that merge prefers specific types over 'unknown'."""
+    """Test that merge prefers more specific types (sponsor > midroll > unknown)."""
+    # Test sponsor beats unknown
     segments = [
         AdSegment(start_ms=10000, end_ms=13000, type="unknown", confidence=0.8),
         AdSegment(start_ms=14000, end_ms=19000, type="sponsor", confidence=0.85),
@@ -213,6 +214,87 @@ def test_merge_preserves_type_priority():
     
     assert len(result) == 1
     assert result[0].type == "sponsor"  # Kept the more specific type
+    
+    # Test sponsor beats midroll
+    segments = [
+        AdSegment(start_ms=10000, end_ms=13000, type="midroll", confidence=0.8),
+        AdSegment(start_ms=14000, end_ms=19000, type="sponsor", confidence=0.85),
+    ]
+    
+    result = _merge(segments)
+    
+    assert len(result) == 1
+    assert result[0].type == "sponsor"  # Sponsor is more specific than midroll
+    
+    # Test crosspromo beats midroll
+    segments = [
+        AdSegment(start_ms=10000, end_ms=13000, type="midroll", confidence=0.8),
+        AdSegment(start_ms=14000, end_ms=19000, type="crosspromo", confidence=0.85),
+    ]
+    
+    result = _merge(segments)
+    
+    assert len(result) == 1
+    assert result[0].type == "crosspromo"  # More specific than generic midroll
+
+
+def test_merge_user_scenario_seven_second_gap():
+    """Test the exact user scenario: midroll + sponsor with ~7s gap should merge."""
+    segments = [
+        # Mid-roll ad 35:30–36:49 (79s duration)
+        AdSegment(start_ms=2130000, end_ms=2209000, type="midroll", confidence=0.9),
+        # Sponsor ad 36:56–37:50 (54s duration), starts 7s after previous ends
+        AdSegment(start_ms=2216000, end_ms=2270000, type="sponsor", confidence=0.9),
+    ]
+    
+    result = _merge(segments)
+    
+    # Should merge into one segment spanning the entire block
+    assert len(result) == 1
+    assert result[0].start_ms == 2130000  # 35:30
+    assert result[0].end_ms == 2270000     # 37:50
+    assert result[0].type == "sponsor"     # Sponsor is more specific than midroll
+    assert result[0].confidence == 0.9
+
+
+def test_merge_gap_threshold_boundaries():
+    """Test segments at the edge of the 15s gap threshold."""
+    # Gap of exactly 14s - should merge (just under threshold)
+    segments = [
+        AdSegment(start_ms=10000, end_ms=15000, type="midroll", confidence=0.8),
+        AdSegment(start_ms=29000, end_ms=35000, type="sponsor", confidence=0.9),  # 14s gap
+    ]
+    
+    result = _merge(segments)
+    assert len(result) == 1  # Merged
+    assert result[0].start_ms == 10000
+    assert result[0].end_ms == 35000
+    
+    # Gap of exactly 16s - should NOT merge (over threshold)
+    segments = [
+        AdSegment(start_ms=10000, end_ms=15000, type="midroll", confidence=0.8),
+        AdSegment(start_ms=31000, end_ms=37000, type="sponsor", confidence=0.9),  # 16s gap
+    ]
+    
+    result = _merge(segments)
+    assert len(result) == 2  # NOT merged
+    assert result[0].start_ms == 10000
+    assert result[1].start_ms == 31000
+
+
+def test_merge_overlapping_segments():
+    """Test that overlapping segments are merged correctly."""
+    segments = [
+        AdSegment(start_ms=10000, end_ms=20000, type="sponsor", confidence=0.8),
+        AdSegment(start_ms=15000, end_ms=25000, type="midroll", confidence=0.9),  # Overlaps
+    ]
+    
+    result = _merge(segments)
+    
+    assert len(result) == 1
+    assert result[0].start_ms == 10000
+    assert result[0].end_ms == 25000  # Takes the max end time
+    assert result[0].type == "sponsor"  # Sponsor beats midroll
 
 
 def test_empty_segments_handling():
