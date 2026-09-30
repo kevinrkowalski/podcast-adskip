@@ -157,11 +157,7 @@ export default function PlayerScreen() {
         : null;
 
   const adSkipHint = useMemo(() => {
-    if (!adDetectionEnabled) return 'Off';
-    if (!autoSkip) return 'Manual';
-    if (analyzeStatus === 'ready') {
-      return segs.length ? `${segs.length} ads` : 'Clean';
-    }
+    // Show current analysis state if in progress or completed
     if (isAnalyzing) {
       if (analyzeEtaLabel) {
         // Compact strip label: "~2m"
@@ -172,8 +168,18 @@ export default function PlayerScreen() {
       }
       return '…';
     }
+    if (analyzeStatus === 'ready') {
+      return segs.length ? `${segs.length} ads` : 'Clean';
+    }
     if (analyzeStatus === 'offline') return 'Offline';
     if (analyzeStatus === 'error') return 'Error';
+    
+    // Show state when not analyzing
+    if (!autoSkip) return 'Manual';
+    if (!adDetectionEnabled) {
+      // Per-show OFF but global ON: Prepare is still available
+      return 'Prep';
+    }
     return 'Prep';
   }, [adDetectionEnabled, autoSkip, analyzeStatus, segs.length, isAnalyzing, analyzeEtaLabel]);
 
