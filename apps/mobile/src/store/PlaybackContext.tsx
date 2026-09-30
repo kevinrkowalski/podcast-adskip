@@ -238,8 +238,39 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     const stillCurrent = () => gen === skipLoadGen.current;
 
     if (!enabled) {
-      // playEpisode already cleared map when switching episodes; do not wipe here.
+      // Detection is off for this show, but still load cached maps (from manual Prepare).
+      // We won't auto-analyze, but we should restore and filter any existing ready map.
       abortLoadKeepCache();
+      
+      // Load skip settings for filtering
+      const settings = await getPodcastSkipSettings({
+        collectionId: ep.collectionId,
+        feedUrl: ep.feedUrl,
+      });
+      if (!stillCurrent()) return null;
+      setSkipSettingsState(settings);
+      
+      // Try to load cached skip map (from previous manual Prepare)
+      const local = await getCachedSkipMap(ep.guid);
+      if (!stillCurrent()) return null;
+      
+      if (local?.status === 'ready') {
+        setSkipMap(local);
+        skipMapRef.current = local;
+        const filtered = applySkipFilter(local.segments, settings);
+        player.setSkipSegments(filtered);
+        setAnalyzeStatus('ready');
+        const warnings = detectAudioMismatch(ep, local);
+        const summary = formatMismatchSummary(warnings);
+        setAudioMismatchWarning(summary);
+        if (summary) {
+          console.warn('[playback] Audio mismatch detected:', summary, warnings);
+        }
+        return local;
+      }
+      
+      // No cached map and detection is off — clear segments and return
+      player.setSkipSegments([]);
       return null;
     }
     if (!(await canUseAdDetection(ep))) {
@@ -248,7 +279,32 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         abortLoadKeepCache();
         return null;
       }
-      // Per-show detection off.
+      // Per-show detection off — same logic as above (load cached, no auto-analyze)
+      const settings = await getPodcastSkipSettings({
+        collectionId: ep.collectionId,
+        feedUrl: ep.feedUrl,
+      });
+      if (!stillCurrent()) return null;
+      setSkipSettingsState(settings);
+      
+      const local = await getCachedSkipMap(ep.guid);
+      if (!stillCurrent()) return null;
+      
+      if (local?.status === 'ready') {
+        setSkipMap(local);
+        skipMapRef.current = local;
+        const filtered = applySkipFilter(local.segments, settings);
+        player.setSkipSegments(filtered);
+        setAnalyzeStatus('ready');
+        const warnings = detectAudioMismatch(ep, local);
+        const summary = formatMismatchSummary(warnings);
+        setAudioMismatchWarning(summary);
+        if (summary) {
+          console.warn('[playback] Audio mismatch detected:', summary, warnings);
+        }
+        return local;
+      }
+      
       clearAdDetection();
       return null;
     }
@@ -364,16 +420,13 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         : false;
       setAdDetectionEnabledState(detectionEnabled);
       player.setAdDetectionEnabled(detectionEnabled);
-      if (!detectionEnabled) player.setSkipSegments([]);
 
-      // Load skip settings early so they're available for filtering
-      if (detectionEnabled) {
-        const settings = await getPodcastSkipSettings({
-          collectionId: ep.collectionId,
-          feedUrl: ep.feedUrl,
-        });
-        setSkipSettingsState(settings);
-      }
+      // Load skip settings early so they're available for filtering (even when detection is off)
+      const settings = await getPodcastSkipSettings({
+        collectionId: ep.collectionId,
+        feedUrl: ep.feedUrl,
+      });
+      setSkipSettingsState(settings);
 
       const saved = await getPlaybackPosition(ep.guid);
       const startPositionMs = saved?.positionMs ?? 0;
