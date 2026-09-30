@@ -39,4 +39,7 @@ async def read_skip_map(
         progress_pct=row.get("progress_pct"),
         eta_seconds=row.get("eta_seconds"),
         started_at=_parse_dt(row.get("started_at")),
+        audio_url=row.get("audio_url"),
+        analyzed_audio_size_bytes=row.get("analyzed_audio_size_bytes"),
+        analyzed_audio_duration_ms=row.get("analyzed_audio_duration_ms"),
     )

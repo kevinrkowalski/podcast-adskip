@@ -48,6 +48,9 @@ class AnalyzeEpisodeResponse(AnalyzeProgressFields):
     model: str | None = None
     analyzed_at: datetime | None = None
     message: str | None = None
+    audio_url: str | None = None
+    analyzed_audio_size_bytes: int | None = None
+    analyzed_audio_duration_ms: int | None = None
 
 
 class SkipMapResponse(AnalyzeProgressFields):
@@ -57,6 +60,9 @@ class SkipMapResponse(AnalyzeProgressFields):
     model: str | None = None
     analyzed_at: datetime | None = None
     message: str | None = None
+    audio_url: str | None = None
+    analyzed_audio_size_bytes: int | None = None
+    analyzed_audio_duration_ms: int | None = None
 
 
 class HealthResponse(BaseModel):

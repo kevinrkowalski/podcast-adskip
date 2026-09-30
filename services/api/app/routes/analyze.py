@@ -54,6 +54,9 @@ async def analyze_episode(
             segments=existing.get("segments") or [],
             model=existing.get("model"),
             analyzed_at=_parse_dt(existing.get("analyzed_at")),
+            audio_url=existing.get("audio_url"),
+            analyzed_audio_size_bytes=existing.get("analyzed_audio_size_bytes"),
+            analyzed_audio_duration_ms=existing.get("analyzed_audio_duration_ms"),
             **_progress_kwargs(existing),
         )
 
@@ -91,6 +94,9 @@ async def analyze_episode(
             model=result.get("model"),
             analyzed_at=_parse_dt(result.get("analyzed_at")),
             message=result.get("message"),
+            audio_url=result.get("audio_url"),
+            analyzed_audio_size_bytes=result.get("analyzed_audio_size_bytes"),
+            analyzed_audio_duration_ms=result.get("analyzed_audio_duration_ms"),
             **_progress_kwargs(result),
         )
 

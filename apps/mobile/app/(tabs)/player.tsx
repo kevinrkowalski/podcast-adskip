@@ -110,6 +110,7 @@ export default function PlayerScreen() {
     adDetectionEnabled,
     skipMap,
     analyzeStatus,
+    audioMismatchWarning,
     togglePlay,
     seek,
     setAutoSkip,
@@ -381,6 +382,21 @@ export default function PlayerScreen() {
                   ) : (
                     <View style={[styles.analyzeBarFill, styles.analyzeBarIndeterminate]} />
                   )}
+                </View>
+              </View>
+            ) : null}
+
+            {audioMismatchWarning && segs.length > 0 ? (
+              <View style={styles.mismatchWarning}>
+                <View style={styles.mismatchWarningRow}>
+                  <SymbolView
+                    name={{ ios: 'exclamationmark.triangle', android: 'warning', web: 'warning' }}
+                    tintColor={theme.accentWarn}
+                    size={16}
+                  />
+                  <Text style={styles.mismatchWarningText} numberOfLines={2}>
+                    {audioMismatchWarning}
+                  </Text>
                 </View>
               </View>
             ) : null}
@@ -828,6 +844,28 @@ const styles = StyleSheet.create({
   analyzeBarIndeterminate: {
     width: '40%',
     opacity: 0.55,
+  },
+  mismatchWarning: {
+    width: '100%',
+    marginBottom: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(255, 193, 7, 0.12)',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 193, 7, 0.3)',
+  },
+  mismatchWarningRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  mismatchWarningText: {
+    flex: 1,
+    color: theme.accentWarn,
+    fontSize: 12,
+    fontWeight: '500',
+    lineHeight: 17,
   },
   sheetBackdrop: {
     flex: 1,

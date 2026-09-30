@@ -21,6 +21,7 @@ import {
   setPodcastAdDetectionEnabled,
   type AdDetectionTarget,
 } from '@/src/db/storage';
+import { detectAudioMismatch, formatMismatchSummary } from '@/src/player/audioValidation';
 
 type Ctx = {
   episode: Episode | null;
@@ -32,6 +33,7 @@ type Ctx = {
   adDetectionEnabled: boolean;
   skipMap: SkipMap | null;
   analyzeStatus: string | null;
+  audioMismatchWarning: string | null;
   playEpisode: (ep: Episode) => Promise<void>;
   togglePlay: () => Promise<void>;
   seek: (ms: number) => Promise<void>;
@@ -60,6 +62,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const [adDetectionEnabled, setAdDetectionEnabledState] = useState(true);
   const [skipMap, setSkipMap] = useState<SkipMap | null>(null);
   const [analyzeStatus, setAnalyzeStatus] = useState<string | null>(null);
+  const [audioMismatchWarning, setAudioMismatchWarning] = useState<string | null>(null);
 
   const episodeRef = useRef<Episode | null>(null);
   const positionRef = useRef(0);
@@ -209,6 +212,12 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       skipMapRef.current = local;
       player.setSkipSegments(local.segments);
       setAnalyzeStatus('ready');
+      const warnings = detectAudioMismatch(ep, local);
+      const summary = formatMismatchSummary(warnings);
+      setAudioMismatchWarning(summary);
+      if (summary) {
+        console.warn('[playback] Audio mismatch detected:', summary, warnings);
+      }
       return local;
     }
     try {
@@ -230,9 +239,16 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         if (!stillCurrent()) return null;
         player.setSkipSegments(remote.segments);
         setAnalyzeStatus('ready');
+        const warnings = detectAudioMismatch(ep, remote);
+        const summary = formatMismatchSummary(warnings);
+        setAudioMismatchWarning(summary);
+        if (summary) {
+          console.warn('[playback] Audio mismatch detected:', summary, warnings);
+        }
       } else {
         setAnalyzeStatus(remote.status);
         player.setSkipSegments([]);
+        setAudioMismatchWarning(null);
       }
       return remote;
     } catch {
@@ -253,6 +269,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       setSkipMap(null);
       skipMapRef.current = null;
       setAnalyzeStatus(null);
+      setAudioMismatchWarning(null);
       skipLoadGen.current += 1;
 
       // Re-sync last-used Ad-skip preference before play (covers cold start
@@ -372,6 +389,12 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         setSkipMap(cached);
         player.setSkipSegments(cached.segments ?? []);
         setAnalyzeStatus('ready');
+        const warnings = detectAudioMismatch(current, cached);
+        const summary = formatMismatchSummary(warnings);
+        setAudioMismatchWarning(summary);
+        if (summary) {
+          console.warn('[playback] Audio mismatch detected:', summary, warnings);
+        }
         return;
       }
 
@@ -406,6 +429,12 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
             await cacheSkipMap(current.guid, queued);
             if (gen !== skipLoadGen.current) return;
             player.setSkipSegments(queued.segments);
+            const warnings = detectAudioMismatch(current, queued);
+            const summary = formatMismatchSummary(warnings);
+            setAudioMismatchWarning(summary);
+            if (summary) {
+              console.warn('[playback] Audio mismatch detected:', summary, warnings);
+            }
           }
         } catch {
           if (gen !== skipLoadGen.current) return;
@@ -464,13 +493,19 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           force,
           sync: false,
         });
-        setSkipMap(result);
-        skipMapRef.current = result;
-        setAnalyzeStatus(result.status);
-        if (result.status === 'ready') {
-          await cacheSkipMap(episode.guid, result);
-          player.setSkipSegments(result.segments);
-        }
+          setSkipMap(result);
+          skipMapRef.current = result;
+          setAnalyzeStatus(result.status);
+          if (result.status === 'ready') {
+            await cacheSkipMap(episode.guid, result);
+            player.setSkipSegments(result.segments);
+            const warnings = detectAudioMismatch(episode, result);
+            const summary = formatMismatchSummary(warnings);
+            setAudioMismatchWarning(summary);
+            if (summary) {
+              console.warn('[playback] Audio mismatch detected:', summary, warnings);
+            }
+          }
         // queued/pending: shared poll effect below keeps ETA/stage fresh.
       } catch {
         setAnalyzeStatus('error');
@@ -506,6 +541,15 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           if (map.status === 'ready') {
             await cacheSkipMap(guid, map);
             player.setSkipSegments(map.segments);
+            const ep = episodeRef.current;
+            if (ep) {
+              const warnings = detectAudioMismatch(ep, map);
+              const summary = formatMismatchSummary(warnings);
+              setAudioMismatchWarning(summary);
+              if (summary) {
+                console.warn('[playback] Audio mismatch detected:', summary, warnings);
+              }
+            }
             return;
           }
           if (map.status === 'error' || map.status === 'missing') return;
@@ -532,6 +576,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       adDetectionEnabled,
       skipMap,
       analyzeStatus,
+      audioMismatchWarning,
       playEpisode,
       togglePlay,
       seek,
@@ -550,6 +595,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       adDetectionEnabled,
       skipMap,
       analyzeStatus,
+      audioMismatchWarning,
       playEpisode,
       togglePlay,
       seek,

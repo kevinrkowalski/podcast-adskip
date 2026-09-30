@@ -70,6 +70,8 @@ async def run_analyze(
     )
 
     audio_path: Path | None = None
+    audio_size_bytes: int | None = None
+    audio_duration_ms: int | None = None
     try:
         if settings.has_real_stt:
             backend = "OpenRouter" if settings.openrouter_api_key else "Groq(legacy)"
@@ -83,6 +85,7 @@ async def run_analyze(
                 duration_ms=duration_ms,
             )
             audio_path = await download_audio(audio_url, settings.max_audio_mb)
+            audio_size_bytes = audio_path.stat().st_size
 
             await _stage(
                 episode_guid,
@@ -90,6 +93,8 @@ async def run_analyze(
                 duration_ms=duration_ms,
             )
             transcript = await transcribe_audio(audio_path, settings)
+            if transcript.get("duration"):
+                audio_duration_ms = int(transcript["duration"] * 1000)
             model_parts = [settings.whisper_model]
 
             await _stage(
@@ -128,12 +133,16 @@ async def run_analyze(
             audio_url=audio_url,
             feed_url=feed_url,
             title=title,
+            analyzed_audio_size_bytes=audio_size_bytes,
+            analyzed_audio_duration_ms=audio_duration_ms,
         )
         logger.info(
-            "Analyze ready guid=%s segments=%s model=%s",
+            "Analyze ready guid=%s segments=%s model=%s size=%s duration_ms=%s",
             episode_guid,
             len(segments),
             model,
+            audio_size_bytes,
+            audio_duration_ms,
         )
         return result
     except Exception as exc:  # noqa: BLE001 — surface to cache + API
