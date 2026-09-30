@@ -37,6 +37,34 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - Health: http://localhost:8000/v1/health  
 - Docs: http://localhost:8000/docs  
 
+### Deployment & Reverse Proxy Notes
+
+**Client-side audio upload**: The API accepts multipart audio file uploads (typically 30-100+ MB per episode). If deploying behind a reverse proxy, ensure it allows large request bodies:
+
+**Caddy** (add to your Caddyfile):
+```
+your-domain.com {
+    request_body {
+        max_size 200MB  # Allow podcast uploads
+    }
+    reverse_proxy localhost:8000
+}
+```
+
+**Nginx** (add to your nginx.conf):
+```
+http {
+    client_max_body_size 200M;  # Allow podcast uploads
+}
+```
+
+**Apache** (add to your .htaccess or httpd.conf):
+```
+LimitRequestBody 209715200  # 200MB in bytes
+```
+
+Without these settings, uploads >1MB will typically fail with `413 Request Entity Too Large`.  
+
 ### Env (`services/api/.env`)
 
 | Variable | Purpose |

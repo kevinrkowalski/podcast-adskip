@@ -14,11 +14,22 @@ This implementation ensures that skip maps are built from **the exact same audio
 5. Skip map timestamps don't match what user hears ❌
 
 ### After (Client-side upload)
-1. Client downloads audio file locally (for playback)
+1. Client downloads audio file locally (for playback AND analysis)
 2. Client uploads **that same file** to API
 3. API analyzes **the exact file the client has**
-4. Client plays from local cache
+4. Client plays from **local cached file** (not remote URL)
 5. Skip map timestamps perfectly match playback ✅
+
+## Critical: Playback from Cache
+
+**Key fix**: After downloading audio for analysis, playback MUST use that same cached file, not stream from the remote URL again. Otherwise, we could still get two different DAI variants (one for analyze, one for play).
+
+**Implementation**:
+- `downloadAudioForAnalysis()` caches file to `FileSystem.cacheDirectory/podcast-audio/{guid}.mp3`
+- `playEpisode()` checks `getCachedAudioPath()` before playing
+- `trackPlayer.loadAndPlay()` accepts optional `localFilePath` parameter
+- If cached file exists, player uses it; otherwise streams from URL
+- Log message confirms: `[player] Loading from cached file: {path}`
 
 ## Implementation Details
 
@@ -68,9 +79,11 @@ This implementation ensures that skip maps are built from **the exact same audio
 - Status labels: "Downloading audio" / "Uploading for analysis"
 - Progress bar reflects download+upload percentage
 
-**New dependency**: `expo-file-system` (~57.0.7)
-- Used for local file download and cache management
-- Already compatible with Expo SDK 57
+**Updated**: `src/player/trackPlayer.ts`
+- `LoadPlayOptions` now includes optional `localFilePath`
+- `loadAndPlay()` prefers local file over remote URL
+- Logs whether playing from cache or streaming
+- Ensures analyzed audio = played audio
 
 ## File Upload Flow
 
@@ -112,6 +125,36 @@ This implementation ensures that skip maps are built from **the exact same audio
        5. Play from local cache
        6. Timestamps match perfectly! ✓
 ```
+
+## Deployment Notes
+
+### Reverse Proxy Upload Limits
+
+If deploying the API behind a reverse proxy (Caddy, Nginx, Apache), you MUST configure it to allow large request bodies. Podcast audio files are typically 30-100+ MB.
+
+**Caddy** (add to Caddyfile):
+```
+your-domain.com {
+    request_body {
+        max_size 200MB
+    }
+    reverse_proxy localhost:8000
+}
+```
+
+**Nginx** (add to nginx.conf):
+```
+http {
+    client_max_body_size 200M;
+}
+```
+
+**Apache** (add to .htaccess or httpd.conf):
+```
+LimitRequestBody 209715200  # 200MB
+```
+
+Without these settings, uploads will fail with `413 Request Entity Too Large` for files >1MB (typical proxy default).
 
 ## Testing
 

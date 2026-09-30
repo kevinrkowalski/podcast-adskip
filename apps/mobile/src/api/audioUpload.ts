@@ -199,6 +199,22 @@ export async function uploadAudioForAnalysis(
 }
 
 /**
+ * Check if an episode has a cached audio file.
+ * Returns the local file path if cached, null otherwise.
+ */
+export async function getCachedAudioPath(
+  episodeGuid: string,
+  audioUrl: string,
+): Promise<string | null> {
+  const localPath = getCachePath(episodeGuid, audioUrl);
+  const info = await FileSystem.getInfoAsync(localPath);
+  if (info.exists) {
+    return localPath;
+  }
+  return null;
+}
+
+/**
  * Clean up cached audio files.
  */
 export async function clearAudioCache(): Promise<void> {

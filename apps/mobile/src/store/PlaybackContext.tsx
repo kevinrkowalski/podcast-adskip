@@ -25,6 +25,7 @@ import { detectAudioMismatch, formatMismatchSummary } from '@/src/player/audioVa
 import {
   downloadAudioForAnalysis,
   uploadAudioForAnalysis,
+  getCachedAudioPath,
   type DownloadProgress,
   type UploadProgress,
 } from '@/src/api/audioUpload';
@@ -304,7 +305,17 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       const saved = await getPlaybackPosition(ep.guid);
       const startPositionMs = saved?.positionMs ?? 0;
 
-      await player.loadAndPlay(ep, { startPositionMs });
+      // Check if we have a locally cached audio file (from previous Prepare).
+      // If so, play from cache to ensure we play the SAME audio we analyzed.
+      let localFilePath: string | null = null;
+      if (ep.enclosureUrl) {
+        localFilePath = await getCachedAudioPath(ep.guid, ep.enclosureUrl);
+        if (localFilePath) {
+          console.log('[playback] Using cached audio file for playback:', localFilePath);
+        }
+      }
+
+      await player.loadAndPlay(ep, { startPositionMs, localFilePath: localFilePath || undefined });
       lastSavedAt.current = Date.now();
       lastSavedPos.current = startPositionMs;
       await loadSkipMap(ep, detectionEnabled);
