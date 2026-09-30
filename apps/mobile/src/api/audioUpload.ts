@@ -206,12 +206,17 @@ export async function getCachedAudioPath(
   episodeGuid: string,
   audioUrl: string,
 ): Promise<string | null> {
-  const localPath = getCachePath(episodeGuid, audioUrl);
-  const info = await FileSystem.getInfoAsync(localPath);
-  if (info.exists) {
-    return localPath;
+  try {
+    const localPath = getCachePath(episodeGuid, audioUrl);
+    const info = await FileSystem.getInfoAsync(localPath);
+    if (info.exists) {
+      return localPath;
+    }
+    return null;
+  } catch (err) {
+    console.warn('[audio-cache] Failed to check cached audio:', err);
+    return null;
   }
-  return null;
 }
 
 /**
