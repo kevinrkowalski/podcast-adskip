@@ -88,6 +88,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const skipMapRef = useRef<SkipMap | null>(null);
   /** Bumped on auto-skip toggle to invalidate in-flight loadSkipMap work. */
   const skipLoadGen = useRef(0);
+  /** True while requestAnalyze (manual Prepare) is in flight; prevents loadSkipMap/clearAdDetection from clobbering. */
+  const manualPrepareInFlight = useRef(false);
 
   const persistPosition = useCallback(async (force = false) => {
     const ep = episodeRef.current;
@@ -154,6 +156,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   }, [persistPosition]);
 
   const clearAdDetection = useCallback((status = 'disabled') => {
+    // Never clear while manual Prepare is running — Prepare must show progress and complete.
+    if (manualPrepareInFlight.current) {
+      console.log('[playback] clearAdDetection blocked: manual prepare in flight');
+      return;
+    }
     setAdDetectionEnabledState(false);
     setSkipMap(null);
     skipMapRef.current = null;
@@ -184,6 +191,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
    * permanently break the segment sheet until a full re-analyze.
    */
   const abortLoadKeepCache = useCallback(() => {
+    // Never clear while manual Prepare is running — Prepare must show progress and complete.
+    if (manualPrepareInFlight.current) {
+      console.log('[playback] abortLoadKeepCache blocked: manual prepare in flight');
+      return;
+    }
     setAdDetectionEnabledState(false);
     player.setAdDetectionEnabled(false);
     // Leave skipMap / analyzeStatus / player segments intact.
@@ -531,6 +543,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       
       console.log('[playback] requestAnalyze: starting download/upload flow for', episode.guid);
       
+      // Set flag to prevent loadSkipMap / clearAdDetection from clobbering this manual prepare.
+      manualPrepareInFlight.current = true;
+      
       // Immediately update UI state so user sees feedback
       setAdDetectionEnabledState(true);
       player.setAdDetectionEnabled(true);
@@ -608,12 +623,19 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
             console.warn('[playback] Audio mismatch detected:', summary, warnings);
           }
         }
+        
+        // Keep adDetectionEnabled true even if per-show is OFF — manual Prepare overrides.
+        // This allows the segment sheet to open and auto-skip toggle to work on Prepare results.
+        console.log('[playback] requestAnalyze: complete, keeping adDetectionEnabled=true');
         // queued/pending: shared poll effect below keeps ETA/stage fresh.
       } catch (err: any) {
         console.error('[playback] Analyze (upload) failed:', err);
         setAnalyzeStatus('error');
         setUploadProgress(null);
         setAudioMismatchWarning(null);
+      } finally {
+        // Clear flag so auto-analyze paths can run again.
+        manualPrepareInFlight.current = false;
       }
     },
     [canCallAdDetectionApi, episode],
