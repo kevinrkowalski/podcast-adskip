@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.db import init_db
-from app.routes import analyze, health, skip_map
+from app.routes import analyze, health, skip_map, upload
 
 logging.basicConfig(level=logging.INFO)
 
@@ -41,6 +41,7 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(analyze.router)
+app.include_router(upload.router)
 app.include_router(skip_map.router)
 
 

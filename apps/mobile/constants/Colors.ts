@@ -53,6 +53,7 @@ export const theme = {
   border: '#2A2A33',
   accent: '#F43E5C',
   accentSoft: '#FF6B81',
+  accentWarn: '#FFC107',
   success: '#30D158',
   danger: '#FF453A',
   adMark: 'rgba(244, 62, 92, 0.55)',

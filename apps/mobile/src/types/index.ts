@@ -43,6 +43,12 @@ export interface SkipMap {
   /** Estimated seconds remaining (honest, from typical stage durations). */
   eta_seconds?: number | null;
   started_at?: string | null;
+  /** Audio URL that was analyzed (for mismatch detection). */
+  audio_url?: string | null;
+  /** Size of analyzed audio file in bytes. */
+  analyzed_audio_size_bytes?: number | null;
+  /** Duration of analyzed audio in milliseconds. */
+  analyzed_audio_duration_ms?: number | null;
 }
 
 export interface PodcastSearchResult {

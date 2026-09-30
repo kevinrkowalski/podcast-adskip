@@ -31,6 +31,8 @@ _MIGRATE_COLS = (
     ("started_at", "TEXT"),
     ("stage_updated_at", "TEXT"),
     ("duration_ms", "INTEGER"),
+    ("analyzed_audio_size_bytes", "INTEGER"),
+    ("analyzed_audio_duration_ms", "INTEGER"),
 )
 
 
@@ -67,6 +69,8 @@ def _row_to_dict(row: aiosqlite.Row) -> dict:
     started_at = row["started_at"] if "started_at" in keys else None
     stage_updated_at = row["stage_updated_at"] if "stage_updated_at" in keys else None
     duration_ms = row["duration_ms"] if "duration_ms" in keys else None
+    analyzed_audio_size_bytes = row["analyzed_audio_size_bytes"] if "analyzed_audio_size_bytes" in keys else None
+    analyzed_audio_duration_ms = row["analyzed_audio_duration_ms"] if "analyzed_audio_duration_ms" in keys else None
     if status == "pending" and not stage:
         stage = "queued"
     progress = estimate_progress(
@@ -92,6 +96,8 @@ def _row_to_dict(row: aiosqlite.Row) -> dict:
         "eta_seconds": progress.get("eta_seconds"),
         "started_at": started_at or (row["created_at"] if status == "pending" else None),
         "duration_ms": duration_ms,
+        "analyzed_audio_size_bytes": analyzed_audio_size_bytes,
+        "analyzed_audio_duration_ms": analyzed_audio_duration_ms,
     }
 
 
@@ -192,6 +198,8 @@ async def save_skip_map(
     audio_url: str | None = None,
     feed_url: str | None = None,
     title: str | None = None,
+    analyzed_audio_size_bytes: int | None = None,
+    analyzed_audio_duration_ms: int | None = None,
 ) -> dict:
     now = _now()
     payload = json.dumps([s.model_dump() for s in segments])
@@ -201,8 +209,10 @@ async def save_skip_map(
             """
             INSERT INTO skip_maps (
               episode_guid, status, segments_json, model, audio_url, feed_url, title,
-              analyzed_at, error, stage, stage_updated_at, created_at, updated_at
-            ) VALUES (?, 'ready', ?, ?, ?, ?, ?, ?, NULL, 'ready', ?, ?, ?)
+              analyzed_at, error, stage, stage_updated_at, 
+              analyzed_audio_size_bytes, analyzed_audio_duration_ms,
+              created_at, updated_at
+            ) VALUES (?, 'ready', ?, ?, ?, ?, ?, ?, NULL, 'ready', ?, ?, ?, ?, ?)
             ON CONFLICT(episode_guid) DO UPDATE SET
               status = 'ready',
               segments_json = excluded.segments_json,
@@ -214,9 +224,12 @@ async def save_skip_map(
               error = NULL,
               stage = 'ready',
               stage_updated_at = excluded.stage_updated_at,
+              analyzed_audio_size_bytes = COALESCE(excluded.analyzed_audio_size_bytes, skip_maps.analyzed_audio_size_bytes),
+              analyzed_audio_duration_ms = COALESCE(excluded.analyzed_audio_duration_ms, skip_maps.analyzed_audio_duration_ms),
               updated_at = excluded.updated_at
             """,
-            (episode_guid, payload, model, audio_url, feed_url, title, now, now, now, now),
+            (episode_guid, payload, model, audio_url, feed_url, title, now, now, 
+             analyzed_audio_size_bytes, analyzed_audio_duration_ms, now, now),
         )
         await db.commit()
     progress = estimate_progress(
@@ -234,4 +247,6 @@ async def save_skip_map(
         "message": None,
         **progress,
         "started_at": None,
+        "analyzed_audio_size_bytes": analyzed_audio_size_bytes,
+        "analyzed_audio_duration_ms": analyzed_audio_duration_ms,
     }

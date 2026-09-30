@@ -301,6 +301,8 @@ export function getBackend(): Backend {
 export type LoadPlayOptions = {
   /** Resume from a previously persisted position (ms). */
   startPositionMs?: number;
+  /** Use a local file path instead of streaming from remote URL. */
+  localFilePath?: string;
 };
 
 export async function loadAndPlay(
@@ -318,7 +320,7 @@ export async function loadAndPlay(
   status.isPlaying = false;
   emit();
 
-  const url = episode.enclosureUrl;
+  const url = opts?.localFilePath || episode.enclosureUrl;
   if (!url) {
     releasePlayer();
     backend = 'stub';
@@ -329,6 +331,13 @@ export async function loadAndPlay(
     emit();
     return;
   }
+
+  const isLocalFile = opts?.localFilePath != null;
+  console.log(
+    isLocalFile
+      ? `[player] Loading from cached file: ${opts.localFilePath}`
+      : `[player] Streaming from URL: ${url}`,
+  );
 
   const mod = tryRequireExpoAudio();
   if (mod && typeof mod.createAudioPlayer === 'function') {

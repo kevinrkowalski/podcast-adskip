@@ -110,6 +110,8 @@ export default function PlayerScreen() {
     adDetectionEnabled,
     skipMap,
     analyzeStatus,
+    audioMismatchWarning,
+    uploadProgress,
     togglePlay,
     seek,
     setAutoSkip,
@@ -133,7 +135,8 @@ export default function PlayerScreen() {
   };
 
   const isAnalyzing =
-    analyzeStatus === 'queued' || analyzeStatus === 'pending';
+    analyzeStatus === 'queued' || analyzeStatus === 'pending' || 
+    analyzeStatus === 'downloading' || analyzeStatus === 'uploading';
 
   const analyzeEtaLabel = useMemo(
     () => formatEtaSeconds(skipMap?.eta_seconds),
@@ -142,12 +145,16 @@ export default function PlayerScreen() {
 
   const analyzeStageLabel =
     skipMap?.stage_label?.trim() ||
+    (analyzeStatus === 'downloading' ? 'Downloading audio' : null) ||
+    (analyzeStatus === 'uploading' ? 'Uploading for analysis' : null) ||
     (isAnalyzing ? 'Analyzing' : null);
 
   const analyzeProgressPct =
-    typeof skipMap?.progress_pct === 'number' && Number.isFinite(skipMap.progress_pct)
-      ? Math.max(0, Math.min(100, skipMap.progress_pct))
-      : null;
+    uploadProgress
+      ? uploadProgress.downloaded + uploadProgress.uploaded
+      : typeof skipMap?.progress_pct === 'number' && Number.isFinite(skipMap.progress_pct)
+        ? Math.max(0, Math.min(100, skipMap.progress_pct))
+        : null;
 
   const adSkipHint = useMemo(() => {
     if (!adDetectionEnabled) return 'Off';
@@ -381,6 +388,21 @@ export default function PlayerScreen() {
                   ) : (
                     <View style={[styles.analyzeBarFill, styles.analyzeBarIndeterminate]} />
                   )}
+                </View>
+              </View>
+            ) : null}
+
+            {audioMismatchWarning && segs.length > 0 ? (
+              <View style={styles.mismatchWarning}>
+                <View style={styles.mismatchWarningRow}>
+                  <SymbolView
+                    name={{ ios: 'exclamationmark.triangle', android: 'warning', web: 'warning' }}
+                    tintColor={theme.accentWarn}
+                    size={16}
+                  />
+                  <Text style={styles.mismatchWarningText} numberOfLines={2}>
+                    {audioMismatchWarning}
+                  </Text>
                 </View>
               </View>
             ) : null}
@@ -828,6 +850,28 @@ const styles = StyleSheet.create({
   analyzeBarIndeterminate: {
     width: '40%',
     opacity: 0.55,
+  },
+  mismatchWarning: {
+    width: '100%',
+    marginBottom: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(255, 193, 7, 0.12)',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 193, 7, 0.3)',
+  },
+  mismatchWarningRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  mismatchWarningText: {
+    flex: 1,
+    color: theme.accentWarn,
+    fontSize: 12,
+    fontWeight: '500',
+    lineHeight: 17,
   },
   sheetBackdrop: {
     flex: 1,
