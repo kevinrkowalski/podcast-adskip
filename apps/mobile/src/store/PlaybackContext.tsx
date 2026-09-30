@@ -22,6 +22,13 @@ import {
   type AdDetectionTarget,
 } from '@/src/db/storage';
 import { detectAudioMismatch, formatMismatchSummary } from '@/src/player/audioValidation';
+import {
+  downloadAudioForAnalysis,
+  uploadAudioForAnalysis,
+  type DownloadProgress,
+  type UploadProgress,
+} from '@/src/api/audioUpload';
+import { getApiBaseUrl, getResolvedAppKey } from '@/src/api/backend';
 
 type Ctx = {
   episode: Episode | null;
@@ -34,6 +41,7 @@ type Ctx = {
   skipMap: SkipMap | null;
   analyzeStatus: string | null;
   audioMismatchWarning: string | null;
+  uploadProgress: { downloaded: number; uploaded: number; total: number } | null;
   playEpisode: (ep: Episode) => Promise<void>;
   togglePlay: () => Promise<void>;
   seek: (ms: number) => Promise<void>;
@@ -63,6 +71,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const [skipMap, setSkipMap] = useState<SkipMap | null>(null);
   const [analyzeStatus, setAnalyzeStatus] = useState<string | null>(null);
   const [audioMismatchWarning, setAudioMismatchWarning] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{
+    downloaded: number;
+    uploaded: number;
+    total: number;
+  } | null>(null);
 
   const episodeRef = useRef<Episode | null>(null);
   const positionRef = useRef(0);
@@ -470,6 +483,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   // Explicit Prepare / force-analyze: gated by global Settings only.
   // Per-show "Ad detection for this show" OFF still allows user-initiated analyze;
   // that flag only blocks auto-analyze on play (see playEpisode / setAutoSkip).
+  // 
+  // Uses client-side download + upload to ensure analyzed audio matches playback.
   const requestAnalyze = useCallback(
     async (force = false) => {
       if (!episode?.enclosureUrl) return;
@@ -477,38 +492,80 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         // Global kill-switch: no ad-detection API calls.
         return;
       }
+      
       setAdDetectionEnabledState(true);
       player.setAdDetectionEnabled(true);
-      setAnalyzeStatus('queued');
+      setAnalyzeStatus('downloading');
+      setUploadProgress({ downloaded: 0, uploaded: 0, total: 100 });
+      
       try {
         if (!(await canCallAdDetectionApi())) {
           return;
         }
-        const result = await analyzeEpisode({
-          episode_guid: episode.guid,
-          audio_url: episode.enclosureUrl,
-          title: episode.title,
-          duration_ms: episode.durationMs,
-          feed_url: episode.feedUrl,
-          force,
-          sync: false,
-        });
-          setSkipMap(result);
-          skipMapRef.current = result;
-          setAnalyzeStatus(result.status);
-          if (result.status === 'ready') {
-            await cacheSkipMap(episode.guid, result);
-            player.setSkipSegments(result.segments);
-            const warnings = detectAudioMismatch(episode, result);
-            const summary = formatMismatchSummary(warnings);
-            setAudioMismatchWarning(summary);
-            if (summary) {
-              console.warn('[playback] Audio mismatch detected:', summary, warnings);
-            }
+        
+        // Download audio locally
+        const localPath = await downloadAudioForAnalysis(
+          episode.guid,
+          episode.enclosureUrl,
+          (progress: DownloadProgress) => {
+            const pct = progress.totalBytesExpectedToWrite > 0
+              ? (progress.totalBytesWritten / progress.totalBytesExpectedToWrite) * 50 // 0-50% for download
+              : 0;
+            setUploadProgress({
+              downloaded: Math.round(pct),
+              uploaded: 0,
+              total: progress.totalBytesExpectedToWrite,
+            });
+          },
+        );
+        
+        setAnalyzeStatus('uploading');
+        
+        // Upload to API for analysis
+        const result = await uploadAudioForAnalysis(
+          getApiBaseUrl(),
+          getResolvedAppKey(),
+          localPath,
+          {
+            episodeGuid: episode.guid,
+            audioUrl: episode.enclosureUrl,
+            title: episode.title,
+            durationMs: episode.durationMs,
+            feedUrl: episode.feedUrl,
+            force,
+          },
+          (progress: UploadProgress) => {
+            const pct = progress.totalBytesExpectedToSend > 0
+              ? 50 + (progress.totalBytesSent / progress.totalBytesExpectedToSend) * 50 // 50-100% for upload
+              : 50;
+            setUploadProgress((prev) => ({
+              downloaded: 50,
+              uploaded: Math.round(pct - 50),
+              total: prev?.total || progress.totalBytesExpectedToSend,
+            }));
+          },
+        );
+        
+        setUploadProgress(null);
+        setSkipMap(result);
+        skipMapRef.current = result;
+        setAnalyzeStatus(result.status);
+        
+        if (result.status === 'ready') {
+          await cacheSkipMap(episode.guid, result);
+          player.setSkipSegments(result.segments);
+          const warnings = detectAudioMismatch(episode, result);
+          const summary = formatMismatchSummary(warnings);
+          setAudioMismatchWarning(summary);
+          if (summary) {
+            console.warn('[playback] Audio mismatch detected:', summary, warnings);
           }
+        }
         // queued/pending: shared poll effect below keeps ETA/stage fresh.
-      } catch {
+      } catch (err: any) {
+        console.error('[playback] Analyze (upload) failed:', err);
         setAnalyzeStatus('error');
+        setUploadProgress(null);
       }
     },
     [canCallAdDetectionApi, episode],
@@ -577,6 +634,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       skipMap,
       analyzeStatus,
       audioMismatchWarning,
+      uploadProgress,
       playEpisode,
       togglePlay,
       seek,
@@ -596,6 +654,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       skipMap,
       analyzeStatus,
       audioMismatchWarning,
+      uploadProgress,
       playEpisode,
       togglePlay,
       seek,

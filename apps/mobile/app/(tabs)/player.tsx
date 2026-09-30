@@ -111,6 +111,7 @@ export default function PlayerScreen() {
     skipMap,
     analyzeStatus,
     audioMismatchWarning,
+    uploadProgress,
     togglePlay,
     seek,
     setAutoSkip,
@@ -134,7 +135,8 @@ export default function PlayerScreen() {
   };
 
   const isAnalyzing =
-    analyzeStatus === 'queued' || analyzeStatus === 'pending';
+    analyzeStatus === 'queued' || analyzeStatus === 'pending' || 
+    analyzeStatus === 'downloading' || analyzeStatus === 'uploading';
 
   const analyzeEtaLabel = useMemo(
     () => formatEtaSeconds(skipMap?.eta_seconds),
@@ -143,12 +145,16 @@ export default function PlayerScreen() {
 
   const analyzeStageLabel =
     skipMap?.stage_label?.trim() ||
+    (analyzeStatus === 'downloading' ? 'Downloading audio' : null) ||
+    (analyzeStatus === 'uploading' ? 'Uploading for analysis' : null) ||
     (isAnalyzing ? 'Analyzing' : null);
 
   const analyzeProgressPct =
-    typeof skipMap?.progress_pct === 'number' && Number.isFinite(skipMap.progress_pct)
-      ? Math.max(0, Math.min(100, skipMap.progress_pct))
-      : null;
+    uploadProgress
+      ? uploadProgress.downloaded + uploadProgress.uploaded
+      : typeof skipMap?.progress_pct === 'number' && Number.isFinite(skipMap.progress_pct)
+        ? Math.max(0, Math.min(100, skipMap.progress_pct))
+        : null;
 
   const adSkipHint = useMemo(() => {
     if (!adDetectionEnabled) return 'Off';
