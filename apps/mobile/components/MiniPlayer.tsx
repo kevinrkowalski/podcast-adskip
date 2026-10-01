@@ -5,7 +5,7 @@ import { theme } from '@/constants/Colors';
 
 /**
  * Compact now-playing bar above the tab bar (Pocket Casts style).
- * Hidden on the full Player tab so it does not stack.
+ * Hidden on the full Player screen so it does not stack.
  */
 export function MiniPlayer() {
   const { episode, isPlaying, positionMs, durationMs, togglePlay, seek } = usePlayback();
@@ -15,8 +15,9 @@ export function MiniPlayer() {
   const segments = useSegments();
 
   if (!episode) return null;
-  const onPlayerTab = segments.some((s) => s === 'player');
-  if (onPlayerTab) return null;
+  // Hide on full player whether reached via tab redirect or root stack.
+  const onPlayerScreen = segments.some((s) => s === 'player');
+  if (onPlayerScreen) return null;
 
   const progress = durationMs > 0 ? Math.min(1, positionMs / durationMs) : 0;
 
@@ -27,7 +28,7 @@ export function MiniPlayer() {
         <Pressable
           style={styles.openArea}
           onPress={() => {
-            if (navigationReady) router.push('/(tabs)/player');
+            if (navigationReady) router.push('/player');
           }}>
           {!!episode.artworkUrl ? (
             <Image source={{ uri: episode.artworkUrl }} style={styles.art} />

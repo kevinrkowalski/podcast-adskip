@@ -253,8 +253,10 @@ export default function PodcastDetailScreen() {
   };
 
   const onPlay = async (ep: Episode) => {
-    // Navigate immediately for responsive feedback
-    router.push('/(tabs)/player');
+    // Navigate immediately for responsive feedback.
+    // Use root /player (not /(tabs)/player) so the show listings stay on the
+    // stack — Back returns here instead of jumping to Library.
+    router.push('/player');
     // Load episode in background
     try {
       await playEpisode(ep);

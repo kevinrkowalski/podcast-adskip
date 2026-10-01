@@ -3,18 +3,37 @@ import { cacheEpisodes, getCachedEpisodes } from '@/src/db/storage';
 
 /** Minimal RSS 2.0 / iTunes enclosure parser (no native XML dep). */
 
+
+/** Decode XML/HTML entities commonly present in RSS attribute values and text. */
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, n) => {
+      const code = Number(n);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : _;
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => {
+      const code = parseInt(h, 16);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : _;
+    });
+}
+
 function textBetween(xml: string, tag: string): string | undefined {
   const cdata = new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>`, 'i');
   const mC = xml.match(cdata);
-  if (mC) return mC[1].trim();
+  if (mC) return decodeXmlEntities(mC[1].trim());
   const plain = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
   const m = xml.match(plain);
-  return m ? m[1].replace(/<[^>]+>/g, '').trim() : undefined;
+  return m ? decodeXmlEntities(m[1].replace(/<[^>]+>/g, '').trim()) : undefined;
 }
 
 function attr(tag: string, name: string): string | undefined {
   const m = tag.match(new RegExp(`${name}=["']([^"']+)["']`, 'i'));
-  return m?.[1];
+  return m?.[1] != null ? decodeXmlEntities(m[1]) : undefined;
 }
 
 function parseDurationMs(raw?: string): number | undefined {

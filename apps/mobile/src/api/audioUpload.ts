@@ -65,7 +65,12 @@ export async function downloadAudioForAnalysis(
   const downloadResumable = FileSystem.createDownloadResumable(
     audioUrl,
     localPath,
-    {},
+    {
+      // Match playback UA so Simplecast/Podtrac DAI variants align with the player.
+      headers: {
+        'User-Agent': 'PodcastAdSkip/1.0 (Linux; Android) expo-audio',
+      },
+    },
     (progress) => {
       if (onProgress) {
         onProgress({
