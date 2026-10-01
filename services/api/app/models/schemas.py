@@ -1,7 +1,27 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+LEGACY_SEGMENT_TYPE_MAP = {
+    "sponsor": "advertisement",
+    "midroll": "advertisement",
+    "preroll": "advertisement",
+    "postroll": "advertisement",
+    "crosspromo": "self_promotion",
+    "network": "self_promotion",
+    "unknown": "advertisement",
+}
+
+CANONICAL_SEGMENT_TYPES = frozenset({"advertisement", "intro_outro", "self_promotion"})
+
+
+def map_legacy_segment_type(legacy_type: str) -> str:
+    """Map legacy segment types to consolidated types (advertisement/intro_outro/self_promotion)."""
+    if legacy_type in CANONICAL_SEGMENT_TYPES:
+        return legacy_type
+    return LEGACY_SEGMENT_TYPE_MAP.get(legacy_type, "advertisement")
 
 
 class AdSegment(BaseModel):
@@ -9,6 +29,13 @@ class AdSegment(BaseModel):
     end_ms: int = Field(..., ge=0)
     type: Literal["advertisement", "intro_outro", "self_promotion"] = "advertisement"
     confidence: float = Field(0.75, ge=0.0, le=1.0)
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _coerce_legacy_type(cls, v: object) -> object:
+        if isinstance(v, str):
+            return map_legacy_segment_type(v)
+        return v
 
 
 class AnalyzeEpisodeRequest(BaseModel):
