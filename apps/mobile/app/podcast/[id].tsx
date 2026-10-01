@@ -254,9 +254,9 @@ export default function PodcastDetailScreen() {
 
   const onPlay = async (ep: Episode) => {
     // Navigate immediately for responsive feedback.
-    // Use root /player (not /(tabs)/player) so the show listings stay on the
+    // Use root /now-playing (not /(tabs)/player) so the show listings stay on the
     // stack — Back returns here instead of jumping to Library.
-    router.push('/player');
+    router.push('/now-playing');
     // Load episode in background
     try {
       await playEpisode(ep);
