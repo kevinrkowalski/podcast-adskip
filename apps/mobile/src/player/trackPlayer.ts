@@ -13,6 +13,17 @@ import { Platform } from 'react-native';
 import type { AdSegment, Episode } from '@/src/types';
 import { seekTargetIfInAd } from './skipLogic';
 
+/**
+ * Identify as a real podcast client per IAB/Simplecast guidance.
+ * DAI CDNs (Simplecast AIS, Podtrac, etc.) classify requests by User-Agent;
+ * anonymous/okhttp defaults are often served differently than known players.
+ * Do not spoof Apple Podcasts — use our own product token.
+ */
+const PODCAST_STREAM_HEADERS: Record<string, string> = {
+  'User-Agent': 'PodcastAdSkip/1.0 (Linux; Android) expo-audio',
+};
+
+
 export type PlayerStatus = {
   isPlaying: boolean;
   positionMs: number;
@@ -354,7 +365,10 @@ export async function loadAndPlay(
     try {
       await ensureAudioMode(mod);
       releasePlayer();
-      player = mod.createAudioPlayer({ uri: url }, { updateInterval: 250 });
+      player = mod.createAudioPlayer(
+        isLocalFile ? { uri: url } : { uri: url, headers: PODCAST_STREAM_HEADERS },
+        { updateInterval: 250 },
+      );
       statusSub = player.addListener('playbackStatusUpdate', (st) => {
         if (seeking) {
           if (pendingSeekMs != null) status.positionMs = pendingSeekMs;
