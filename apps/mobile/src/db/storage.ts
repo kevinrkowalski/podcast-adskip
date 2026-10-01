@@ -167,18 +167,105 @@ export async function getCachedEpisodes(feedUrl: string): Promise<Episode[]> {
   }
 }
 
-export async function cacheSkipMap(guid: string, map: SkipMap): Promise<void> {
-  await AsyncStorage.setItem(KEYS.skipMaps + encodeURIComponent(guid), JSON.stringify(map));
+/** Skip-map storage key by episode GUID (primary). */
+function skipMapGuidKey(guid: string): string {
+  return KEYS.skipMaps + encodeURIComponent(guid);
 }
 
-export async function getCachedSkipMap(guid: string): Promise<SkipMap | null> {
-  const raw = await AsyncStorage.getItem(KEYS.skipMaps + encodeURIComponent(guid));
+/**
+ * Secondary skip-map key by enclosure URL.
+ * Some feeds use unstable or missing <guid> values (fallback to URL/link), so
+ * cold-start reload must still find maps when the GUID string drifts but the
+ * audio URL stays the same.
+ */
+function skipMapUrlKey(enclosureUrl: string): string {
+  return KEYS.skipMaps + 'url:' + encodeURIComponent(enclosureUrl.trim());
+}
+
+function parseSkipMapRaw(raw: string | null): SkipMap | null {
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as SkipMap;
+    const parsed = JSON.parse(raw) as SkipMap;
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
   } catch {
     return null;
   }
+}
+
+/**
+ * Persist a ready skip map under the episode GUID and, when available, the
+ * enclosure URL so reopen after cold start can resolve either key.
+ */
+export async function cacheSkipMap(
+  guid: string,
+  map: SkipMap,
+  enclosureUrl?: string | null,
+): Promise<void> {
+  if (!guid) return;
+  const payload = JSON.stringify(map);
+  const pairs: [string, string][] = [[skipMapGuidKey(guid), payload]];
+  const url = enclosureUrl?.trim();
+  if (url) pairs.push([skipMapUrlKey(url), payload]);
+  try {
+    await AsyncStorage.multiSet(pairs);
+  } catch (error) {
+    // Fall back to single-key write so a URL-key failure does not lose the GUID entry.
+    console.warn('[storage] skip-map multiSet failed, trying GUID only:', error);
+    try {
+      await AsyncStorage.setItem(skipMapGuidKey(guid), payload);
+    } catch (inner) {
+      console.warn('[storage] skip-map write skipped:', inner);
+      throw inner;
+    }
+  }
+}
+
+/**
+ * Load a cached skip map by GUID, falling back to enclosure URL when the GUID
+ * miss happens (unstable RSS guids). When found via URL under a new GUID,
+ * re-index under the current GUID for faster subsequent loads.
+ */
+export async function getCachedSkipMap(
+  guid: string,
+  enclosureUrl?: string | null,
+): Promise<SkipMap | null> {
+  if (!guid && !enclosureUrl?.trim()) return null;
+
+  const tryRead = async (key: string): Promise<SkipMap | null> => {
+    try {
+      return parseSkipMapRaw(await AsyncStorage.getItem(key));
+    } catch (error) {
+      console.warn('[storage] skip-map read skipped:', error);
+      try {
+        await AsyncStorage.removeItem(key);
+      } catch {
+        /* ignore cleanup failure */
+      }
+      return null;
+    }
+  };
+
+  if (guid) {
+    const byGuid = await tryRead(skipMapGuidKey(guid));
+    if (byGuid) return byGuid;
+  }
+
+  const url = enclosureUrl?.trim();
+  if (!url) return null;
+
+  const byUrl = await tryRead(skipMapUrlKey(url));
+  if (!byUrl) return null;
+
+  // Migrate / re-index under the GUID we have now so next open hits the primary key.
+  if (guid) {
+    try {
+      await AsyncStorage.setItem(skipMapGuidKey(guid), JSON.stringify(byUrl));
+    } catch (error) {
+      console.warn('[storage] skip-map GUID re-index skipped:', error);
+    }
+  }
+  return byUrl;
 }
 
 export async function getAutoSkipEnabled(): Promise<boolean> {
