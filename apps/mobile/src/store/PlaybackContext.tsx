@@ -9,7 +9,7 @@ import React, {
 } from 'react';
 import type { AdSegment, Episode, SkipMap } from '@/src/types';
 import * as player from '@/src/player/trackPlayer';
-import { analyzeEpisode, getSkipMap } from '@/src/api/backend';
+import { analyzeEpisode, getSkipMap, hydrateApiBaseUrl, hydrateAppKey } from '@/src/api/backend';
 import {
   cacheSkipMap,
   getAutoSkipEnabled,
@@ -250,8 +250,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       if (!stillCurrent()) return null;
       setSkipSettingsState(settings);
       
-      // Try to load cached skip map (from previous manual Prepare)
-      const local = await getCachedSkipMap(ep.guid);
+      // Try to load cached skip map (from previous Prepare / auto-detect).
+      const local = await getCachedSkipMap(ep.guid, ep.enclosureUrl);
       if (!stillCurrent()) return null;
       
       if (local?.status === 'ready') {
@@ -287,7 +287,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       if (!stillCurrent()) return null;
       setSkipSettingsState(settings);
       
-      const local = await getCachedSkipMap(ep.guid);
+      const local = await getCachedSkipMap(ep.guid, ep.enclosureUrl);
       if (!stillCurrent()) return null;
       
       if (local?.status === 'ready') {
@@ -320,12 +320,21 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
     setAdDetectionEnabledState(true);
     player.setAdDetectionEnabled(true);
-    const local = await getCachedSkipMap(ep.guid);
+    const local = await getCachedSkipMap(ep.guid, ep.enclosureUrl);
     if (!stillCurrent()) return null;
     if (!(await canUseAdDetection(ep))) {
       if (!(await getAutoSkipEnabled())) {
         abortLoadKeepCache();
         return null;
+      }
+      // Per-show raced off mid-load: keep any ready local map for the sheet.
+      if (local?.status === 'ready') {
+        setSkipMap(local);
+        skipMapRef.current = local;
+        const filtered = applySkipFilter(local.segments, settings);
+        player.setSkipSegments(filtered);
+        setAnalyzeStatus('ready');
+        return local;
       }
       clearAdDetection();
       return null;
@@ -347,6 +356,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       return local;
     }
     try {
+      // Ensure Settings-stored API URL / app key are loaded before cold-start GETs.
+      await Promise.all([hydrateApiBaseUrl(), hydrateAppKey()]);
+      if (!stillCurrent()) return null;
       const remote = await getSkipMap(ep.guid);
       if (!stillCurrent()) return null;
       if (!(await canUseAdDetection(ep))) {
@@ -362,7 +374,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       skipMapRef.current = remote;
       if (remote.status === 'ready') {
         try {
-          await cacheSkipMap(ep.guid, remote);
+          await cacheSkipMap(ep.guid, remote, ep.enclosureUrl);
         } catch (cacheErr) {
           console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
         }
@@ -473,15 +485,48 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       // This ensures UI navigation happens immediately while analysis proceeds in background.
       void (async () => {
         try {
-          await loadSkipMap(ep, detectionEnabled);
+          const loaded = await loadSkipMap(ep, detectionEnabled);
+          // Never re-analyze / clobber when we already have a ready (or in-flight)
+          // map from AsyncStorage or the backend — that was wiping segments after
+          // cold start whenever the API returned missing (empty/wiped DB).
+          if (
+            loaded?.status === 'ready' ||
+            loaded?.status === 'pending' ||
+            loaded?.status === 'queued'
+          ) {
+            return;
+          }
           // Fire-and-forget analyze if no map yet, but only while both gates are on.
           if (detectionEnabled && ep.enclosureUrl) {
             try {
               if (!(await canUseAdDetection(ep))) {
-                clearAdDetection();
+                // Do not clearAdDetection here: loadSkipMap may have restored a
+                // ready cache while per-show detection is off.
                 return;
               }
               const existing = await getSkipMap(ep.guid);
+              if (existing.status === 'ready') {
+                try {
+                  await cacheSkipMap(ep.guid, existing, ep.enclosureUrl);
+                } catch (cacheErr) {
+                  console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
+                }
+                setSkipMap(existing);
+                skipMapRef.current = existing;
+                const filtered = applySkipFilter(existing.segments, await getPodcastSkipSettings({
+                  collectionId: ep.collectionId,
+                  feedUrl: ep.feedUrl,
+                }));
+                player.setSkipSegments(filtered);
+                setAnalyzeStatus('ready');
+                return;
+              }
+              if (existing.status === 'pending' || existing.status === 'queued') {
+                setSkipMap(existing);
+                skipMapRef.current = existing;
+                setAnalyzeStatus(existing.status);
+                return;
+              }
               if (existing.status === 'missing' || existing.status === 'error') {
                 setAnalyzeStatus('queued');
                 const queued = await analyzeEpisode({
@@ -494,9 +539,22 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
                 setSkipMap(queued);
                 skipMapRef.current = queued;
                 setAnalyzeStatus(queued.status);
+                if (queued.status === 'ready') {
+                  try {
+                    await cacheSkipMap(ep.guid, queued, ep.enclosureUrl);
+                  } catch (cacheErr) {
+                    console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
+                  }
+                  const settings = await getPodcastSkipSettings({
+                    collectionId: ep.collectionId,
+                    feedUrl: ep.feedUrl,
+                  });
+                  const filtered = applySkipFilter(queued.segments, settings);
+                  player.setSkipSegments(filtered);
+                }
               }
             } catch {
-              /* backend optional while browsing */
+              /* backend optional while browsing — keep any locally restored map */
             }
           }
         } catch (err) {
@@ -504,7 +562,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         }
       })();
     },
-    [canUseAdDetection, clearAdDetection, loadSkipMap],
+    [applySkipFilter, canUseAdDetection, loadSkipMap],
   );
 
   const togglePlay = useCallback(async () => {
@@ -618,7 +676,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           setAnalyzeStatus(queued.status);
           if (queued.status === 'ready') {
             try {
-              await cacheSkipMap(current.guid, queued);
+              await cacheSkipMap(current.guid, queued, current.enclosureUrl);
             } catch (cacheErr) {
               console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
             }
@@ -786,7 +844,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         if (result.status === 'ready') {
           // Cache skip map; don't let storage failure break the analyze flow.
           try {
-            await cacheSkipMap(episode.guid, result);
+            await cacheSkipMap(episode.guid, result, episode.enclosureUrl);
           } catch (cacheErr) {
             console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
           }
@@ -851,7 +909,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           setAnalyzeStatus(map.status);
           if (map.status === 'ready') {
             try {
-              await cacheSkipMap(guid, map);
+              await cacheSkipMap(guid, map, episodeRef.current?.enclosureUrl);
             } catch (cacheErr) {
               console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
             }
