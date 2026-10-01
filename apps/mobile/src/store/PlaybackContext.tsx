@@ -393,8 +393,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
   const playEpisode = useCallback(
     async (ep: Episode) => {
-      // Save previous episode position before switching.
-      await persistPosition(true);
+      // Snapshot previous position, then switch React state BEFORE any await so
+      // concurrent navigation to Now Playing never flashes the empty state.
+      const prev = episodeRef.current;
+      const prevPos = positionRef.current;
+      const prevDur = durationRef.current;
 
       setEpisode(ep);
       episodeRef.current = ep;
@@ -405,6 +408,17 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       setAnalyzeError(null);
       setAudioMismatchWarning(null);
       skipLoadGen.current += 1;
+
+      // Persist the previous episode using the snapshot (ref already points at `ep`).
+      if (prev?.guid && prev.guid !== ep.guid) {
+        try {
+          lastSavedAt.current = Date.now();
+          lastSavedPos.current = prevPos;
+          await savePlaybackPosition(prev.guid, prevPos, prevDur || undefined);
+        } catch (err) {
+          console.warn('[playback] Failed to persist previous position:', err);
+        }
+      }
 
       // Re-sync last-used Ad-skip preference before play (covers cold start
       // race + Metro reload resetting the player module default to true).
@@ -490,7 +504,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         }
       })();
     },
-    [canUseAdDetection, clearAdDetection, loadSkipMap, persistPosition],
+    [canUseAdDetection, clearAdDetection, loadSkipMap],
   );
 
   const togglePlay = useCallback(async () => {

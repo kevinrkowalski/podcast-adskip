@@ -15,10 +15,10 @@ export function MiniPlayer() {
   const segments = useSegments();
 
   if (!episode) return null;
-  // Hide on full Now Playing (root stack). Do not key off `player` alone --
-  // that segment is the tab route, which immediately redirects here.
-  const onNowPlaying = segments.some((s) => s === 'now-playing');
-  if (onNowPlaying) return null;
+  // Hide on full Now Playing: root stack `/now-playing` OR the in-tab Player
+  // screen (`player`). Never Redirect the tab — that remounted on Back and crashed.
+  const onFullPlayer = segments.some((s) => s === 'now-playing' || s === 'player');
+  if (onFullPlayer) return null;
 
   const progress = durationMs > 0 ? Math.min(1, positionMs / durationMs) : 0;
 

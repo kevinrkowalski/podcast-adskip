@@ -1,14 +1,10 @@
-import { Redirect } from 'expo-router';
-
 /**
- * Full Now Playing lives on the root stack at `/now-playing` (not `/player`).
+ * Player tab renders the full Now Playing UI in-place.
  *
- * Expo Router route groups are not URL segments, so `app/(tabs)/player.tsx` and
- * a root `app/player.tsx` would BOTH map to `/player`. Navigating to `/player`
- * from inside tabs then stays on this tab screen; a Redirect to `/player` would
- * loop forever and crash. `/now-playing` is unambiguous and keeps Back -> show
- * listings (`podcast/[id]` -> now-playing) working.
+ * Do NOT Redirect to `/now-playing` from this screen: focusing the tab mounts
+ * the Redirect, Back returns here, Redirect fires again → loop / crash.
+ * MiniPlayer and show-play still push the root `/now-playing` stack screen so
+ * Back returns to the show listings. This tab is for discoverability when the
+ * user picks Player from the bottom nav (no cross-navigator Redirect).
  */
-export default function PlayerTabRedirect() {
-  return <Redirect href="/now-playing" />;
-}
+export { default } from '../now-playing';

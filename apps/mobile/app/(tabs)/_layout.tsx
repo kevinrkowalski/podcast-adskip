@@ -15,6 +15,12 @@ export const unstable_settings = {
 
 function TabBarWithMini(props: React.ComponentProps<typeof BottomTabBar>) {
   const insets = useSafeAreaInsets();
+  const current = props.state.routes[props.state.index]?.name;
+  // Player tab renders the full Now Playing UI in-place — hide mini + tab chrome
+  // so controls are not covered (and so we never Redirect out of this tab).
+  if (current === 'player') {
+    return null;
+  }
 
   return (
     <View

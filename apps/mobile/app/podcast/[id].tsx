@@ -253,13 +253,13 @@ export default function PodcastDetailScreen() {
   };
 
   const onPlay = async (ep: Episode) => {
-    // Navigate immediately for responsive feedback.
-    // Use root /now-playing (not /(tabs)/player) so the show listings stay on the
-    // stack — Back returns here instead of jumping to Library.
-    router.push('/now-playing');
-    // Load episode in background
+    // Single navigation to root /now-playing (keeps show listings under Back).
+    // Start playEpisode first: it sets episode state synchronously before any
+    // await, so Now Playing does not mount on the empty "Nothing playing" flash.
     try {
-      await playEpisode(ep);
+      const playing = playEpisode(ep);
+      router.push('/now-playing');
+      await playing;
     } catch (err) {
       console.error('[podcast-detail] Failed to play episode:', err);
     }
