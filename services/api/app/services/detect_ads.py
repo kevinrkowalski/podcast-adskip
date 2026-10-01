@@ -15,10 +15,34 @@ logger = logging.getLogger(__name__)
 # Minimum confidence threshold to emit an ad segment
 MIN_CONFIDENCE_THRESHOLD = 0.75
 
+# Edge window for true intro/outro bumps (first/last ~90s)
+INTRO_OUTRO_EDGE_MS = 90_000
+
+# Drop very short intro_outro unless already at an edge
+INTRO_OUTRO_MIN_MS = 8_000
+
+# Advertisement keyword-gate: only drop low-confidence ads with zero commercial cues
+AD_KEYWORD_GATE_CONFIDENCE = 0.9
+
 AD_KEYWORDS = re.compile(
     r"\b(sponsor|sponsored|brought to you by|advertisement|ad break|"
     r"use code|promo code|squarespace|nordvpn|audible|hellofresh|"
     r"our friends at|paid partnership)\b",
+    re.IGNORECASE,
+)
+
+# Broader commercial cues for post-LLM ad keyword gate (extends AD_KEYWORDS)
+COMMERCIAL_KEYWORDS = re.compile(
+    r"\b(sponsor|sponsored|sponsorship|brought to you by|advertisement|ad break|"
+    r"use code|promo code|promo|discount|percent off|% off|free trial|"
+    r"paid partnership|our friends at|visit|sign up|subscribe at|"
+    r"check out|learn more|get yours|special offer|limited time|"
+    r"squarespace|nordvpn|audible|hellofresh|betterhelp|shopify|"
+    r"policygenius|ramp|athletic greens|ag1|ziprecruiter|indeed|"
+    r"linkedin|hulu|disney\+|paramount\+|roku|cash app|venmo|"
+    r"amazon|walmart|target|apple|google|microsoft)\b|"
+    r"\b(brought to you|thanks to our sponsor|this episode is (brought|sponsored)|"
+    r"use (the )?code|promo(tional)? code|coupon code)\b",
     re.IGNORECASE,
 )
 
@@ -32,23 +56,30 @@ SEGMENT TYPES (only these three):
      * Explicit sponsorship language ("sponsored by", "brought to you by", "thanks to our sponsor")
      * Call-to-action ("visit", "use code", "sign up", "get X% off")
      * Promotional offer (discount code, free trial, special deal)
-   - Examples: sponsor reads, mid-roll ad breaks, paid product endorsements
+   - Examples: host-read sponsor reads, mid-roll ad breaks, paid product endorsements
 
-2. **intro_outro** - Show open/close bumps worth skipping
-   - Theme music, credits, show announcements ("you're listening to...")
-   - NOT paid ads, just podcast production elements
-   - Often at start/end but can appear anywhere based on content
-   - Examples: theme songs, network stings, episode previews/recaps
+2. **intro_outro** - ONLY true episode open/close bumps
+   - Theme music + credits / show ID at the VERY START of the episode, OR
+   - Closing theme / credits / show ID at the VERY END of the episode
+   - MUST be at the absolute beginning or absolute ending of the show
+   - FORBIDDEN (never label as intro_outro):
+     * Mid-episode stings, bells, bumper music, segment transitions
+     * News stings, production sound design, interstitial music beds
+     * Mid-show "you're listening to…", network IDs, act breaks
+     * Theme snippets replayed in the middle of the episode
+     * Any production chrome that is not the real open or close
+   - If it is not clearly the episode open or close, do NOT use intro_outro
 
 3. **self_promotion** - Cross-show / network / subscribe plugs
    - Promotion of other shows/content from the same network or creator
-   - "Follow us", "Subscribe", "Check out our other show"
+   - "Follow us", "Subscribe", "Check out our other show", Patreon/merchandise plugs
    - Platform/network promotional messages
-   - Examples: cross-promo of other podcasts, Patreon/merchandise plugs
+   - Examples: cross-promo of other podcasts, Patreon plugs
 
 NOT SKIPPABLE:
 - Show content, even if promotional in tone ("coming up", "stay tuned")
-- Topic transitions or segment introductions
+- Topic transitions, segment introductions, act breaks, news stings
+- Mid-show production chrome (bells, bumpers, theme snippets, sound design)
 - Brief brand mentions in passing without endorsement
 - Host banter about products they personally use (unless explicitly sponsored)
 - News or editorial content about companies
@@ -60,7 +91,7 @@ CONFIDENCE SCORING:
 - Below 0.5: Don't include (too ambiguous)
 
 Be EXTREMELY STRICT. Prefer to miss a segment than to mislabel content.
-If unsure, DO NOT LABEL IT.
+If unsure, return an empty segments list. DO NOT LABEL IT.
 
 Return ONLY valid JSON: {"segments":[{"start_s":number,"end_s":number,"type":"advertisement|intro_outro|self_promotion","confidence":0.5-1.0}]}
 Empty list if none found."""
@@ -78,6 +109,110 @@ def _map_legacy_type(legacy_type: str) -> str:
         "unknown": "advertisement",
     }
     return legacy_to_new.get(legacy_type, "advertisement")
+
+
+def _near_intro_outro_edge(
+    start_ms: int,
+    end_ms: int,
+    total_duration_ms: int | None,
+    edge_ms: int = INTRO_OUTRO_EDGE_MS,
+) -> bool:
+    """True if segment sits in the first or last ~edge_ms of the episode."""
+    if start_ms < edge_ms:
+        return True
+    if total_duration_ms is None or total_duration_ms <= 0:
+        # Without duration, only allow leading intro_outro (conservative)
+        return False
+    return end_ms >= max(0, total_duration_ms - edge_ms) or start_ms >= max(
+        0, total_duration_ms - edge_ms
+    )
+
+
+def _transcript_text_in_range(
+    transcript: dict[str, Any] | None,
+    start_ms: int,
+    end_ms: int,
+) -> str:
+    """Concatenate Whisper segment text overlapping [start_ms, end_ms]."""
+    if not transcript:
+        return ""
+    parts: list[str] = []
+    for seg in transcript.get("segments") or []:
+        try:
+            seg_start = int(float(seg.get("start", 0)) * 1000)
+            seg_end = int(float(seg.get("end", 0)) * 1000)
+        except (TypeError, ValueError):
+            continue
+        if seg_end <= start_ms or seg_start >= end_ms:
+            continue
+        text = (seg.get("text") or "").strip()
+        if text:
+            parts.append(text)
+    return " ".join(parts)
+
+
+def _post_filter_segments(
+    segments: list[AdSegment],
+    *,
+    total_duration_ms: int | None = None,
+    transcript: dict[str, Any] | None = None,
+) -> list[AdSegment]:
+    """Drop mid-show intro_outro chrome and weak ads with no commercial keywords.
+
+    Applied AFTER LLM parse / heuristics, BEFORE _merge finalize.
+    """
+    kept: list[AdSegment] = []
+    for seg in segments:
+        if seg.type == "intro_outro":
+            duration = seg.end_ms - seg.start_ms
+            at_edge = _near_intro_outro_edge(seg.start_ms, seg.end_ms, total_duration_ms)
+            if not at_edge:
+                logger.debug(
+                    "drop mid-show intro_outro %s-%sms (not near edge)",
+                    seg.start_ms,
+                    seg.end_ms,
+                )
+                continue
+            if duration < INTRO_OUTRO_MIN_MS:
+                # Short bumps at true edges are still allowed; log for tuning
+                logger.debug(
+                    "keep short edge intro_outro %s-%sms (%sms)",
+                    seg.start_ms,
+                    seg.end_ms,
+                    duration,
+                )
+            kept.append(seg)
+            continue
+
+        if seg.type == "advertisement" and seg.confidence < AD_KEYWORD_GATE_CONFIDENCE:
+            overlap = _transcript_text_in_range(transcript, seg.start_ms, seg.end_ms)
+            if overlap and not COMMERCIAL_KEYWORDS.search(overlap):
+                logger.debug(
+                    "drop low-confidence ad %s-%sms (conf=%.2f, no commercial keywords)",
+                    seg.start_ms,
+                    seg.end_ms,
+                    seg.confidence,
+                )
+                continue
+            # If we have no overlapping transcript text, keep (don't gut on missing text)
+
+        kept.append(seg)
+    return kept
+
+
+def _finalize(
+    segments: list[AdSegment],
+    *,
+    total_duration_ms: int | None = None,
+    transcript: dict[str, Any] | None = None,
+) -> list[AdSegment]:
+    """Post-filter then merge into skip-ready segments."""
+    filtered = _post_filter_segments(
+        segments,
+        total_duration_ms=total_duration_ms,
+        transcript=transcript,
+    )
+    return _merge(filtered)
 
 
 def heuristic_segments(transcript: dict[str, Any], total_duration_ms: int | None = None) -> list[AdSegment]:
@@ -99,8 +234,7 @@ def heuristic_segments(transcript: dict[str, Any], total_duration_ms: int | None
                         confidence=MIN_CONFIDENCE_THRESHOLD,
                     )
                 )
-    merged = _merge(out)
-    return merged
+    return _finalize(out, total_duration_ms=total_duration_ms, transcript=transcript)
 
 
 def _prefer_type(type_a: str, type_b: str) -> str:
@@ -211,7 +345,7 @@ async def _label_openrouter(transcript: dict[str, Any], settings: Settings, tota
         )
         content = completion.choices[0].message.content or "{}"
         all_segs.extend(_parse_llm_json(content))
-    merged = _merge(all_segs)
+    merged = _finalize(all_segs, total_duration_ms=total_duration_ms, transcript=transcript)
     if not merged:
         return heuristic_segments(transcript, total_duration_ms)
     return merged
@@ -235,7 +369,7 @@ async def _label_groq_llm(transcript: dict[str, Any], settings: Settings, total_
         )
         content = completion.choices[0].message.content or "{}"
         all_segs.extend(_parse_llm_json(content))
-    merged = _merge(all_segs)
+    merged = _finalize(all_segs, total_duration_ms=total_duration_ms, transcript=transcript)
     if not merged:
         return heuristic_segments(transcript, total_duration_ms)
     return merged
@@ -265,7 +399,7 @@ async def _label_gemini(transcript: dict[str, Any], settings: Settings, total_du
                 .get("text", "{}")
             )
             all_segs.extend(_parse_llm_json(text))
-    merged = _merge(all_segs)
+    merged = _finalize(all_segs, total_duration_ms=total_duration_ms, transcript=transcript)
     if not merged:
         return heuristic_segments(transcript, total_duration_ms)
     return merged
