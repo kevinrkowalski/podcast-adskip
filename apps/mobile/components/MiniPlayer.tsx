@@ -15,9 +15,10 @@ export function MiniPlayer() {
   const segments = useSegments();
 
   if (!episode) return null;
-  // Hide on full player whether reached via tab redirect or root stack.
-  const onPlayerScreen = segments.some((s) => s === 'player');
-  if (onPlayerScreen) return null;
+  // Hide on full Now Playing (root stack). Do not key off `player` alone --
+  // that segment is the tab route, which immediately redirects here.
+  const onNowPlaying = segments.some((s) => s === 'now-playing');
+  if (onNowPlaying) return null;
 
   const progress = durationMs > 0 ? Math.min(1, positionMs / durationMs) : 0;
 
@@ -28,7 +29,7 @@ export function MiniPlayer() {
         <Pressable
           style={styles.openArea}
           onPress={() => {
-            if (navigationReady) router.push('/player');
+            if (navigationReady) router.push('/now-playing');
           }}>
           {!!episode.artworkUrl ? (
             <Image source={{ uri: episode.artworkUrl }} style={styles.art} />

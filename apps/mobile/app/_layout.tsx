@@ -75,7 +75,7 @@ function RootLayoutNav() {
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
             <Stack.Screen name="podcast/[id]" options={{ title: 'Podcast' }} />
             <Stack.Screen
-              name="player"
+              name="now-playing"
               options={{ headerShown: false, animation: 'slide_from_right' }}
             />
             <Stack.Screen name="settings" options={{ title: 'Settings' }} />
