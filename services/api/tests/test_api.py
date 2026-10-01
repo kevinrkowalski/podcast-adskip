@@ -66,7 +66,7 @@ def test_heuristic_labels_sponsor_text():
     tx = stub_transcript(1_800_000)
     segs = heuristic_segments(tx)
     assert any(s.start_ms == 0 for s in segs)
-    assert any(s.type in ("preroll", "sponsor") for s in segs)
+    assert any(s.type == "advertisement" for s in segs)
 
 
 def test_plan_chunk_count_and_merge():
@@ -273,3 +273,84 @@ def test_pending_skip_map_includes_progress_fields():
         assert body["stage_label"] == "Transcribing"
         assert body["eta_seconds"] >= 5
         assert body["progress_pct"] is not None
+
+
+def test_adsegment_maps_legacy_types():
+    from app.models.schemas import AdSegment, map_legacy_segment_type
+
+    assert map_legacy_segment_type("sponsor") == "advertisement"
+    assert map_legacy_segment_type("midroll") == "advertisement"
+    assert map_legacy_segment_type("preroll") == "advertisement"
+    assert map_legacy_segment_type("postroll") == "advertisement"
+    assert map_legacy_segment_type("crosspromo") == "self_promotion"
+    assert map_legacy_segment_type("network") == "self_promotion"
+    assert map_legacy_segment_type("advertisement") == "advertisement"
+
+    seg = AdSegment.model_validate(
+        {"start_ms": 0, "end_ms": 5000, "type": "sponsor", "confidence": 0.9}
+    )
+    assert seg.type == "advertisement"
+    seg2 = AdSegment.model_validate(
+        {"start_ms": 10, "end_ms": 20, "type": "crosspromo", "confidence": 0.8}
+    )
+    assert seg2.type == "self_promotion"
+
+
+def test_get_skip_map_accepts_legacy_sponsor_type(tmp_path, monkeypatch):
+    """Legacy segments_json with type=sponsor must not 500 on get_skip_map."""
+    import asyncio
+    import json
+
+    db_path = tmp_path / "legacy_skip_maps.db"
+    monkeypatch.setenv("DATABASE_PATH", str(db_path))
+    monkeypatch.setenv("MOCK_ANALYZE", "true")
+    monkeypatch.setenv("APP_KEY", "")
+    monkeypatch.setenv("REQUIRE_APP_KEY", "false")
+    get_settings.cache_clear()
+
+    from app.db import sqlite as sqlite_db
+
+    async def _run():
+        await sqlite_db.init_db()
+        now = sqlite_db._now()
+        legacy = json.dumps(
+            [
+                {"start_ms": 0, "end_ms": 15000, "type": "sponsor", "confidence": 0.9},
+                {"start_ms": 100000, "end_ms": 120000, "type": "midroll", "confidence": 0.85},
+                {"start_ms": 200000, "end_ms": 210000, "type": "crosspromo", "confidence": 0.8},
+            ]
+        )
+        async with __import__("aiosqlite").connect(db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO skip_maps (
+                  episode_guid, status, segments_json, model, analyzed_at,
+                  created_at, updated_at
+                ) VALUES (?, 'ready', ?, 'legacy-test', ?, ?, ?)
+                """,
+                ("legacy-sponsor-guid", legacy, now, now, now),
+            )
+            await db.commit()
+
+        result = await sqlite_db.get_skip_map("legacy-sponsor-guid")
+        assert result is not None
+        assert result["status"] == "ready"
+        types = [s.type for s in result["segments"]]
+        assert types == ["advertisement", "advertisement", "self_promotion"]
+
+        # Soft-migrate: stored JSON should now use canonical types
+        async with __import__("aiosqlite").connect(db_path) as db:
+            cur = await db.execute(
+                "SELECT segments_json FROM skip_maps WHERE episode_guid = ?",
+                ("legacy-sponsor-guid",),
+            )
+            row = await cur.fetchone()
+            stored = json.loads(row[0])
+            assert [s["type"] for s in stored] == [
+                "advertisement",
+                "advertisement",
+                "self_promotion",
+            ]
+
+    asyncio.run(_run())
+    get_settings.cache_clear()

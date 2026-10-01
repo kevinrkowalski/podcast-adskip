@@ -8,7 +8,7 @@ import re
 from typing import Any
 
 from app.config import Settings
-from app.models.schemas import AdSegment
+from app.models.schemas import AdSegment, map_legacy_segment_type
 
 logger = logging.getLogger(__name__)
 
@@ -99,16 +99,7 @@ Empty list if none found."""
 
 def _map_legacy_type(legacy_type: str) -> str:
     """Map legacy segment types to new consolidated types."""
-    legacy_to_new = {
-        "sponsor": "advertisement",
-        "midroll": "advertisement",
-        "preroll": "advertisement",
-        "postroll": "advertisement",
-        "crosspromo": "self_promotion",
-        "network": "self_promotion",
-        "unknown": "advertisement",
-    }
-    return legacy_to_new.get(legacy_type, "advertisement")
+    return map_legacy_segment_type(legacy_type)
 
 
 def _near_intro_outro_edge(

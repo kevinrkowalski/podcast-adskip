@@ -7,7 +7,7 @@ from pathlib import Path
 import aiosqlite
 
 from app.config import get_settings
-from app.models.schemas import AdSegment
+from app.models.schemas import AdSegment, map_legacy_segment_type
 from app.services.progress import estimate_progress
 
 _CREATE = """
@@ -62,7 +62,31 @@ async def init_db() -> None:
         await db.commit()
 
 
-def _row_to_dict(row: aiosqlite.Row) -> dict:
+def _segments_from_json(segments_json: str) -> tuple[list[AdSegment], bool]:
+    """Parse segments_json, mapping legacy types so old rows do not 500.
+
+    Returns (segments, needs_migrate) where needs_migrate is True when any
+    stored type was remapped to a canonical label.
+    """
+    raw_list = json.loads(segments_json or "[]")
+    needs_migrate = False
+    normalized: list[dict] = []
+    for item in raw_list:
+        if not isinstance(item, dict):
+            continue
+        seg = dict(item)
+        raw_type = seg.get("type")
+        if isinstance(raw_type, str):
+            mapped = map_legacy_segment_type(raw_type)
+            if mapped != raw_type:
+                needs_migrate = True
+            seg["type"] = mapped
+        normalized.append(seg)
+    segments = [AdSegment.model_validate(s) for s in normalized]
+    return segments, needs_migrate
+
+
+def _row_to_dict(row: aiosqlite.Row, *, segments: list[AdSegment] | None = None) -> dict:
     keys = set(row.keys())
     status = row["status"]
     stage = row["stage"] if "stage" in keys else None
@@ -80,10 +104,12 @@ def _row_to_dict(row: aiosqlite.Row) -> dict:
         started_at=started_at or (row["created_at"] if status == "pending" else None),
         stage_updated_at=stage_updated_at,
     )
+    if segments is None:
+        segments, _ = _segments_from_json(row["segments_json"])
     return {
         "episode_guid": row["episode_guid"],
         "status": status,
-        "segments": [AdSegment.model_validate(s) for s in json.loads(row["segments_json"] or "[]")],
+        "segments": segments,
         "model": row["model"],
         "analyzed_at": row["analyzed_at"],
         "message": row["error"],
@@ -112,7 +138,19 @@ async def get_skip_map(episode_guid: str) -> dict | None:
         row = await cur.fetchone()
         if not row:
             return None
-        return _row_to_dict(row)
+        segments, needs_migrate = _segments_from_json(row["segments_json"])
+        if needs_migrate:
+            # Soft-migrate legacy type labels in-place so future reads stay clean.
+            await db.execute(
+                "UPDATE skip_maps SET segments_json = ?, updated_at = ? WHERE episode_guid = ?",
+                (
+                    json.dumps([s.model_dump() for s in segments]),
+                    _now(),
+                    episode_guid,
+                ),
+            )
+            await db.commit()
+        return _row_to_dict(row, segments=segments)
 
 
 async def set_status(
