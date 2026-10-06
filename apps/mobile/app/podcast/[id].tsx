@@ -9,7 +9,8 @@ import {
   Text,
   View,
 } from 'react-native';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter, type Href } from 'expo-router';
+import { SymbolView } from 'expo-symbols';
 import { lookupPodcastWithEpisodes } from '@/src/api/itunes';
 import {
   getCachedRssXml,
@@ -68,6 +69,7 @@ export default function PodcastDetailScreen() {
   const [isSub, setIsSub] = useState(false);
   const [adDetectionEnabled, setAdDetectionEnabled] = useState(true);
   const [skipSettings, setSkipSettings] = useState<PodcastSkipSettings | null>(null);
+  const [skipSettingsExpanded, setSkipSettingsExpanded] = useState(false);
   const [sourceHint, setSourceHint] = useState<string | null>(null);
   const [positions, setPositions] = useState<Record<string, PlaybackPosition>>({});
   const [rssHasMore, setRssHasMore] = useState(false);
@@ -94,6 +96,7 @@ export default function PodcastDetailScreen() {
     setExpanding(false);
     setError(null);
     setSourceHint(null);
+    setSkipSettingsExpanded(false);
     setRssHasMore(false);
     setPositions({});
     rssMaxItems.current = RSS_INITIAL_ITEMS;
@@ -258,7 +261,7 @@ export default function PodcastDetailScreen() {
     // await, so Now Playing does not mount on the empty "Nothing playing" flash.
     try {
       const playing = playEpisode(ep);
-      router.push('/now-playing');
+      router.push('/now-playing' as Href);
       await playing;
     } catch (err) {
       console.error('[podcast-detail] Failed to play episode:', err);
@@ -366,73 +369,95 @@ export default function PodcastDetailScreen() {
               
               {skipSettings && (
                 <View style={styles.skipSettingsCard}>
-                  <Text style={styles.skipSettingsHeading}>Auto-skip segments</Text>
-                  <Text style={styles.skipSettingsHint}>
-                    Master toggle and per-type skip controls
-                  </Text>
-                  
-                  <View style={styles.skipSettingsRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.skipSettingsLabel}>Skip segments for this show</Text>
-                      <Text style={styles.skipSettingsSubtext}>
-                        Master toggle · disable to skip nothing
+                  <Pressable
+                    style={styles.skipSettingsToggle}
+                    onPress={() => setSkipSettingsExpanded((expanded) => !expanded)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Segment skipping settings"
+                    accessibilityState={{ expanded: skipSettingsExpanded }}>
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={styles.skipSettingsHeading}>Segment skipping</Text>
+                      <Text style={styles.skipSettingsHint}>
+                        {skipSettings.skipEnabled ? 'On for this show' : 'Off for this show'}
                       </Text>
                     </View>
-                    <Switch
-                      value={skipSettings.skipEnabled}
-                      onValueChange={(v) => onToggleSkipSetting('skipEnabled', v)}
-                      trackColor={{ false: theme.border, true: theme.accentSoft }}
-                      thumbColor={skipSettings.skipEnabled ? theme.accent : '#ccc'}
+                    <SymbolView
+                      name={{
+                        ios: skipSettingsExpanded ? 'chevron.up' : 'chevron.down',
+                        android: skipSettingsExpanded ? 'keyboard_arrow_up' : 'keyboard_arrow_down',
+                        web: skipSettingsExpanded ? 'keyboard_arrow_up' : 'keyboard_arrow_down',
+                      }}
+                      size={18}
+                      tintColor={theme.textMuted}
                     />
-                  </View>
-                  
-                  <View style={styles.skipSettingsRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.skipSettingsLabel}>Skip advertisements</Text>
-                      <Text style={styles.skipSettingsSubtext}>
-                        Paid sponsor reads and ad breaks
-                      </Text>
+                  </Pressable>
+
+                  {skipSettingsExpanded && (
+                    <View style={styles.skipSettingsContent}>
+                      <View style={styles.skipSettingsRow}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.skipSettingsLabel}>Skip segments for this show</Text>
+                          <Text style={styles.skipSettingsSubtext}>
+                            Master toggle · disable to skip nothing
+                          </Text>
+                        </View>
+                        <Switch
+                          value={skipSettings.skipEnabled}
+                          onValueChange={(v) => onToggleSkipSetting('skipEnabled', v)}
+                          trackColor={{ false: theme.border, true: theme.accentSoft }}
+                          thumbColor={skipSettings.skipEnabled ? theme.accent : '#ccc'}
+                        />
+                      </View>
+
+                      <View style={styles.skipSettingsRow}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.skipSettingsLabel}>Skip advertisements</Text>
+                          <Text style={styles.skipSettingsSubtext}>
+                            Paid sponsor reads and ad breaks
+                          </Text>
+                        </View>
+                        <Switch
+                          value={skipSettings.skipAdvertisement}
+                          onValueChange={(v) => onToggleSkipSetting('skipAdvertisement', v)}
+                          disabled={!skipSettings.skipEnabled}
+                          trackColor={{ false: theme.border, true: theme.accentSoft }}
+                          thumbColor={skipSettings.skipAdvertisement ? theme.accent : '#ccc'}
+                        />
+                      </View>
+
+                      <View style={styles.skipSettingsRow}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.skipSettingsLabel}>Skip intro/outro</Text>
+                          <Text style={styles.skipSettingsSubtext}>
+                            Theme music and show bumpers
+                          </Text>
+                        </View>
+                        <Switch
+                          value={skipSettings.skipIntroOutro}
+                          onValueChange={(v) => onToggleSkipSetting('skipIntroOutro', v)}
+                          disabled={!skipSettings.skipEnabled}
+                          trackColor={{ false: theme.border, true: theme.accentSoft }}
+                          thumbColor={skipSettings.skipIntroOutro ? theme.accent : '#ccc'}
+                        />
+                      </View>
+
+                      <View style={[styles.skipSettingsRow, { borderBottomWidth: 0 }]}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.skipSettingsLabel}>Skip self promotion</Text>
+                          <Text style={styles.skipSettingsSubtext}>
+                            Cross-promo and "subscribe" plugs
+                          </Text>
+                        </View>
+                        <Switch
+                          value={skipSettings.skipSelfPromotion}
+                          onValueChange={(v) => onToggleSkipSetting('skipSelfPromotion', v)}
+                          disabled={!skipSettings.skipEnabled}
+                          trackColor={{ false: theme.border, true: theme.accentSoft }}
+                          thumbColor={skipSettings.skipSelfPromotion ? theme.accent : '#ccc'}
+                        />
+                      </View>
                     </View>
-                    <Switch
-                      value={skipSettings.skipAdvertisement}
-                      onValueChange={(v) => onToggleSkipSetting('skipAdvertisement', v)}
-                      disabled={!skipSettings.skipEnabled}
-                      trackColor={{ false: theme.border, true: theme.accentSoft }}
-                      thumbColor={skipSettings.skipAdvertisement ? theme.accent : '#ccc'}
-                    />
-                  </View>
-                  
-                  <View style={styles.skipSettingsRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.skipSettingsLabel}>Skip intro/outro</Text>
-                      <Text style={styles.skipSettingsSubtext}>
-                        Theme music and show bumpers
-                      </Text>
-                    </View>
-                    <Switch
-                      value={skipSettings.skipIntroOutro}
-                      onValueChange={(v) => onToggleSkipSetting('skipIntroOutro', v)}
-                      disabled={!skipSettings.skipEnabled}
-                      trackColor={{ false: theme.border, true: theme.accentSoft }}
-                      thumbColor={skipSettings.skipIntroOutro ? theme.accent : '#ccc'}
-                    />
-                  </View>
-                  
-                  <View style={[styles.skipSettingsRow, { borderBottomWidth: 0 }]}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.skipSettingsLabel}>Skip self promotion</Text>
-                      <Text style={styles.skipSettingsSubtext}>
-                        Cross-promo and "subscribe" plugs
-                      </Text>
-                    </View>
-                    <Switch
-                      value={skipSettings.skipSelfPromotion}
-                      onValueChange={(v) => onToggleSkipSetting('skipSelfPromotion', v)}
-                      disabled={!skipSettings.skipEnabled}
-                      trackColor={{ false: theme.border, true: theme.accentSoft }}
-                      thumbColor={skipSettings.skipSelfPromotion ? theme.accent : '#ccc'}
-                    />
-                  </View>
+                  )}
                 </View>
               )}
               <View style={styles.epHeadingRow}>
@@ -568,20 +593,33 @@ const styles = StyleSheet.create({
   skipSettingsCard: {
     backgroundColor: theme.surface,
     borderRadius: 14,
-    padding: 14,
     marginTop: 12,
+    overflow: 'hidden',
+  },
+  skipSettingsToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 14,
+    minHeight: 64,
   },
   skipSettingsHeading: {
     color: theme.text,
     fontSize: 14,
     fontWeight: '600',
-    marginBottom: 4,
   },
   skipSettingsHint: {
     color: theme.textMuted,
     fontSize: 12,
-    marginBottom: 12,
+    marginTop: 4,
     lineHeight: 16,
+  },
+
+  skipSettingsContent: {
+    paddingHorizontal: 14,
+    paddingBottom: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: theme.border,
   },
   skipSettingsRow: {
     flexDirection: 'row',
@@ -605,6 +643,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginTop: 20,
     marginBottom: 4,
     gap: 8,
   },

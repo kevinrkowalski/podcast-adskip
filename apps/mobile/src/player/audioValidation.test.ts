@@ -1,8 +1,10 @@
+/// <reference types="jest" />
+
 /**
  * Unit tests for audio validation / mismatch detection.
  */
 
-import { detectAudioMismatch, formatMismatchSummary } from '../audioValidation';
+import { detectAudioMismatch, formatMismatchSummary } from './audioValidation';
 import type { Episode, SkipMap } from '@/src/types';
 
 // Mock episode factory

@@ -1,41 +1,14 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
-
-
-LEGACY_SEGMENT_TYPE_MAP = {
-    "sponsor": "advertisement",
-    "midroll": "advertisement",
-    "preroll": "advertisement",
-    "postroll": "advertisement",
-    "crosspromo": "self_promotion",
-    "network": "self_promotion",
-    "unknown": "advertisement",
-}
-
-CANONICAL_SEGMENT_TYPES = frozenset({"advertisement", "intro_outro", "self_promotion"})
-
-
-def map_legacy_segment_type(legacy_type: str) -> str:
-    """Map legacy segment types to consolidated types (advertisement/intro_outro/self_promotion)."""
-    if legacy_type in CANONICAL_SEGMENT_TYPES:
-        return legacy_type
-    return LEGACY_SEGMENT_TYPE_MAP.get(legacy_type, "advertisement")
+from pydantic import BaseModel, Field
 
 
 class AdSegment(BaseModel):
     start_ms: int = Field(..., ge=0)
     end_ms: int = Field(..., ge=0)
-    type: Literal["advertisement", "intro_outro", "self_promotion"] = "advertisement"
-    confidence: float = Field(0.75, ge=0.0, le=1.0)
-
-    @field_validator("type", mode="before")
-    @classmethod
-    def _coerce_legacy_type(cls, v: object) -> object:
-        if isinstance(v, str):
-            return map_legacy_segment_type(v)
-        return v
+    type: Literal["sponsor", "midroll", "preroll", "postroll", "crosspromo", "network", "unknown"] = "unknown"
+    confidence: float = Field(0.5, ge=0.0, le=1.0)
 
 
 class AnalyzeEpisodeRequest(BaseModel):
@@ -76,8 +49,8 @@ class AnalyzeEpisodeResponse(AnalyzeProgressFields):
     analyzed_at: datetime | None = None
     message: str | None = None
     audio_url: str | None = None
-    analyzed_audio_size_bytes: int | None = None
-    analyzed_audio_duration_ms: int | None = None
+    analyzed_audio_size_bytes: int | None = Field(default=None, ge=0)
+    analyzed_audio_duration_ms: int | None = Field(default=None, ge=0)
 
 
 class SkipMapResponse(AnalyzeProgressFields):
@@ -88,8 +61,8 @@ class SkipMapResponse(AnalyzeProgressFields):
     analyzed_at: datetime | None = None
     message: str | None = None
     audio_url: str | None = None
-    analyzed_audio_size_bytes: int | None = None
-    analyzed_audio_duration_ms: int | None = None
+    analyzed_audio_size_bytes: int | None = Field(default=None, ge=0)
+    analyzed_audio_duration_ms: int | None = Field(default=None, ge=0)
 
 
 class HealthResponse(BaseModel):

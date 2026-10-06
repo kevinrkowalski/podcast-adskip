@@ -41,8 +41,8 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(analyze.router)
-app.include_router(upload.router)
 app.include_router(skip_map.router)
+app.include_router(upload.router)
 
 
 @app.get("/")

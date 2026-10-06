@@ -1,5 +1,5 @@
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
-import { useRootNavigationState, useRouter, useSegments } from 'expo-router';
+import { useRootNavigationState, useRouter, useSegments, type Href } from 'expo-router';
 import { usePlayback } from '@/src/store/PlaybackContext';
 import { theme } from '@/constants/Colors';
 
@@ -12,7 +12,7 @@ export function MiniPlayer() {
   const router = useRouter();
   const rootNavigationState = useRootNavigationState();
   const navigationReady = rootNavigationState?.key != null;
-  const segments = useSegments();
+  const segments = useSegments() as string[];
 
   if (!episode) return null;
   // Hide on full Now Playing: root stack `/now-playing` OR the in-tab Player
@@ -29,7 +29,7 @@ export function MiniPlayer() {
         <Pressable
           style={styles.openArea}
           onPress={() => {
-            if (navigationReady) router.push('/now-playing');
+            if (navigationReady) router.push('/now-playing' as Href);
           }}>
           {!!episode.artworkUrl ? (
             <Image source={{ uri: episode.artworkUrl }} style={styles.art} />

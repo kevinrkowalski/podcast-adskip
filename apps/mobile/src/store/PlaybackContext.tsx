@@ -250,7 +250,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       if (!stillCurrent()) return null;
       setSkipSettingsState(settings);
       
-      // Try to load cached skip map (from previous Prepare / auto-detect).
+      // Try to load cached skip map (from previous manual Prepare)
       const local = await getCachedSkipMap(ep.guid, ep.enclosureUrl);
       if (!stillCurrent()) return null;
       

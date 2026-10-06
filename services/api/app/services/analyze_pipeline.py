@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 
 from app.config import Settings, get_settings
@@ -11,6 +12,18 @@ from app.services.detect_ads import heuristic_segments, label_ads_llm
 from app.services.transcribe import download_audio, stub_transcript, transcribe_audio
 
 logger = logging.getLogger(__name__)
+
+
+def _transcript_duration_ms(transcript: dict, fallback_ms: int | None = None) -> int | None:
+    duration = transcript.get("duration")
+    if duration is not None:
+        try:
+            seconds = float(duration)
+            if math.isfinite(seconds) and seconds >= 0:
+                return round(seconds * 1000)
+        except (TypeError, ValueError):
+            pass
+    return fallback_ms
 
 
 def _llm_model_label(settings: Settings) -> str:
@@ -49,121 +62,6 @@ async def _stage(
     )
 
 
-async def run_analyze_from_file(
-    *,
-    episode_guid: str,
-    audio_path: Path,
-    audio_url: str | None = None,
-    title: str | None = None,
-    duration_ms: int | None = None,
-    feed_url: str | None = None,
-    settings: Settings | None = None,
-) -> dict:
-    """Analyze from an already-downloaded audio file (client upload path)."""
-    settings = settings or get_settings()
-    await _stage(
-        episode_guid,
-        "queued",
-        audio_url=audio_url,
-        feed_url=feed_url,
-        title=title,
-        duration_ms=duration_ms,
-        reset_started=True,
-    )
-
-    audio_size_bytes: int | None = None
-    audio_duration_ms: int | None = None
-    try:
-        audio_size_bytes = audio_path.stat().st_size
-        logger.info("Analyzing uploaded file for %s (%s bytes)", episode_guid, audio_size_bytes)
-
-        if settings.has_real_stt:
-            backend = "OpenRouter" if settings.openrouter_api_key else "Groq(legacy)"
-            logger.info("Real %s analyze (client upload) for %s", backend, episode_guid)
-            
-            await _stage(
-                episode_guid,
-                "transcribing",
-                duration_ms=duration_ms,
-            )
-            transcript = await transcribe_audio(audio_path, settings)
-            if transcript.get("duration"):
-                audio_duration_ms = int(transcript["duration"] * 1000)
-            model_parts = [settings.whisper_model]
-
-            await _stage(
-                episode_guid,
-                "labeling",
-                duration_ms=duration_ms,
-            )
-            if settings.has_llm:
-                segments = await label_ads_llm(transcript, settings)
-                model_parts.append(_llm_model_label(settings))
-            else:
-                segments = heuristic_segments(transcript)
-                model_parts.append("heuristic")
-            model = "+".join(model_parts) + "+client-upload"
-        else:
-            logger.info("No OPENROUTER_API_KEY (or MOCK_ANALYZE) — using stub transcript")
-            await _stage(
-                episode_guid,
-                "transcribing",
-                duration_ms=duration_ms,
-            )
-            transcript = stub_transcript(duration_ms)
-            await _stage(
-                episode_guid,
-                "labeling",
-                duration_ms=duration_ms,
-            )
-            segments = heuristic_segments(transcript)
-            model = "stub-whisper+heuristic+client-upload"
-
-        await _stage(episode_guid, "saving", duration_ms=duration_ms)
-        result = await save_skip_map(
-            episode_guid,
-            segments,
-            model,
-            audio_url=audio_url or "client-upload",
-            feed_url=feed_url,
-            title=title,
-            analyzed_audio_size_bytes=audio_size_bytes,
-            analyzed_audio_duration_ms=audio_duration_ms,
-        )
-        logger.info(
-            "Analyze ready (client upload) guid=%s segments=%s model=%s size=%s duration_ms=%s",
-            episode_guid,
-            len(segments),
-            model,
-            audio_size_bytes,
-            audio_duration_ms,
-        )
-        return result
-    except Exception as exc:  # noqa: BLE001 — surface to cache + API
-        err = str(exc) or exc.__class__.__name__
-        logger.exception("analyze (client upload) failed for %s: %s", episode_guid, err)
-        await set_status(episode_guid, "error", error=err, stage="error")
-        return {
-            "episode_guid": episode_guid,
-            "status": "error",
-            "segments": [],
-            "model": None,
-            "analyzed_at": None,
-            "message": err,
-            "stage": "error",
-            "stage_label": "Failed",
-            "progress_pct": None,
-            "eta_seconds": None,
-            "started_at": None,
-        }
-    finally:
-        # Clean up uploaded file
-        try:
-            audio_path.unlink(missing_ok=True)
-        except OSError:
-            logger.warning("Could not delete uploaded audio %s", audio_path)
-
-
 async def run_analyze(
     *,
     episode_guid: str,
@@ -185,8 +83,8 @@ async def run_analyze(
     )
 
     audio_path: Path | None = None
-    audio_size_bytes: int | None = None
-    audio_duration_ms: int | None = None
+    analyzed_audio_size_bytes: int | None = None
+    analyzed_audio_duration_ms: int | None = None
     try:
         if settings.has_real_stt:
             backend = "OpenRouter" if settings.openrouter_api_key else "Groq(legacy)"
@@ -200,7 +98,6 @@ async def run_analyze(
                 duration_ms=duration_ms,
             )
             audio_path = await download_audio(audio_url, settings.max_audio_mb)
-            audio_size_bytes = audio_path.stat().st_size
 
             await _stage(
                 episode_guid,
@@ -208,8 +105,8 @@ async def run_analyze(
                 duration_ms=duration_ms,
             )
             transcript = await transcribe_audio(audio_path, settings)
-            if transcript.get("duration"):
-                audio_duration_ms = int(transcript["duration"] * 1000)
+            analyzed_audio_size_bytes = audio_path.stat().st_size
+            analyzed_audio_duration_ms = _transcript_duration_ms(transcript, duration_ms)
             model_parts = [settings.whisper_model]
 
             await _stage(
@@ -218,10 +115,10 @@ async def run_analyze(
                 duration_ms=duration_ms,
             )
             if settings.has_llm:
-                segments = await label_ads_llm(transcript, settings, duration_ms)
+                segments = await label_ads_llm(transcript, settings)
                 model_parts.append(_llm_model_label(settings))
             else:
-                segments = heuristic_segments(transcript, duration_ms)
+                segments = heuristic_segments(transcript)
                 model_parts.append("heuristic")
             model = "+".join(model_parts)
         else:
@@ -232,12 +129,14 @@ async def run_analyze(
                 duration_ms=duration_ms,
             )
             transcript = stub_transcript(duration_ms)
+            analyzed_audio_size_bytes = None
+            analyzed_audio_duration_ms = _transcript_duration_ms(transcript, duration_ms)
             await _stage(
                 episode_guid,
                 "labeling",
                 duration_ms=duration_ms,
             )
-            segments = heuristic_segments(transcript, duration_ms)
+            segments = heuristic_segments(transcript)
             model = "stub-whisper+heuristic"
 
         await _stage(episode_guid, "saving", duration_ms=duration_ms)
@@ -248,16 +147,14 @@ async def run_analyze(
             audio_url=audio_url,
             feed_url=feed_url,
             title=title,
-            analyzed_audio_size_bytes=audio_size_bytes,
-            analyzed_audio_duration_ms=audio_duration_ms,
+            analyzed_audio_size_bytes=analyzed_audio_size_bytes,
+            analyzed_audio_duration_ms=analyzed_audio_duration_ms,
         )
         logger.info(
-            "Analyze ready guid=%s segments=%s model=%s size=%s duration_ms=%s",
+            "Analyze ready guid=%s segments=%s model=%s",
             episode_guid,
             len(segments),
             model,
-            audio_size_bytes,
-            audio_duration_ms,
         )
         return result
     except Exception as exc:  # noqa: BLE001 — surface to cache + API
@@ -283,3 +180,85 @@ async def run_analyze(
                 audio_path.unlink(missing_ok=True)
             except OSError:
                 logger.warning("Could not delete temp audio %s", audio_path)
+
+
+async def run_analyze_from_file(
+    *,
+    episode_guid: str,
+    audio_path: Path,
+    audio_url: str | None = None,
+    title: str | None = None,
+    duration_ms: int | None = None,
+    feed_url: str | None = None,
+    settings: Settings | None = None,
+) -> dict:
+    """Analyze a client-uploaded audio file and persist its source metadata."""
+    settings = settings or get_settings()
+    try:
+        await _stage(
+            episode_guid,
+            "queued",
+            audio_url=audio_url,
+            feed_url=feed_url,
+            title=title,
+            duration_ms=duration_ms,
+            reset_started=True,
+        )
+        audio_size_bytes = audio_path.stat().st_size
+        if settings.has_real_stt:
+            await _stage(episode_guid, "transcribing", duration_ms=duration_ms)
+            transcript = await transcribe_audio(audio_path, settings)
+            analyzed_audio_duration_ms = _transcript_duration_ms(transcript, duration_ms)
+            model_parts = [settings.whisper_model]
+            await _stage(episode_guid, "labeling", duration_ms=duration_ms)
+            if settings.has_llm:
+                segments = await label_ads_llm(transcript, settings)
+                model_parts.append(_llm_model_label(settings))
+            else:
+                segments = heuristic_segments(transcript)
+                model_parts.append("heuristic")
+            model = "+".join(model_parts)
+        else:
+            await _stage(episode_guid, "transcribing", duration_ms=duration_ms)
+            transcript = stub_transcript(duration_ms)
+            analyzed_audio_duration_ms = _transcript_duration_ms(transcript, duration_ms)
+            await _stage(episode_guid, "labeling", duration_ms=duration_ms)
+            segments = heuristic_segments(transcript)
+            model = "stub-whisper+heuristic"
+
+        await _stage(episode_guid, "saving", duration_ms=duration_ms)
+        return await save_skip_map(
+            episode_guid,
+            segments,
+            model,
+            audio_url=audio_url,
+            feed_url=feed_url,
+            title=title,
+            analyzed_audio_size_bytes=audio_size_bytes,
+            analyzed_audio_duration_ms=analyzed_audio_duration_ms,
+        )
+    except Exception as exc:  # noqa: BLE001 — persist a useful failed status
+        err = str(exc) or exc.__class__.__name__
+        logger.exception("uploaded analyze failed for %s: %s", episode_guid, err)
+        await set_status(episode_guid, "error", error=err, stage="error")
+        return {
+            "episode_guid": episode_guid,
+            "status": "error",
+            "segments": [],
+            "model": None,
+            "analyzed_at": None,
+            "message": err,
+            "stage": "error",
+            "stage_label": "Failed",
+            "progress_pct": None,
+            "eta_seconds": None,
+            "started_at": None,
+            "audio_url": audio_url,
+            "analyzed_audio_size_bytes": None,
+            "analyzed_audio_duration_ms": None,
+        }
+    finally:
+        try:
+            audio_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not delete uploaded audio %s", audio_path)

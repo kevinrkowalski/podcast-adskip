@@ -1,14 +1,14 @@
 """File upload endpoint for client-side audio analysis."""
 
+import logging
+import tempfile
 from datetime import datetime
 from pathlib import Path
-import tempfile
-import logging
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, Request, UploadFile
 
 from app.auth import check_app_key
-from app.db import get_skip_map
+from app.db import get_skip_map, set_status
 from app.models.schemas import AnalyzeEpisodeResponse
 from app.rate_limit import enforce_analyze_rate_limit
 from app.services.analyze_pipeline import run_analyze_from_file
@@ -41,6 +41,8 @@ def _progress_kwargs(row: dict | None) -> dict:
 
 @router.post("/analyze-episode-upload", response_model=AnalyzeEpisodeResponse)
 async def analyze_episode_upload(
+    request: Request,
+    background_tasks: BackgroundTasks,
     audio_file: UploadFile = File(...),
     episode_guid: str = Form(...),
     title: str | None = Form(None),
@@ -48,8 +50,6 @@ async def analyze_episode_upload(
     feed_url: str | None = Form(None),
     audio_url: str | None = Form(None),
     force: bool = Form(False),
-    request: Request = None,
-    background_tasks: BackgroundTasks = None,
     x_app_key: str | None = Header(default=None),
     sync: bool = False,
 ) -> AnalyzeEpisodeResponse:
@@ -131,6 +131,16 @@ async def analyze_episode_upload(
             )
         
         # Background task - file will be deleted by analyze pipeline
+        await set_status(
+            episode_guid,
+            "pending",
+            audio_url=audio_url,
+            feed_url=feed_url,
+            title=title,
+            stage="queued",
+            duration_ms=duration_ms,
+            reset_started=True,
+        )
         background_tasks.add_task(
             run_analyze_from_file,
             episode_guid=episode_guid,
@@ -149,7 +159,7 @@ async def analyze_episode_upload(
             **_progress_kwargs(queued),
         )
         
-    except Exception as exc:
+    except Exception:
         # Clean up on error
         tmp_path.unlink(missing_ok=True)
         logger.exception("Upload analysis failed for %s", episode_guid)

@@ -12,7 +12,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useRouter, useSegments } from 'expo-router';
+import { useRouter, useSegments, type Href } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePlayback } from '@/src/store/PlaybackContext';
@@ -100,7 +100,7 @@ function formatEtaSeconds(sec: number | null | undefined): string | null {
 export default function PlayerScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const segments = useSegments();
+  const segments = useSegments() as string[];
   const inPlayerTab = segments.some((s) => s === 'player') && !segments.some((s) => s === 'now-playing');
   const {
     episode,
@@ -212,7 +212,7 @@ export default function PlayerScreen() {
     // Tab-hosted player has no stack to pop — go to Library instead of Back
     // (Back would be a no-op or leave the user stuck on this tab).
     if (inPlayerTab) {
-      router.navigate('/(tabs)/');
+      router.navigate('/(tabs)');
       return;
     }
     if (router.canGoBack()) router.back();

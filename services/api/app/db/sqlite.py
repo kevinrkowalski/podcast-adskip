@@ -7,7 +7,7 @@ from pathlib import Path
 import aiosqlite
 
 from app.config import get_settings
-from app.models.schemas import AdSegment, map_legacy_segment_type
+from app.models.schemas import AdSegment
 from app.services.progress import estimate_progress
 
 _CREATE = """
@@ -62,39 +62,19 @@ async def init_db() -> None:
         await db.commit()
 
 
-def _segments_from_json(segments_json: str) -> tuple[list[AdSegment], bool]:
-    """Parse segments_json, mapping legacy types so old rows do not 500.
-
-    Returns (segments, needs_migrate) where needs_migrate is True when any
-    stored type was remapped to a canonical label.
-    """
-    raw_list = json.loads(segments_json or "[]")
-    needs_migrate = False
-    normalized: list[dict] = []
-    for item in raw_list:
-        if not isinstance(item, dict):
-            continue
-        seg = dict(item)
-        raw_type = seg.get("type")
-        if isinstance(raw_type, str):
-            mapped = map_legacy_segment_type(raw_type)
-            if mapped != raw_type:
-                needs_migrate = True
-            seg["type"] = mapped
-        normalized.append(seg)
-    segments = [AdSegment.model_validate(s) for s in normalized]
-    return segments, needs_migrate
-
-
-def _row_to_dict(row: aiosqlite.Row, *, segments: list[AdSegment] | None = None) -> dict:
+def _row_to_dict(row: aiosqlite.Row) -> dict:
     keys = set(row.keys())
     status = row["status"]
     stage = row["stage"] if "stage" in keys else None
     started_at = row["started_at"] if "started_at" in keys else None
     stage_updated_at = row["stage_updated_at"] if "stage_updated_at" in keys else None
     duration_ms = row["duration_ms"] if "duration_ms" in keys else None
-    analyzed_audio_size_bytes = row["analyzed_audio_size_bytes"] if "analyzed_audio_size_bytes" in keys else None
-    analyzed_audio_duration_ms = row["analyzed_audio_duration_ms"] if "analyzed_audio_duration_ms" in keys else None
+    analyzed_audio_size_bytes = (
+        row["analyzed_audio_size_bytes"] if "analyzed_audio_size_bytes" in keys else None
+    )
+    analyzed_audio_duration_ms = (
+        row["analyzed_audio_duration_ms"] if "analyzed_audio_duration_ms" in keys else None
+    )
     if status == "pending" and not stage:
         stage = "queued"
     progress = estimate_progress(
@@ -104,12 +84,10 @@ def _row_to_dict(row: aiosqlite.Row, *, segments: list[AdSegment] | None = None)
         started_at=started_at or (row["created_at"] if status == "pending" else None),
         stage_updated_at=stage_updated_at,
     )
-    if segments is None:
-        segments, _ = _segments_from_json(row["segments_json"])
     return {
         "episode_guid": row["episode_guid"],
         "status": status,
-        "segments": segments,
+        "segments": [AdSegment.model_validate(s) for s in json.loads(row["segments_json"] or "[]")],
         "model": row["model"],
         "analyzed_at": row["analyzed_at"],
         "message": row["error"],
@@ -138,19 +116,7 @@ async def get_skip_map(episode_guid: str) -> dict | None:
         row = await cur.fetchone()
         if not row:
             return None
-        segments, needs_migrate = _segments_from_json(row["segments_json"])
-        if needs_migrate:
-            # Soft-migrate legacy type labels in-place so future reads stay clean.
-            await db.execute(
-                "UPDATE skip_maps SET segments_json = ?, updated_at = ? WHERE episode_guid = ?",
-                (
-                    json.dumps([s.model_dump() for s in segments]),
-                    _now(),
-                    episode_guid,
-                ),
-            )
-            await db.commit()
-        return _row_to_dict(row, segments=segments)
+        return _row_to_dict(row)
 
 
 async def set_status(
@@ -247,9 +213,8 @@ async def save_skip_map(
             """
             INSERT INTO skip_maps (
               episode_guid, status, segments_json, model, audio_url, feed_url, title,
-              analyzed_at, error, stage, stage_updated_at, 
-              analyzed_audio_size_bytes, analyzed_audio_duration_ms,
-              created_at, updated_at
+              analyzed_at, error, stage, stage_updated_at, analyzed_audio_size_bytes,
+              analyzed_audio_duration_ms, created_at, updated_at
             ) VALUES (?, 'ready', ?, ?, ?, ?, ?, ?, NULL, 'ready', ?, ?, ?, ?, ?)
             ON CONFLICT(episode_guid) DO UPDATE SET
               status = 'ready',
@@ -262,12 +227,24 @@ async def save_skip_map(
               error = NULL,
               stage = 'ready',
               stage_updated_at = excluded.stage_updated_at,
-              analyzed_audio_size_bytes = COALESCE(excluded.analyzed_audio_size_bytes, skip_maps.analyzed_audio_size_bytes),
-              analyzed_audio_duration_ms = COALESCE(excluded.analyzed_audio_duration_ms, skip_maps.analyzed_audio_duration_ms),
+              analyzed_audio_size_bytes = excluded.analyzed_audio_size_bytes,
+              analyzed_audio_duration_ms = excluded.analyzed_audio_duration_ms,
               updated_at = excluded.updated_at
             """,
-            (episode_guid, payload, model, audio_url, feed_url, title, now, now, 
-             analyzed_audio_size_bytes, analyzed_audio_duration_ms, now, now),
+            (
+                episode_guid,
+                payload,
+                model,
+                audio_url,
+                feed_url,
+                title,
+                now,
+                now,
+                analyzed_audio_size_bytes,
+                analyzed_audio_duration_ms,
+                now,
+                now,
+            ),
         )
         await db.commit()
     progress = estimate_progress(
@@ -283,8 +260,9 @@ async def save_skip_map(
         "model": model,
         "analyzed_at": now,
         "message": None,
-        **progress,
-        "started_at": None,
+        "audio_url": audio_url,
         "analyzed_audio_size_bytes": analyzed_audio_size_bytes,
         "analyzed_audio_duration_ms": analyzed_audio_duration_ms,
+        **progress,
+        "started_at": None,
     }

@@ -64,9 +64,11 @@ type ExpoAudioPlayer = {
   ) => { remove: () => void };
 };
 
+type AudioSource = string | { uri: string; headers?: Record<string, string> } | null;
+
 type ExpoAudioMod = {
   createAudioPlayer: (
-    source?: { uri: string } | string | null,
+    source?: AudioSource,
     options?: { updateInterval?: number },
   ) => ExpoAudioPlayer;
   setAudioModeAsync: (mode: {

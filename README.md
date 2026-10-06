@@ -37,34 +37,6 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - Health: http://localhost:8000/v1/health  
 - Docs: http://localhost:8000/docs  
 
-### Deployment & Reverse Proxy Notes
-
-**Client-side audio upload**: The API accepts multipart audio file uploads (typically 30-100+ MB per episode). If deploying behind a reverse proxy, ensure it allows large request bodies:
-
-**Caddy** (add to your Caddyfile):
-```
-your-domain.com {
-    request_body {
-        max_size 200MB  # Allow podcast uploads
-    }
-    reverse_proxy localhost:8000
-}
-```
-
-**Nginx** (add to your nginx.conf):
-```
-http {
-    client_max_body_size 200M;  # Allow podcast uploads
-}
-```
-
-**Apache** (add to your .htaccess or httpd.conf):
-```
-LimitRequestBody 209715200  # 200MB in bytes
-```
-
-Without these settings, uploads >1MB will typically fail with `413 Request Entity Too Large`.  
-
 ### Env (`services/api/.env`)
 
 | Variable | Purpose |
@@ -116,11 +88,10 @@ docker run --rm -p 8000:8000 \
 ### API surface
 
 - `GET /v1/health` — reports `openrouter_configured`, `groq_configured` (legacy), `llm_configured`, `mock_mode`
-- `POST /v1/analyze-episode` — body `{ episode_guid, audio_url, title?, duration_ms?, feed_url?, force? }`  
-  - Default: queue in background (`status: queued`). Add `?sync=true` for blocking (tests).
-  - Cached hit → `status: ready` + segments
-  - Pipeline: download → (chunk if >25MB) → Whisper `verbose_json` → LLM/heuristic labels → SQLite
-- `GET /v1/skip-map/{episode_guid}` → `ready | pending | missing | error`
+- `POST /v1/analyze-episode` — body `{ episode_guid, audio_url, title?, duration_ms?, feed_url?, force? }`; downloads audio on the API server.
+- `POST /v1/analyze-episode-upload` — multipart upload used by the client's **Prepare** flow; analyzes the exact file downloaded by the client for playback.
+- Both analysis endpoints queue by default (`status: queued`); add `?sync=true` for blocking calls (tests). Ready skip maps and analyzed-audio metadata are cached in SQLite.
+- `GET /v1/skip-map/{episode_guid}` → `ready | pending | missing | error`, including audio URL/size/duration metadata when available.
 
 Skip-map segment: `{ start_ms, end_ms, type, confidence }`
 
@@ -144,36 +115,25 @@ Screens:
 2. **Library** — subscriptions → open show → RSS episodes  
 3. **Player** — play/pause/seek, **Auto-skip ads** toggle, **Prepare ad-skip** (calls API)
 
-### Playback: react-native-track-player (RNTP)
+### Playback: expo-audio
 
-`src/player/trackPlayer.ts` prefers **RNTP** for background + lock-screen / notification controls and seek-based ad-skip. Fallback order:
+`src/player/trackPlayer.ts` is the app's playback facade and uses **`expo-audio`** for native playback, seeking, background audio, and lock-screen controls. If the native audio module is unavailable, it falls back to a stub clock for UI and skip-map development; that fallback does not play audio. The app does not use RNTP or a headless playback service.
 
-1. **RNTP** (native Dev Client / EAS build)  
-2. **expo-av** (limited background)  
-3. **Stub clock** (UI + skip-map logic only)
-
-**RNTP does not work in Expo Go.** You need a development build:
+For native Android playback, build and run the app with its native configuration:
 
 ```bash
 cd apps/mobile
-# One-time: eas init (sets extra.eas.projectId in app.json)
-npx eas-cli build -p android --profile development   # Dev Client APK
-# or local:
-npx expo prebuild
 npx expo run:android
 ```
 
-Then start Metro against the Dev Client:
+Or build a sideloadable APK with EAS:
 
 ```bash
-npx expo start --dev-client
+cd apps/mobile
+npx eas-cli build -p android --profile preview
 ```
 
-Config already in place:
-
-- Custom entry `index.js` registers `TrackPlayer.registerPlaybackService` → `src/player/playbackService.ts`
-- `app.json`: `UIBackgroundModes: audio`, Android foreground-service + `POST_NOTIFICATIONS`, `expo-dev-client`, `expo-build-properties` (`usesCleartextTraffic`, **`newArchEnabled: false`** — RNTP is not New-Arch ready)
-- `eas.json`: `development` profile has `developmentClient: true` + APK
+The `expo-audio` config plugin enables background playback. `app.json` also configures audio background modes/permissions and Android cleartext traffic for local API development. Use `npx expo start` to run the JavaScript development server.
 
 Typecheck / skip helper smoke:
 
@@ -187,7 +147,7 @@ npm run skip-smoke
 
 1. Install EAS CLI: `npm i -g eas-cli` and `eas login`
 2. In `apps/mobile`: `eas init` (replace `extra.eas.projectId` in `app.json`)
-3. Preview APK (includes RNTP after prebuild):
+3. Build the preview APK:
 
 ```bash
 cd apps/mobile
@@ -198,11 +158,11 @@ eas build -p android --profile preview
 
 ## Ad-skip pipeline (v1)
 
-1. Client plays enclosure URL immediately  
-2. `GET /v1/skip-map/{guid}` — if missing → `POST /v1/analyze-episode`  
-3. Backend: download audio → chunk if >25MB → OpenRouter Whisper turbo `verbose_json` → OpenRouter chat (Gemini Flash default) / heuristic → SQLite cache  
-4. Client polls until `ready`, then while playing: if position ∈ `[start_ms, end_ms)` → `seek(end_ms)`  
-5. Toggle **Auto-skip ads** off to hear everything  
+1. Client plays the episode from its enclosure URL (or the local analysis download, if available).
+2. On play, the client looks up `GET /v1/skip-map/{guid}` and can queue server-side analysis with `POST /v1/analyze-episode` if needed. **Prepare** instead downloads on the client and sends that file to `POST /v1/analyze-episode-upload`.
+3. The API transcribes, labels, and caches segments in SQLite; large audio is chunked when needed.
+4. Client polls until `ready`, filters segments using show preferences, and seeks to `end_ms` when playback enters an enabled segment.
+5. Toggle **Auto-skip ads** off to hear everything.
 
 Personal use only; respect show licenses / ToS. Audio is sent to OpenRouter (and its STT/LLM providers) for analysis.
 
