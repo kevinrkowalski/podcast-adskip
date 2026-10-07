@@ -19,7 +19,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-_docs_enabled = not settings.require_app_key
+_docs_enabled = not (settings.app_key or "").strip()
 
 app = FastAPI(
     title="Podcast Ad-Skip API",
@@ -49,6 +49,6 @@ app.include_router(upload.router)
 async def root() -> dict:
     return {
         "service": "podcast-adskip-api",
-        "docs": "/docs",
+        "docs": "/docs" if _docs_enabled else None,
         "health": "/v1/health",
     }

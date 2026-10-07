@@ -6,15 +6,22 @@ os.environ["MOCK_ANALYZE"] = "true"
 os.environ["DATABASE_PATH"] = "data/test_skip_maps.db"
 os.environ["OPENROUTER_API_KEY"] = ""
 os.environ["GROQ_API_KEY"] = ""
-os.environ["APP_KEY"] = ""
-os.environ["REQUIRE_APP_KEY"] = "false"
+os.environ["APP_KEY"] = "test-secret-key"
 
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient as FastAPITestClient
 
 from app.config import get_settings
 from app.main import app
 from app.services.detect_ads import heuristic_segments
 from app.services.transcribe import stub_transcript
+
+
+class ApiTestClient(FastAPITestClient):
+    def __init__(self, app):
+        super().__init__(app, headers={"X-App-Key": "test-secret-key"})
+
+
+TestClient = ApiTestClient
 
 get_settings.cache_clear()
 
@@ -160,11 +167,10 @@ def test_settings_openrouter_defaults():
 def test_app_key_missing_or_wrong_returns_401():
     """With APP_KEY set, missing/wrong header → 401; correct → ok."""
     os.environ["APP_KEY"] = "test-secret-key"
-    os.environ["REQUIRE_APP_KEY"] = "false"
     get_settings.cache_clear()
     try:
         with TestClient(app) as client:
-            r = client.get("/v1/skip-map/any-guid")
+            r = client.get("/v1/skip-map/any-guid", headers={"X-App-Key": ""})
             assert r.status_code == 401
 
             r = client.get("/v1/skip-map/any-guid", headers={"X-App-Key": "wrong"})
@@ -179,6 +185,7 @@ def test_app_key_missing_or_wrong_returns_401():
 
             r = client.post(
                 "/v1/analyze-episode?sync=true",
+                headers={"X-App-Key": ""},
                 json={
                     "episode_guid": "auth-test-guid",
                     "audio_url": "https://example.com/ep.mp3",
@@ -199,15 +206,13 @@ def test_app_key_missing_or_wrong_returns_401():
             assert r.status_code == 200
             assert r.json()["status"] == "ready"
     finally:
-        os.environ["APP_KEY"] = ""
-        os.environ["REQUIRE_APP_KEY"] = "false"
+        os.environ["APP_KEY"] = "test-secret-key"
         get_settings.cache_clear()
 
 
-def test_require_app_key_without_key_returns_503():
-    """REQUIRE_APP_KEY=true with empty APP_KEY → 503 on protected routes."""
+def test_missing_app_key_fails_closed_with_503():
+    """An unset APP_KEY rejects protected routes while public routes stay up."""
     os.environ["APP_KEY"] = ""
-    os.environ["REQUIRE_APP_KEY"] = "true"
     get_settings.cache_clear()
     try:
         with TestClient(app) as client:
@@ -228,15 +233,13 @@ def test_require_app_key_without_key_returns_503():
             assert client.get("/v1/health").status_code == 200
             assert client.get("/").status_code == 200
     finally:
-        os.environ["APP_KEY"] = ""
-        os.environ["REQUIRE_APP_KEY"] = "false"
+        os.environ["APP_KEY"] = "test-secret-key"
         get_settings.cache_clear()
 
 
 def test_analyze_rate_limit_returns_429():
     """After N analyze POSTs from one IP, further requests get 429."""
-    os.environ["APP_KEY"] = ""
-    os.environ["REQUIRE_APP_KEY"] = "false"
+    os.environ["APP_KEY"] = "test-secret-key"
     os.environ["ANALYZE_RATE_LIMIT"] = "3"
     os.environ["ANALYZE_RATE_WINDOW_SECONDS"] = "3600"
     get_settings.cache_clear()

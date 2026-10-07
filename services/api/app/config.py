@@ -16,8 +16,7 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     # openrouter (default) | groq | gemini | stub
     llm_provider: str = "openrouter"
-    app_key: str = ""  # optional X-App-Key for personal auth
-    require_app_key: bool = False  # when true, empty app_key → 503 on protected routes
+    app_key: str = ""  # shared secret required by protected routes
     # In-memory rate limit for POST /v1/analyze-episode (OpenRouter spend guard)
     analyze_rate_limit: int = 10  # max requests per IP per window
     analyze_rate_window_seconds: int = 3600  # sliding window length

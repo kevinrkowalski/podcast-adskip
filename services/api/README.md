@@ -33,9 +33,9 @@ If a future OpenRouter speech model lacked `verbose_json` segments, fall back to
 Never commit real keys. `.env` is gitignored.
 
 
-## Personal hardening
+## App key protection
 
-Set a long random `APP_KEY` and `REQUIRE_APP_KEY=true` in `.env` for personal production. Protected routes (`/v1/analyze-episode`, `/v1/skip-map/...`) require matching `X-App-Key` (constant-time compare). Health and `/` stay public. With `REQUIRE_APP_KEY=true` and an empty `APP_KEY`, protected routes return **503** (`APP_KEY not configured`); OpenAPI docs are disabled when `REQUIRE_APP_KEY` is true. Leave both unset/`false` for open local LAN use. Put the same key in the mobile app Settings (App Key) or `EXPO_PUBLIC_APP_KEY`. Never commit real keys.
+Protected API routes always require an `APP_KEY`; there is no setting to disable this check. Generate a long random key (for example, `openssl rand -hex 32`) and set it in the API's `.env`. Configure the same value in the mobile app Settings (App Key) or `EXPO_PUBLIC_APP_KEY`. Never commit the key. Without `APP_KEY`, protected routes return **503** (`APP_KEY not configured`); with a missing or incorrect `X-App-Key` header, they return **401**. Health and `/` remain public. OpenAPI docs are disabled when an `APP_KEY` is configured.
 
 `POST /v1/analyze-episode` also has an in-memory per-IP rate limit (default **10 requests / hour**, tunable via `ANALYZE_RATE_LIMIT` / `ANALYZE_RATE_WINDOW_SECONDS`). Exceeding it returns **429** with `Retry-After`. Limit resets on process restart.
 

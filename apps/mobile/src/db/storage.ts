@@ -219,6 +219,9 @@ export async function cacheSkipMap(
       throw inner;
     }
   }
+  console.log(
+    `[storage] saved skip-map: ${map.status}, ${map.segments?.length ?? 0} segments`,
+  );
 }
 
 /**
@@ -233,29 +236,44 @@ export async function getCachedSkipMap(
   if (!guid && !enclosureUrl?.trim()) return null;
 
   const tryRead = async (key: string): Promise<SkipMap | null> => {
-    try {
-      return parseSkipMapRaw(await AsyncStorage.getItem(key));
-    } catch (error) {
-      console.warn('[storage] skip-map read skipped:', error);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        await AsyncStorage.removeItem(key);
-      } catch {
-        /* ignore cleanup failure */
+        return parseSkipMapRaw(await AsyncStorage.getItem(key));
+      } catch (error) {
+        // A transient native-storage read failure must not delete the only saved map.
+        // Retry once after startup settles, then leave the entry intact for a later load.
+        if (attempt === 0) {
+          console.warn('[storage] skip-map read failed; retrying:', error);
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        } else {
+          console.warn('[storage] skip-map read skipped after retry:', error);
+        }
       }
-      return null;
     }
+    return null;
   };
 
   if (guid) {
     const byGuid = await tryRead(skipMapGuidKey(guid));
-    if (byGuid) return byGuid;
+    if (byGuid) {
+      console.log(
+        `[storage] restored skip-map: ${byGuid.status}, ${byGuid.segments?.length ?? 0} segments`,
+      );
+      return byGuid;
+    }
   }
 
   const url = enclosureUrl?.trim();
   if (!url) return null;
 
   const byUrl = await tryRead(skipMapUrlKey(url));
-  if (!byUrl) return null;
+  if (!byUrl) {
+    console.log('[storage] no cached skip-map found for episode');
+    return null;
+  }
+  console.log(
+    `[storage] restored skip-map by audio URL: ${byUrl.status}, ${byUrl.segments?.length ?? 0} segments`,
+  );
 
   // Migrate / re-index under the GUID we have now so next open hits the primary key.
   if (guid) {

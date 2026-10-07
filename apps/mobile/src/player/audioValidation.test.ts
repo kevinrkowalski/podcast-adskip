@@ -67,20 +67,11 @@ describe('detectAudioMismatch', () => {
     expect(queryWarning?.severity).toBe('medium');
   });
 
-  it('detects duration mismatch (high severity)', () => {
+  it('ignores duration differences', () => {
     const episode = mockEpisode({ durationMs: 1900000 }); // 31:40
     const skipMap = mockSkipMap({ analyzed_audio_duration_ms: 1800000 }); // 30:00
     const warnings = detectAudioMismatch(episode, skipMap);
-    expect(warnings.some((w) => w.type === 'duration_mismatch')).toBe(true);
-    const durationWarning = warnings.find((w) => w.type === 'duration_mismatch');
-    expect(durationWarning?.severity).toBe('high');
-  });
-
-  it('ignores small duration differences (<5s)', () => {
-    const episode = mockEpisode({ durationMs: 1801000 }); // 30:01
-    const skipMap = mockSkipMap({ analyzed_audio_duration_ms: 1800000 }); // 30:00
-    const warnings = detectAudioMismatch(episode, skipMap);
-    expect(warnings.some((w) => w.type === 'duration_mismatch')).toBe(false);
+    expect(warnings.some((w) => w.message.includes('Duration mismatch'))).toBe(false);
   });
 
   it('detects stale analysis with time-based URLs (low severity)', () => {

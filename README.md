@@ -49,7 +49,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 | `GROQ_API_KEY` | **Legacy / optional.** Used only when OpenRouter key is absent. Prefer OpenRouter. |
 | `LLM_API_KEY` / `GEMINI_API_KEY` | Optional direct Gemini / override keys |
 | `MOCK_ANALYZE` | `true` forces stub even if keys exist |
-| `APP_KEY` | Optional shared secret (`X-App-Key`) |
+| `APP_KEY` | Required shared secret for protected API routes (`X-App-Key`); generate with `openssl rand -hex 32` and set the same value in the mobile app |
 | `CORS_ORIGINS` | `*` or comma-separated origins |
 | `DATABASE_PATH` | SQLite file (default `data/skip_maps.db`) |
 | `MAX_AUDIO_MB` | Per-chunk STT upload limit (default `25` for OpenRouter multipart); larger files are **chunked with ffmpeg** |

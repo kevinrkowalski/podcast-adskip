@@ -147,6 +147,7 @@ export async function uploadAudioForAnalysis(
   if (appKey) {
     headers['X-App-Key'] = appKey;
   }
+  const uploadUrl = `${apiBaseUrl.replace(/\/$/, '')}/v1/analyze-episode-upload`;
 
   // Use XMLHttpRequest for progress tracking on native
   if (Platform.OS !== 'web' && onProgress) {
@@ -170,15 +171,24 @@ export async function uploadAudioForAnalysis(
             resolve({ status: 'queued' });
           }
         } else {
-          reject(new Error(`Upload failed: ${xhr.status}`));
+          const detail = xhr.responseText?.trim().slice(0, 300);
+          reject(new Error(`Upload failed: ${xhr.status}${detail ? ` — ${detail}` : ''}`));
         }
       });
 
       xhr.addEventListener('error', () => {
-        reject(new Error('Upload failed'));
+        reject(
+          new Error(
+            `Upload network error (status ${xhr.status || 0}; no HTTP response). Check that the device can reach the configured API.`,
+          ),
+        );
       });
 
-      xhr.open('POST', `${apiBaseUrl}/v1/analyze-episode-upload`);
+      xhr.addEventListener('abort', () => {
+        reject(new Error('Upload was cancelled before the server responded.'));
+      });
+
+      xhr.open('POST', uploadUrl);
       
       // Set headers
       Object.entries(headers).forEach(([key, value]) => {
@@ -190,14 +200,15 @@ export async function uploadAudioForAnalysis(
   }
 
   // Fallback to fetch (web or no progress tracking)
-  const response = await fetch(`${apiBaseUrl}/v1/analyze-episode-upload`, {
+  const response = await fetch(uploadUrl, {
     method: 'POST',
     headers,
     body: formData,
   });
 
   if (!response.ok) {
-    throw new Error(`Upload failed: ${response.status}`);
+    const detail = (await response.text()).trim().slice(0, 300);
+    throw new Error(`Upload failed: ${response.status}${detail ? ` — ${detail}` : ''}`);
   }
 
   return response.json();

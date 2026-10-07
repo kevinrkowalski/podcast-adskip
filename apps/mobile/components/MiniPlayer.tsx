@@ -5,19 +5,26 @@ import { theme } from '@/constants/Colors';
 
 /**
  * Compact now-playing bar above the tab bar (Pocket Casts style).
- * Hidden on the full Player screen so it does not stack.
+ * Hidden on the full Now Playing screen so it does not stack.
  */
 export function MiniPlayer() {
-  const { episode, isPlaying, positionMs, durationMs, togglePlay, seek } = usePlayback();
+  const {
+    episode,
+    isPlaying,
+    positionMs,
+    durationMs,
+    togglePlay,
+    seek,
+    restoreCurrentSkipMap,
+  } = usePlayback();
   const router = useRouter();
   const rootNavigationState = useRootNavigationState();
   const navigationReady = rootNavigationState?.key != null;
   const segments = useSegments() as string[];
 
   if (!episode) return null;
-  // Hide on full Now Playing: root stack `/now-playing` OR the in-tab Player
-  // screen (`player`). Never Redirect the tab — that remounted on Back and crashed.
-  const onFullPlayer = segments.some((s) => s === 'now-playing' || s === 'player');
+  // Hide on the full Now Playing screen.
+  const onFullPlayer = segments.some((s) => s === 'now-playing');
   if (onFullPlayer) return null;
 
   const progress = durationMs > 0 ? Math.min(1, positionMs / durationMs) : 0;
@@ -29,7 +36,11 @@ export function MiniPlayer() {
         <Pressable
           style={styles.openArea}
           onPress={() => {
-            if (navigationReady) router.push('/now-playing' as Href);
+            if (!navigationReady) return;
+            router.push('/now-playing' as Href);
+            void restoreCurrentSkipMap().catch((error) => {
+              console.warn('[mini-player] Failed to restore skip map:', error);
+            });
           }}>
           {!!episode.artworkUrl ? (
             <Image source={{ uri: episode.artworkUrl }} style={styles.art} />

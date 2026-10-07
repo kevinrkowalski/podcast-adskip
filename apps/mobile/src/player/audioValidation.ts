@@ -7,7 +7,7 @@ import type { Episode, SkipMap } from '@/src/types';
  */
 
 export interface AudioMismatchWarning {
-  type: 'url_query_params' | 'url_different' | 'duration_mismatch' | 'stale_analysis';
+  type: 'url_query_params' | 'url_different' | 'stale_analysis';
   severity: 'high' | 'medium' | 'low';
   message: string;
 }
@@ -71,20 +71,7 @@ export function detectAudioMismatch(
     });
   }
 
-  // Warning 3: Duration mismatch (significant difference)
-  if (
-    episode.durationMs &&
-    skipMap.analyzed_audio_duration_ms &&
-    Math.abs(episode.durationMs - skipMap.analyzed_audio_duration_ms) > 5000
-  ) {
-    warnings.push({
-      type: 'duration_mismatch',
-      severity: 'high',
-      message: `Duration mismatch: RSS shows ${Math.round(episode.durationMs / 1000)}s, analyzed ${Math.round(skipMap.analyzed_audio_duration_ms / 1000)}s. Audio may differ.`,
-    });
-  }
-
-  // Warning 4: Analysis is old (>24 hours for dynamic ad insertion)
+  // Warning 3: Analysis is old (>24 hours for dynamic ad insertion)
   if (skipMap.analyzed_at && hasTimestampQueryParams(currentUrl)) {
     const analyzedMs = new Date(skipMap.analyzed_at).getTime();
     const ageHours = (Date.now() - analyzedMs) / (1000 * 60 * 60);

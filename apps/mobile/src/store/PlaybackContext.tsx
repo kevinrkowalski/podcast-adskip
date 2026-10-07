@@ -50,6 +50,7 @@ type Ctx = {
   audioMismatchWarning: string | null;
   uploadProgress: { downloaded: number; uploaded: number; total: number } | null;
   playEpisode: (ep: Episode) => Promise<void>;
+  restoreCurrentSkipMap: () => Promise<SkipMap | null>;
   togglePlay: () => Promise<void>;
   seek: (ms: number) => Promise<void>;
   cyclePlaybackRate: () => void;
@@ -237,6 +238,50 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     const gen = skipLoadGen.current;
     const stillCurrent = () => gen === skipLoadGen.current;
 
+    const restoreExistingMap = async (settings: PodcastSkipSettings): Promise<SkipMap | null> => {
+      // The global setting is the API kill-switch; per-show OFF only prevents auto-analysis.
+      // A manually prepared map should still be recoverable from the server after a cold start.
+      if (!(await getAutoSkipEnabled())) {
+        player.setSkipSegments([]);
+        return null;
+      }
+
+      try {
+        await Promise.all([hydrateApiBaseUrl(), hydrateAppKey()]);
+        if (!stillCurrent()) return null;
+        const remote = await getSkipMap(ep.guid);
+        if (!stillCurrent()) return null;
+
+        setSkipMap(remote);
+        skipMapRef.current = remote;
+        setAnalyzeStatus(remote.status);
+        if (remote.status === 'ready') {
+          try {
+            await cacheSkipMap(ep.guid, remote, ep.enclosureUrl);
+          } catch (cacheErr) {
+            console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
+          }
+          if (!stillCurrent()) return null;
+          player.setSkipSegments(applySkipFilter(remote.segments, settings));
+          const warnings = detectAudioMismatch(ep, remote);
+          const summary = formatMismatchSummary(warnings);
+          setAudioMismatchWarning(summary);
+          if (summary) {
+            console.warn('[playback] Audio mismatch detected:', summary, warnings);
+          }
+        } else {
+          player.setSkipSegments([]);
+        }
+        return remote;
+      } catch (error) {
+        if (!stillCurrent()) return null;
+        console.warn('[playback] Existing skip-map lookup failed:', error);
+        setAnalyzeStatus('offline');
+        player.setSkipSegments([]);
+        return null;
+      }
+    };
+
     if (!enabled) {
       // Detection is off for this show, but still load cached maps (from manual Prepare).
       // We won't auto-analyze, but we should restore and filter any existing ready map.
@@ -269,9 +314,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         return local;
       }
       
-      // No cached map and detection is off — clear segments and return
-      player.setSkipSegments([]);
-      return null;
+      // Do not analyze while detection is off, but restore a map already prepared on the server.
+      return restoreExistingMap(settings);
     }
     if (!(await canUseAdDetection(ep))) {
       if (!(await getAutoSkipEnabled())) {
@@ -305,8 +349,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         return local;
       }
       
-      clearAdDetection();
-      return null;
+      abortLoadKeepCache();
+      return restoreExistingMap(settings);
     }
     if (!stillCurrent()) return null;
 
@@ -395,13 +439,39 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         setAudioMismatchWarning(null);
       }
       return remote;
-    } catch {
+    } catch (error) {
       if (!stillCurrent()) return null;
+      console.warn('[playback] Skip-map restore from API failed:', error);
       setAnalyzeStatus('offline');
       player.setSkipSegments([]);
       return null;
     }
   }, [abortLoadKeepCache, applySkipFilter, canUseAdDetection, clearAdDetection]);
+
+  const restoreCurrentSkipMap = useCallback(async (): Promise<SkipMap | null> => {
+    const current = episodeRef.current;
+    if (!current?.guid) return null;
+
+    const inMemory = skipMapRef.current;
+    if (inMemory?.status === 'ready' && inMemory.episode_guid === current.guid) {
+      return inMemory;
+    }
+
+    try {
+      const globalEnabled = await getAutoSkipEnabled();
+      const enabled = globalEnabled && await isPodcastAdDetectionEnabled({
+        collectionId: current.collectionId,
+        feedUrl: current.feedUrl,
+      });
+      if (episodeRef.current?.guid !== current.guid) return null;
+      return await loadSkipMap(current, enabled);
+    } catch (error) {
+      if (episodeRef.current?.guid !== current.guid) return null;
+      console.warn('[playback] Failed to restore current skip map:', error);
+      setAnalyzeStatus('offline');
+      return null;
+    }
+  }, [loadSkipMap]);
 
   const playEpisode = useCallback(
     async (ep: Episode) => {
@@ -789,7 +859,10 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           setUploadProgress(null);
           return;
         }
-        
+
+        // Use Settings-stored API URL and key on cold starts before sending the upload.
+        await Promise.all([hydrateApiBaseUrl(), hydrateAppKey()]);
+
         // Download audio locally
         console.log('[playback] requestAnalyze: downloading audio');
         const localPath = await downloadAudioForAnalysis(
@@ -960,6 +1033,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       audioMismatchWarning,
       uploadProgress,
       playEpisode,
+      restoreCurrentSkipMap,
       togglePlay,
       seek,
       cyclePlaybackRate,
@@ -983,6 +1057,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       audioMismatchWarning,
       uploadProgress,
       playEpisode,
+      restoreCurrentSkipMap,
       togglePlay,
       seek,
       cyclePlaybackRate,

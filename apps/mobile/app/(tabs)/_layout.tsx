@@ -15,13 +15,6 @@ export const unstable_settings = {
 
 function TabBarWithMini(props: React.ComponentProps<typeof BottomTabBar>) {
   const insets = useSafeAreaInsets();
-  const current = props.state.routes[props.state.index]?.name;
-  // Player tab renders the full Now Playing UI in-place — hide mini + tab chrome
-  // so controls are not covered (and so we never Redirect out of this tab).
-  if (current === 'player') {
-    return null;
-  }
-
   return (
     <View
       style={StyleSheet.flatten([
@@ -78,19 +71,6 @@ export default function TabLayout() {
           tabBarIcon: ({ color }) => (
             <SymbolView
               name={{ ios: 'magnifyingglass', android: 'search', web: 'search' }}
-              tintColor={color}
-              size={24}
-            />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="player"
-        options={{
-          title: 'Player',
-          tabBarIcon: ({ color }) => (
-            <SymbolView
-              name={{ ios: 'play.circle', android: 'play_circle', web: 'play_circle' }}
               tintColor={color}
               size={24}
             />
