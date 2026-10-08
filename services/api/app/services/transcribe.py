@@ -18,7 +18,9 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any
 
+import aiofiles
 import httpx
 
 from app.config import Settings
@@ -40,25 +42,26 @@ async def download_audio(
     suffix = Path(audio_url.split("?")[0]).suffix or ".mp3"
     if len(suffix) > 8:
         suffix = ".mp3"
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp_path = Path(tmp.name)
-    tmp.close()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp_path = Path(tmp.name)
 
     downloaded = 0
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=180.0) as client:
-            async with client.stream("GET", audio_url) as resp:
-                resp.raise_for_status()
-                with tmp_path.open("wb") as f:
-                    async for chunk in resp.aiter_bytes(64 * 1024):
-                        downloaded += len(chunk)
-                        if downloaded > max_bytes:
-                            raise ValueError(
-                                f"Audio exceeds download cap of {download_cap_mb} MB"
-                            )
-                        f.write(chunk)
+        async with (
+            httpx.AsyncClient(follow_redirects=True, timeout=180.0) as client,
+            client.stream("GET", audio_url) as resp,
+        ):
+            _ = resp.raise_for_status()
+            async with aiofiles.open(tmp_path, "wb") as f:
+                async for chunk in resp.aiter_bytes(64 * 1024):
+                    downloaded += len(chunk)
+                    if downloaded > max_bytes:
+                        raise ValueError(
+                            f"Audio exceeds download cap of {download_cap_mb} MB"
+                        )
+                    _ = await f.write(chunk)
     except Exception:
-        tmp_path.unlink(missing_ok=True)
+        await asyncio.to_thread(tmp_path.unlink, missing_ok=True)
         raise
 
     size_mb = downloaded / (1024 * 1024)
@@ -111,8 +114,7 @@ def split_audio_chunks(audio_path: Path, max_mb: int) -> list[tuple[Path, float]
 
     if not shutil.which("ffmpeg"):
         raise ValueError(
-            f"Audio is {size / (1024 * 1024):.1f} MB (>{max_mb} MB STT upload limit) "
-            "but ffmpeg is not installed to chunk it"
+            f"Audio is {size / (1024 * 1024):.1f} MB (>{max_mb} MB STT upload limit) but ffmpeg is unavailable to chunk it"
         )
 
     duration = _ffprobe_duration_s(audio_path)
@@ -145,7 +147,7 @@ def split_audio_chunks(audio_path: Path, max_mb: int) -> list[tuple[Path, float]
             str(out),
         ]
         try:
-            subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+            _ = subprocess.run(cmd, check=True, capture_output=True, timeout=300)
         except subprocess.CalledProcessError:
             # Re-encode if copy fails (odd containers / keyframe issues)
             cmd_re = [
@@ -165,7 +167,7 @@ def split_audio_chunks(audio_path: Path, max_mb: int) -> list[tuple[Path, float]
                 "1",
                 str(out.with_suffix(".mp3")),
             ]
-            subprocess.run(cmd_re, check=True, capture_output=True, timeout=600)
+            _ = subprocess.run(cmd_re, check=True, capture_output=True, timeout=600)
             out = out.with_suffix(".mp3")
 
         if not out.exists() or out.stat().st_size == 0:
@@ -173,7 +175,7 @@ def split_audio_chunks(audio_path: Path, max_mb: int) -> list[tuple[Path, float]
         # If a single chunk is still over limit, re-encode smaller
         if out.stat().st_size > max_mb * 1024 * 1024:
             smaller = out.with_name(out.stem + "_sm.mp3")
-            subprocess.run(
+            _ = subprocess.run(
                 [
                     "ffmpeg",
                     "-y",
@@ -198,8 +200,7 @@ def split_audio_chunks(audio_path: Path, max_mb: int) -> list[tuple[Path, float]
             out = smaller
             if out.stat().st_size > max_mb * 1024 * 1024:
                 raise ValueError(
-                    f"Chunk {i} still exceeds {max_mb} MB after re-encode "
-                    f"({out.stat().st_size / (1024 * 1024):.1f} MB)"
+                    f"Chunk {i} still exceeds {max_mb} MB after re-encode ({out.stat().st_size / (1024 * 1024):.1f} MB)"
                 )
         chunks.append((out, start))
         logger.info("Chunk %s/%s offset=%.1fs size=%.1fMB", i + 1, n, start, out.stat().st_size / (1024 * 1024))
@@ -207,9 +208,9 @@ def split_audio_chunks(audio_path: Path, max_mb: int) -> list[tuple[Path, float]
     return chunks
 
 
-def merge_transcripts(parts: list[tuple[dict, float]]) -> dict:
+def merge_transcripts(parts: list[tuple[dict[str, Any], float]]) -> dict[str, Any]:
     """Merge verbose_json transcripts with per-chunk time offsets (seconds)."""
-    all_segments: list[dict] = []
+    all_segments: list[dict[str, Any]] = []
     texts: list[str] = []
     total_duration = 0.0
     for idx, (tx, offset) in enumerate(parts):
@@ -252,7 +253,7 @@ def merge_transcripts(parts: list[tuple[dict, float]]) -> dict:
     }
 
 
-def _normalize_transcription(result: object) -> dict:
+def _normalize_transcription(result: Any) -> dict[str, Any]:
     if hasattr(result, "model_dump"):
         return result.model_dump()  # type: ignore[no-any-return]
     if isinstance(result, dict):
@@ -286,7 +287,7 @@ def _openrouter_headers(settings: Settings) -> dict[str, str]:
     return headers
 
 
-def _transcribe_openrouter_sync(audio_path: Path, settings: Settings) -> dict:
+def _transcribe_openrouter_sync(audio_path: Path, settings: Settings) -> dict[str, Any]:
     """OpenRouter STT via OpenAI-compatible multipart (verbose_json segments).
 
     Model default: openai/whisper-large-v3-turbo — affordable Whisper-class STT
@@ -309,7 +310,7 @@ def _transcribe_openrouter_sync(audio_path: Path, settings: Settings) -> dict:
     return _normalize_transcription(result)
 
 
-def _transcribe_groq_sync(audio_path: Path, settings: Settings) -> dict:
+def _transcribe_groq_sync(audio_path: Path, settings: Settings) -> dict[str, Any]:
     """Legacy Groq Whisper path (optional when only GROQ_API_KEY is set)."""
     from groq import Groq
 
@@ -329,7 +330,7 @@ def _transcribe_groq_sync(audio_path: Path, settings: Settings) -> dict:
     return _normalize_transcription(result)
 
 
-def _transcribe_file_sync(audio_path: Path, settings: Settings) -> dict:
+def _transcribe_file_sync(audio_path: Path, settings: Settings) -> dict[str, Any]:
     if settings.openrouter_api_key:
         return _transcribe_openrouter_sync(audio_path, settings)
     if settings.groq_api_key:
@@ -337,12 +338,12 @@ def _transcribe_file_sync(audio_path: Path, settings: Settings) -> dict:
     raise RuntimeError("No OPENROUTER_API_KEY or GROQ_API_KEY configured for transcription")
 
 
-async def transcribe_audio(audio_path: Path, settings: Settings) -> dict:
+async def transcribe_audio(audio_path: Path, settings: Settings) -> dict[str, Any]:
     """Whisper verbose_json via OpenRouter (preferred) or legacy Groq; chunk if over max_audio_mb."""
     chunks = split_audio_chunks(audio_path, settings.max_audio_mb)
     owned_dirs: set[Path] = set()
     try:
-        parts: list[tuple[dict, float]] = []
+        parts: list[tuple[dict[str, Any], float]] = []
         for path, offset in chunks:
             if path.parent.name.startswith("adskip-chunks-"):
                 owned_dirs.add(path.parent)
@@ -357,11 +358,11 @@ async def transcribe_audio(audio_path: Path, settings: Settings) -> dict:
 
 
 # Back-compat alias used by older imports / docs
-async def transcribe_groq(audio_path: Path, settings: Settings) -> dict:
+async def transcribe_groq(audio_path: Path, settings: Settings) -> dict[str, Any]:
     return await transcribe_audio(audio_path, settings)
 
 
-def stub_transcript(duration_ms: int | None = None) -> dict:
+def stub_transcript(duration_ms: int | None = None) -> dict[str, Any]:
     """Deterministic mock transcript for local/dev without API keys."""
     duration_s = (duration_ms or 1_800_000) / 1000.0
     segments = [
@@ -391,7 +392,7 @@ def stub_transcript(duration_ms: int | None = None) -> dict:
         },
     ]
     return {
-        "text": " ".join(s["text"] for s in segments),
+        "text": " ".join(str(s["text"]) for s in segments),
         "segments": segments,
         "duration": duration_s,
         "mock": True,

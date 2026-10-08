@@ -5,7 +5,9 @@ import logging
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Annotated, Any
 
+import aiofiles
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, Request, UploadFile
 
 from app.auth import check_app_key
@@ -29,7 +31,7 @@ def _parse_dt(value: str | None) -> datetime | None:
         return None
 
 
-def _progress_kwargs(row: dict | None) -> dict:
+def _progress_kwargs(row: dict[str, Any] | None) -> dict[str, Any]:
     if not row:
         return {}
     return {
@@ -45,14 +47,14 @@ def _progress_kwargs(row: dict | None) -> dict:
 async def analyze_episode_upload(
     request: Request,
     background_tasks: BackgroundTasks,
-    audio_file: UploadFile = File(...),
-    episode_guid: str = Form(...),
-    title: str | None = Form(None),
-    duration_ms: int | None = Form(None),
-    feed_url: str | None = Form(None),
-    audio_url: str | None = Form(None),
-    force: bool = Form(False),
-    x_app_key: str | None = Header(default=None),
+    audio_file: Annotated[UploadFile, File()],
+    episode_guid: Annotated[str, Form()],
+    title: Annotated[str | None, Form()] = None,
+    duration_ms: Annotated[int | None, Form()] = None,
+    feed_url: Annotated[str | None, Form()] = None,
+    audio_url: Annotated[str | None, Form()] = None,
+    force: Annotated[bool, Form()] = False,
+    x_app_key: Annotated[str | None, Header()] = None,
     sync: bool = False,
 ) -> AnalyzeEpisodeResponse:
     """
@@ -70,16 +72,15 @@ async def analyze_episode_upload(
     if len(suffix) > 8:
         suffix = ".mp3"
     
-    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp_path = Path(tmp_file.name)
-    tmp_file.close()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+        tmp_path = Path(tmp_file.name)
     
     try:
         # Stream upload to disk
-        with tmp_path.open("wb") as f:
+        async with aiofiles.open(tmp_path, "wb") as f:
             chunk_size = 1024 * 1024  # 1MB chunks
             while chunk := await audio_file.read(chunk_size):
-                f.write(chunk)
+                await f.write(chunk)
         
         audio_sha256, audio_md5 = await asyncio.to_thread(file_fingerprints, tmp_path)
         logger.info(

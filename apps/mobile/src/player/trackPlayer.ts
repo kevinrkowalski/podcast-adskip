@@ -12,6 +12,14 @@
 import { Platform } from 'react-native';
 import type { AdSegment, Episode } from '@/src/types';
 import { seekTargetIfInAd } from './skipLogic';
+import {
+  configureAndroidAutoSkip,
+  controlAndroidAutoPlayer,
+  getAndroidAutoStatus,
+  isAndroidAutoPlaybackAvailable,
+  loadAndroidAutoEpisode,
+  subscribeAndroidAutoStatus,
+} from './androidAuto';
 
 /**
  * Identify as a real podcast client per IAB/Simplecast guidance.
@@ -33,7 +41,7 @@ export type PlayerStatus = {
 };
 
 type Listener = (status: PlayerStatus) => void;
-type Backend = 'expo-audio' | 'stub';
+type Backend = 'expo-audio' | 'android-auto' | 'stub';
 
 type ExpoAudioPlayer = {
   play: () => void;
@@ -110,9 +118,15 @@ let lastManualSeekAt = 0;
 let audioModeReady = false;
 let player: ExpoAudioPlayer | null = null;
 let statusSub: { remove: () => void } | null = null;
+let androidStatusUnsubscribe: (() => void) | null = null;
 
 function emit() {
   listeners.forEach((l) => l({ ...status }));
+}
+
+function mergeEpisodeMetadata(incoming: Episode, previous: Episode | null): Episode {
+  if (!previous || previous.guid !== incoming.guid) return incoming;
+  return { ...previous, ...incoming, description: incoming.description ?? previous.description };
 }
 
 function clearPendingSeek() {
@@ -216,6 +230,10 @@ function activateLockScreen(episode: Episode) {
 }
 
 function releasePlayer() {
+  if (androidStatusUnsubscribe) {
+    androidStatusUnsubscribe();
+    androidStatusUnsubscribe = null;
+  }
   if (statusSub) {
     try {
       statusSub.remove();
@@ -268,6 +286,9 @@ function startTick() {
       );
     } else if (backend === 'expo-audio') {
       syncFromNative();
+    } else if (backend === 'android-auto') {
+      emit();
+      return;
     }
 
     if (autoSkip && adDetectionEnabled && segments.length && status.isPlaying && pendingSeekMs == null) {
@@ -303,6 +324,7 @@ export function subscribePlayer(listener: Listener): () => void {
 
 export function setAutoSkip(enabled: boolean) {
   autoSkip = enabled;
+  configureAndroidAutoSkip({ autoSkip: enabled });
 }
 
 export function getAutoSkip(): boolean {
@@ -311,10 +333,12 @@ export function getAutoSkip(): boolean {
 
 export function setAdDetectionEnabled(enabled: boolean) {
   adDetectionEnabled = enabled;
+  configureAndroidAutoSkip({ adDetectionEnabled: enabled });
 }
 
 export function setSkipSegments(segs: AdSegment[]) {
   segments = segs ?? [];
+  configureAndroidAutoSkip({ segments, episodeGuid: status.episode?.guid ?? null });
 }
 
 export function getBackend(): Backend {
@@ -341,6 +365,7 @@ export async function loadAndPlay(
   status.positionMs = startMs;
   status.durationMs = episode.durationMs ?? 0;
   status.isPlaying = false;
+  segments = [];
   emit();
 
   const url = opts?.localFilePath || episode.enclosureUrl;
@@ -350,6 +375,34 @@ export async function loadAndPlay(
     status.isPlaying = true;
     if (!status.durationMs) status.durationMs = 30 * 60 * 1000;
     if (startMs > 0) status.positionMs = startMs;
+    startTick();
+    emit();
+    return;
+  }
+
+  if (Platform.OS === 'android' && isAndroidAutoPlaybackAvailable()) {
+    releasePlayer();
+    backend = 'android-auto';
+    androidStatusUnsubscribe = subscribeAndroidAutoStatus((nativeStatus) => {
+      if (nativeStatus.episodeJson) {
+        try {
+          const nativeEpisode = JSON.parse(nativeStatus.episodeJson) as Episode;
+          status.episode = mergeEpisodeMetadata(nativeEpisode, status.episode);
+        } catch {
+          status.episode = episode;
+        }
+      }
+      applyNativePosition(nativeStatus.positionMs);
+      if (nativeStatus.durationMs > 0) status.durationMs = nativeStatus.durationMs;
+      status.isPlaying = nativeStatus.isPlaying;
+      if (Number.isFinite(nativeStatus.playbackRate)) {
+        playbackRate = nativeStatus.playbackRate;
+        status.playbackRate = playbackRate;
+      }
+      emit();
+    });
+    loadAndroidAutoEpisode(episode, opts?.localFilePath, startMs);
+    status.isPlaying = true;
     startTick();
     emit();
     return;
@@ -420,7 +473,9 @@ export async function loadAndPlay(
 }
 
 export async function play(): Promise<void> {
-  if (backend === 'expo-audio' && player) {
+  if (backend === 'android-auto') {
+    controlAndroidAutoPlayer('play');
+  } else if (backend === 'expo-audio' && player) {
     try {
       if (status.episode) activateLockScreen(status.episode);
       player.play();
@@ -434,7 +489,9 @@ export async function play(): Promise<void> {
 }
 
 export async function pause(): Promise<void> {
-  if (backend === 'expo-audio' && player) {
+  if (backend === 'android-auto') {
+    controlAndroidAutoPlayer('pause');
+  } else if (backend === 'expo-audio' && player) {
     try {
       player.pause();
     } catch (e: any) {
@@ -462,7 +519,11 @@ export async function seekTo(positionMs: number, isAutoSkip = false): Promise<vo
   emit();
 
   try {
-    if (backend === 'expo-audio' && player) {
+    if (backend === 'android-auto') {
+      controlAndroidAutoPlayer('seek', capped);
+      status.positionMs = capped;
+      emit();
+    } else if (backend === 'expo-audio' && player) {
       await player.seekTo(capped / 1000);
       // Re-assert after native seek; status updates may still be stale briefly.
       status.positionMs = capped;
@@ -491,12 +552,63 @@ export function setPlaybackRate(rate: number): void {
   if (rate !== 1 && rate !== 1.5 && rate !== 2) return;
   playbackRate = rate;
   status.playbackRate = rate;
+  if (backend === 'android-auto') controlAndroidAutoPlayer('rate', playbackRate);
   applyPlaybackRate();
   emit();
 }
 
 export function getStatus(): PlayerStatus {
   return { ...status };
+}
+
+export function updateEpisodeMetadata(episode: Episode): void {
+  if (status.episode?.guid !== episode.guid) return;
+  status.episode = { ...status.episode, ...episode };
+  emit();
+}
+
+/** Restore an Android Auto session after the UI process starts or reloads. */
+export function initializePlayerBackend(): void {
+  if (Platform.OS !== 'android' || !isAndroidAutoPlaybackAvailable()) return;
+  const nativeStatus = getAndroidAutoStatus();
+  if (!nativeStatus) return;
+  if (nativeStatus.episodeJson) {
+    try {
+      status.episode = mergeEpisodeMetadata(
+        JSON.parse(nativeStatus.episodeJson) as Episode,
+        status.episode,
+      );
+    } catch {
+      // Ignore stale/corrupt native metadata; the player can still be controlled.
+    }
+  }
+  status.positionMs = nativeStatus.positionMs;
+  status.durationMs = nativeStatus.durationMs;
+  status.isPlaying = nativeStatus.isPlaying;
+  status.playbackRate = nativeStatus.playbackRate;
+  playbackRate = nativeStatus.playbackRate;
+  backend = 'android-auto';
+  androidStatusUnsubscribe?.();
+  androidStatusUnsubscribe = subscribeAndroidAutoStatus((nextStatus) => {
+    if (nextStatus.episodeJson) {
+      try {
+        status.episode = mergeEpisodeMetadata(
+          JSON.parse(nextStatus.episodeJson) as Episode,
+          status.episode,
+        );
+      } catch {
+        // Keep the last valid episode if the service emits malformed metadata.
+      }
+    }
+    applyNativePosition(nextStatus.positionMs);
+    if (nextStatus.durationMs > 0) status.durationMs = nextStatus.durationMs;
+    status.isPlaying = nextStatus.isPlaying;
+    status.playbackRate = nextStatus.playbackRate;
+    playbackRate = nextStatus.playbackRate;
+    emit();
+  });
+  if (nativeStatus.isPlaying) startTick();
+  emit();
 }
 
 export async function teardown(): Promise<void> {

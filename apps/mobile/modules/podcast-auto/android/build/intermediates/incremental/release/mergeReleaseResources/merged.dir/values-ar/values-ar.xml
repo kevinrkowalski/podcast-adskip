@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string msgid="881409763997275156" name="call_notification_answer_action">"ردّ"</string>
+    <string msgid="8793775615905189152" name="call_notification_answer_video_action">"فيديو"</string>
+    <string msgid="3229508546291798546" name="call_notification_decline_action">"رفض"</string>
+    <string msgid="2659457946726154263" name="call_notification_hang_up_action">"قطع الاتصال"</string>
+    <string msgid="6107532579223922871" name="call_notification_incoming_text">"مكالمة واردة"</string>
+    <string msgid="8623827134497363134" name="call_notification_ongoing_text">"مكالمة جارية"</string>
+    <string msgid="59049573811482460" name="call_notification_screening_text">"يتم فحص المكالمة الواردة"</string>
+    <string name="default_notification_channel_name">قيد التشغيل الآن</string>
+    <string name="error_message_authentication_expired">سجِّل الدخول لاستخدام هذا التطبيق</string>
+    <string name="error_message_bad_value">البيانات المقدَّمة غير صحيحة</string>
+    <string name="error_message_concurrent_stream_limit">يتم الآن الاستماع على أجهزة أكثر من الحد المسموح به</string>
+    <string name="error_message_content_already_playing">هذا المحتوى قيد التشغيل الآن</string>
+    <string name="error_message_disconnected">تم إلغاء الربط بتطبيق الوسائط</string>
+    <string name="error_message_end_of_playlist">لم يتم وضع أي مقطع صوتي آخر في قائمة التشغيل</string>
+    <string name="error_message_fallback">حدث خطأ. يُرجى المحاولة لاحقًا.</string>
+    <string name="error_message_info_cancelled">تعذّر تنفيذ الإجراء المطلوب. يُرجى إعادة المحاولة.</string>
+    <string name="error_message_invalid_state">يتعذّر تنفيذ هذا الإجراء في الوقت الحالي</string>
+    <string name="error_message_io">خطأ في الإدخال/الإخراج</string>
+    <string name="error_message_not_available_in_region">غير مسموح بالحصول على هذا المحتوى في منطقتك</string>
+    <string name="error_message_not_supported">يتعذّر على التطبيق تنفيذ هذا الإجراء</string>
+    <string name="error_message_parental_control_restricted">هذا المحتوى محظور</string>
+    <string name="error_message_permission_denied">تم رفض طلب الوصول</string>
+    <string name="error_message_premium_account_required">مطلوب تسجيل الدخول إلى حساب مدفوع</string>
+    <string name="error_message_setup_required">يجب ضبط الإعدادات</string>
+    <string name="error_message_skip_limit_reached">لا يمكن تخطّي المزيد من المقاطع الصوتية</string>
+    <string name="exo_download_completed">اكتمل التنزيل</string>
+    <string name="exo_download_description">تنزيل</string>
+    <string name="exo_download_downloading">جارٍ التنزيل.</string>
+    <string name="exo_download_failed">تعذّر التنزيل</string>
+    <string name="exo_download_notification_channel_name">عمليات التنزيل</string>
+    <string name="exo_download_paused">تمّ إيقاف عمليات التنزيل مؤقتًا.</string>
+    <string name="exo_download_paused_for_network">عمليات التنزيل في انتظار الاتصال بالشبكة</string>
+    <string name="exo_download_paused_for_wifi">عمليات التنزيل في انتظار اتصال Wi-Fi.</string>
+    <string name="exo_download_removing">تجري إزالة المحتوى الذي تم تنزيله</string>
+    <string name="media3_controls_pause_description">إيقاف مؤقت</string>
+    <string name="media3_controls_play_description">تشغيل</string>
+    <string name="media3_controls_seek_back_description">ترجيع</string>
+    <string name="media3_controls_seek_forward_description">تقديم</string>
+    <string name="media3_controls_seek_to_next_description">تقديم إلى العنصر التالي</string>
+    <string name="media3_controls_seek_to_previous_description">ترجيع إلى العنصر السابق</string>
+    <string msgid="6277540029070332960" name="status_bar_notification_info_overflow">"999+"</string>
+</resources>

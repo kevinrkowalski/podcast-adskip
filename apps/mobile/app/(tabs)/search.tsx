@@ -21,6 +21,7 @@ import {
 import { subscribe, getSubscriptions } from '@/src/db/storage';
 import type { PodcastSearchResult } from '@/src/types';
 import { theme } from '@/constants/Colors';
+import { syncAndroidAutoCatalog } from '@/src/player/androidAutoCatalog';
 
 const NUM_COLUMNS = 3;
 const H_PAD = 16;
@@ -106,6 +107,7 @@ export default function SearchScreen() {
       artworkUrl: item.artworkUrl600 || item.artworkUrl100,
       subscribedAt: new Date().toISOString(),
     });
+    await syncAndroidAutoCatalog();
     await refreshSubs();
   };
 

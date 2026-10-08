@@ -3,6 +3,7 @@ import { fetchFeedArtwork } from '@/src/api/rss';
 import { getSubscriptions, subscribe, updateSubscription } from '@/src/db/storage';
 import type { Subscription } from '@/src/types';
 import { normalizeFeedUrl, parseOpml } from '@/src/import/opml';
+import { syncAndroidAutoCatalog } from '@/src/player/androidAutoCatalog';
 
 export type OpmlImportResult = {
   imported: number;
@@ -165,6 +166,7 @@ export async function importOpmlSubscriptions(
 
   // One-shot: cover already-imported shows that still lack artwork (no wipe / re-import).
   const artworkBackfilled = await backfillMissingArtwork();
+  await syncAndroidAutoCatalog();
 
   return { imported, skipped, failed, total, artworkBackfilled };
 }

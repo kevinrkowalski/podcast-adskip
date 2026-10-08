@@ -40,5 +40,10 @@
     "skip-smoke": "node src/player/skipLogic.test.mjs",
     "lint": "expo lint"
   },
-  "private": true
+  "private": true,
+  "expo": {
+    "autolinking": {
+      "nativeModulesDir": "./modules"
+    }
+  }
 }

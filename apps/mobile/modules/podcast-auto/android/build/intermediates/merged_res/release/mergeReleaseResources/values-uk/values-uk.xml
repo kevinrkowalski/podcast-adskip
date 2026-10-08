@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string msgid="881409763997275156" name="call_notification_answer_action">"Відповісти"</string>
+    <string msgid="8793775615905189152" name="call_notification_answer_video_action">"Відео"</string>
+    <string msgid="3229508546291798546" name="call_notification_decline_action">"Відхилити"</string>
+    <string msgid="2659457946726154263" name="call_notification_hang_up_action">"Завершити"</string>
+    <string msgid="6107532579223922871" name="call_notification_incoming_text">"Вхідний виклик"</string>
+    <string msgid="8623827134497363134" name="call_notification_ongoing_text">"Активний виклик"</string>
+    <string msgid="59049573811482460" name="call_notification_screening_text">"Вхідний виклик (Фільтр)"</string>
+    <string name="default_notification_channel_name">Зараз відтворюється</string>
+    <string name="error_message_authentication_expired">Увійдіть, щоб використовувати цей додаток</string>
+    <string name="error_message_bad_value">Неправильні вхідні дані</string>
+    <string name="error_message_concurrent_stream_limit">Контент відтворюється на завеликій кількості пристроїв</string>
+    <string name="error_message_content_already_playing">Цей контент уже відтворюється</string>
+    <string name="error_message_disconnected">Від’єднано від мультимедійного додатка</string>
+    <string name="error_message_end_of_playlist">Черга порожня</string>
+    <string name="error_message_fallback">Сталася помилка. Повторіть спробу пізніше.</string>
+    <string name="error_message_info_cancelled">Не вдалося завершити. Повторіть спробу.</string>
+    <string name="error_message_invalid_state">Зараз ця дія недоступна</string>
+    <string name="error_message_io">Помилка вводу/виводу</string>
+    <string name="error_message_not_available_in_region">Цей контент недоступний у вашому регіоні</string>
+    <string name="error_message_not_supported">Додаток не підтримує цю дію</string>
+    <string name="error_message_parental_control_restricted">Цей контент заблоковано</string>
+    <string name="error_message_permission_denied">Доступ заборонено</string>
+    <string name="error_message_premium_account_required">Потрібен платний обліковий запис</string>
+    <string name="error_message_setup_required">Потрібне налаштування</string>
+    <string name="error_message_skip_limit_reached">Більше не можна пропускати композиції</string>
+    <string name="exo_download_completed">Завантаження завершено</string>
+    <string name="exo_download_description">Завантажити</string>
+    <string name="exo_download_downloading">Завантажується</string>
+    <string name="exo_download_failed">Не вдалося завантажити</string>
+    <string name="exo_download_notification_channel_name">Завантаження</string>
+    <string name="exo_download_paused">Завантаження призупинено</string>
+    <string name="exo_download_paused_for_network">Очікується підключення до мережі</string>
+    <string name="exo_download_paused_for_wifi">Очікується підключення до Wi-Fi</string>
+    <string name="exo_download_removing">Завантаження видаляються</string>
+    <string name="media3_controls_pause_description">Призупинити</string>
+    <string name="media3_controls_play_description">Відтворити</string>
+    <string name="media3_controls_seek_back_description">Перемотати назад</string>
+    <string name="media3_controls_seek_forward_description">Перемотати вперед</string>
+    <string name="media3_controls_seek_to_next_description">Перейти до наступного об’єкта</string>
+    <string name="media3_controls_seek_to_previous_description">Перейти до попереднього об’єкта</string>
+    <string msgid="6277540029070332960" name="status_bar_notification_info_overflow">"999+"</string>
+</resources>

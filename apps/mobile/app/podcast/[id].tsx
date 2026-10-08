@@ -29,6 +29,7 @@ import {
   type PodcastSkipSettings,
 } from '@/src/db/storage';
 import { formatMs } from '@/src/player/skipLogic';
+import { syncAndroidAutoCatalog } from '@/src/player/androidAutoCatalog';
 import { usePlayback } from '@/src/store/PlaybackContext';
 import type { Episode, PodcastSearchResult } from '@/src/types';
 import { theme } from '@/constants/Colors';
@@ -219,6 +220,7 @@ export default function PodcastDetailScreen() {
     if (!show?.feedUrl) return;
     if (isSub) {
       await unsubscribe(show.collectionId);
+      await syncAndroidAutoCatalog();
       setIsSub(false);
       return;
     }
@@ -230,6 +232,7 @@ export default function PodcastDetailScreen() {
       artworkUrl: show.artworkUrl600 || show.artworkUrl100,
       subscribedAt: new Date().toISOString(),
     });
+    await syncAndroidAutoCatalog();
     setIsSub(true);
   };
 

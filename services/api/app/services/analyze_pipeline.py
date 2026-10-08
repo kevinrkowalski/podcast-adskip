@@ -6,6 +6,7 @@ import asyncio
 import logging
 import math
 from pathlib import Path
+from typing import Any
 
 from app.config import Settings, get_settings
 from app.db import get_skip_map, save_skip_map, set_status
@@ -16,7 +17,9 @@ from app.services.transcribe import download_audio, stub_transcript, transcribe_
 logger = logging.getLogger(__name__)
 
 
-def _transcript_duration_ms(transcript: dict, fallback_ms: int | None = None) -> int | None:
+def _transcript_duration_ms(
+    transcript: dict[str, Any], fallback_ms: int | None = None
+) -> int | None:
     duration = transcript.get("duration")
     if duration is not None:
         try:
@@ -73,7 +76,7 @@ async def run_analyze(
     feed_url: str | None = None,
     force: bool = False,
     settings: Settings | None = None,
-) -> dict:
+) -> dict[str, Any]:
     settings = settings or get_settings()
     existing = await get_skip_map(episode_guid)
     await _stage(
@@ -87,6 +90,8 @@ async def run_analyze(
     )
 
     audio_path: Path | None = None
+    audio_sha256: str | None = None
+    audio_md5: str | None = None
     analyzed_audio_size_bytes: int | None = None
     analyzed_audio_duration_ms: int | None = None
     try:
@@ -163,8 +168,8 @@ async def run_analyze(
             title=title,
             analyzed_audio_size_bytes=analyzed_audio_size_bytes,
             analyzed_audio_duration_ms=analyzed_audio_duration_ms,
-            audio_sha256=audio_sha256 if settings.has_real_stt else None,
-            audio_md5=audio_md5 if settings.has_real_stt else None,
+            audio_sha256=audio_sha256,
+            audio_md5=audio_md5,
         )
         logger.info(
             "Analyze ready guid=%s segments=%s model=%s",
@@ -173,7 +178,7 @@ async def run_analyze(
             model,
         )
         return result
-    except Exception as exc:  # noqa: BLE001 — surface to cache + API
+    except Exception as exc:
         err = str(exc) or exc.__class__.__name__
         logger.exception("analyze failed for %s: %s", episode_guid, err)
         await set_status(episode_guid, "error", error=err, stage="error")
@@ -209,7 +214,7 @@ async def run_analyze_from_file(
     audio_sha256: str | None = None,
     audio_md5: str | None = None,
     settings: Settings | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Analyze a client-uploaded audio file and persist its source metadata."""
     settings = settings or get_settings()
     if audio_sha256 is None or audio_md5 is None:
@@ -261,7 +266,7 @@ async def run_analyze_from_file(
             audio_sha256=audio_sha256,
             audio_md5=audio_md5,
         )
-    except Exception as exc:  # noqa: BLE001 — persist a useful failed status
+    except Exception as exc:
         err = str(exc) or exc.__class__.__name__
         logger.exception("uploaded analyze failed for %s: %s", episode_guid, err)
         await set_status(episode_guid, "error", error=err, stage="error")

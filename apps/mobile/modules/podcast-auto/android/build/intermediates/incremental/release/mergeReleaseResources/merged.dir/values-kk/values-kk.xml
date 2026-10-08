@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string msgid="881409763997275156" name="call_notification_answer_action">"Жауап беру"</string>
+    <string msgid="8793775615905189152" name="call_notification_answer_video_action">"Бейне"</string>
+    <string msgid="3229508546291798546" name="call_notification_decline_action">"Қабылдамау"</string>
+    <string msgid="2659457946726154263" name="call_notification_hang_up_action">"Тұтқаны қою"</string>
+    <string msgid="6107532579223922871" name="call_notification_incoming_text">"Кіріс қоңырау"</string>
+    <string msgid="8623827134497363134" name="call_notification_ongoing_text">"Қоңырау"</string>
+    <string msgid="59049573811482460" name="call_notification_screening_text">"Келген қоңырауды сүзу"</string>
+    <string name="default_notification_channel_name">Қазір ойнап тұр</string>
+    <string name="error_message_authentication_expired">Бұл қолданбаны пайдалану үшін аккаунтқа кіріңіз.</string>
+    <string name="error_message_bad_value">Кіріс дерек дұрыс емес.</string>
+    <string name="error_message_concurrent_stream_limit">Тым көп құрылғыда тыңдалып жатыр.</string>
+    <string name="error_message_content_already_playing">Бұл контент ойнатылып жатыр.</string>
+    <string name="error_message_disconnected">Мультимедиа қолданбасынан ажыратылды.</string>
+    <string name="error_message_end_of_playlist">Кезекке басқа ештеңе қойылмаған.</string>
+    <string name="error_message_fallback">Бірдеңе дұрыс емес. Кейінірек қайталап көріңіз.</string>
+    <string name="error_message_info_cancelled">Аяқталмады. Қайталап көріңіз.</string>
+    <string name="error_message_invalid_state">Мұны дәл қазір орындау мүмкін емес.</string>
+    <string name="error_message_io">Кіріс/шығыс дерек қатесі орын алды.</string>
+    <string name="error_message_not_available_in_region">Бұл контентті осы жерде алу мүмкін емес.</string>
+    <string name="error_message_not_supported">Бұл қолданба мұны орындай алмайды.</string>
+    <string name="error_message_parental_control_restricted">Бұл контент блокталған.</string>
+    <string name="error_message_permission_denied">Рұқсат жоқ.</string>
+    <string name="error_message_premium_account_required">Премиум рұқсат қажет.</string>
+    <string name="error_message_setup_required">Реттеу қажет.</string>
+    <string name="error_message_skip_limit_reached">Басқа аудиотректерді өткізіп жіберу мүмкін емес.</string>
+    <string name="exo_download_completed">Жүктеп алынды</string>
+    <string name="exo_download_description">Жүктеп алу</string>
+    <string name="exo_download_downloading">Жүктеп алынып жатыр</string>
+    <string name="exo_download_failed">Жүктеп алынбады</string>
+    <string name="exo_download_notification_channel_name">Жүктеп алынғандар</string>
+    <string name="exo_download_paused">Жүктеп алу процестері уақытша тоқтады.</string>
+    <string name="exo_download_paused_for_network">Жүктеп алу үшін желіге қосылу керек.</string>
+    <string name="exo_download_paused_for_wifi">Жүктеп алу үшін Wi-Fi-ға қосылу керек.</string>
+    <string name="exo_download_removing">Жүктеп алынғандар өшірілуде</string>
+    <string name="media3_controls_pause_description">Кідірту</string>
+    <string name="media3_controls_play_description">Ойнату</string>
+    <string name="media3_controls_seek_back_description">Артқа айналдыру</string>
+    <string name="media3_controls_seek_forward_description">Алға айналдыру</string>
+    <string name="media3_controls_seek_to_next_description">Келесі контентке өту</string>
+    <string name="media3_controls_seek_to_previous_description">Алдыңғы контентке өту</string>
+    <string msgid="6277540029070332960" name="status_bar_notification_info_overflow">"999+"</string>
+</resources>

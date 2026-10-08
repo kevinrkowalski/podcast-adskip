@@ -1,0 +1,50 @@
+[
+    {
+        "merged": "expo.modules.podcastauto.podcast-auto-release-14:/drawable/notification_tile_bg.xml",
+        "source": "expo.modules.podcastauto.podcast-auto-core-1.15.0-5:/drawable/notification_tile_bg.xml"
+    },
+    {
+        "merged": "expo.modules.podcastauto.podcast-auto-release-14:/drawable/notification_icon_background.xml",
+        "source": "expo.modules.podcastauto.podcast-auto-core-1.15.0-5:/drawable/notification_icon_background.xml"
+    },
+    {
+        "merged": "expo.modules.podcastauto.podcast-auto-release-14:/drawable/ic_call_answer_video_low.xml",
+        "source": "expo.modules.podcastauto.podcast-auto-core-1.15.0-5:/drawable/ic_call_answer_video_low.xml"
+    },
+    {
+        "merged": "expo.modules.podcastauto.podcast-auto-release-14:/drawable/media3_icon_circular_play.png",
+        "source": "expo.modules.podcastauto.podcast-auto-media3-session-1.9.0-3:/drawable/media3_icon_circular_play.png"
+    },
+    {
+        "merged": "expo.modules.podcastauto.podcast-auto-release-14:/drawable/ic_call_answer_video.xml",
+        "source": "expo.modules.podcastauto.podcast-auto-core-1.15.0-5:/drawable/ic_call_answer_video.xml"
+    },
+    {
+        "merged": "expo.modules.podcastauto.podcast-auto-release-14:/drawable/notification_bg.xml",
+        "source": "expo.modules.podcastauto.podcast-auto-core-1.15.0-5:/drawable/notification_bg.xml"
+    },
+    {
+        "merged": "expo.modules.podcastauto.podcast-auto-release-14:/drawable/ic_call_decline_low.xml",
+        "source": "expo.modules.podcastauto.podcast-auto-core-1.15.0-5:/drawable/ic_call_decline_low.xml"
+    },
+    {
+        "merged": "expo.modules.podcastauto.podcast-auto-release-14:/drawable/notification_bg_low.xml",
+        "source": "expo.modules.podcastauto.podcast-auto-core-1.15.0-5:/drawable/notification_bg_low.xml"
+    },
+    {
+        "merged": "expo.modules.podcastauto.podcast-auto-release-14:/drawable/ic_call_decline.xml",
+        "source": "expo.modules.podcastauto.podcast-auto-core-1.15.0-5:/drawable/ic_call_decline.xml"
+    },
+    {
+        "merged": "expo.modules.podcastauto.podcast-auto-release-14:/drawable/ic_call_answer_low.xml",
+        "source": "expo.modules.podcastauto.podcast-auto-core-1.15.0-5:/drawable/ic_call_answer_low.xml"
+    },
+    {
+        "merged": "expo.modules.podcastauto.podcast-auto-release-14:/drawable/ic_call_answer.xml",
+        "source": "expo.modules.podcastauto.podcast-auto-core-1.15.0-5:/drawable/ic_call_answer.xml"
+    },
+    {
+        "merged": "expo.modules.podcastauto.podcast-auto-release-14:/drawable/media_session_service_notification_ic_music_note.xml",
+        "source": "expo.modules.podcastauto.podcast-auto-media3-session-1.9.0-3:/drawable/media_session_service_notification_ic_music_note.xml"
+    }
+]

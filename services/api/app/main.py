@@ -73,7 +73,7 @@ app.include_router(upload.router)
 
 
 @app.get("/")
-async def root() -> dict:
+async def root() -> dict[str, str | None]:
     return {
         "service": "podcast-adskip-api",
         "docs": "/docs" if _docs_enabled else None,

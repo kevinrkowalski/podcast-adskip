@@ -2,12 +2,7 @@
 
 import os
 
-os.environ["MOCK_ANALYZE"] = "true"
-os.environ["DATABASE_PATH"] = "data/test_skip_maps.db"
-os.environ["OPENROUTER_API_KEY"] = ""
-os.environ["GROQ_API_KEY"] = ""
-os.environ["APP_KEY"] = "test-secret-key"
-
+from fastapi import FastAPI
 from fastapi.testclient import TestClient as FastAPITestClient
 
 from app.config import get_settings
@@ -17,7 +12,7 @@ from app.services.transcribe import stub_transcript
 
 
 class ApiTestClient(FastAPITestClient):
-    def __init__(self, app):
+    def __init__(self, app: FastAPI) -> None:
         super().__init__(app, headers={"X-App-Key": "test-secret-key"})
 
 
@@ -110,6 +105,7 @@ def test_analyze_uploaded_audio_sync_and_skip_map_metadata():
         assert mismatch.json()["status"] == "missing"
 
         stored = asyncio.run(get_skip_map("uploaded-guid"))
+        assert stored is not None
         assert stored["audio_sha256"] == hashlib.sha256(audio).hexdigest()
 
         # Identical bytes reuse the cached result without a new analysis.
@@ -131,6 +127,7 @@ def test_analyze_uploaded_audio_sync_and_skip_map_metadata():
         assert changed.status_code == 200, changed.text
         assert changed.json()["analyzed_at"] != body["analyzed_at"]
         stored = asyncio.run(get_skip_map("uploaded-guid"))
+        assert stored is not None
         assert stored["audio_sha256"] == hashlib.sha256(changed_audio).hexdigest()
         assert stored["audio_md5"] == hashlib.md5(changed_audio, usedforsecurity=False).hexdigest()
 
@@ -422,6 +419,7 @@ def test_pending_skip_map_includes_progress_fields():
         return await get_skip_map("progress-guid")
 
     row = asyncio.run(_seed())
+    assert row is not None
     assert row["status"] == "pending"
     assert row["stage"] == "transcribing"
     assert row["stage_label"] == "Transcribing"

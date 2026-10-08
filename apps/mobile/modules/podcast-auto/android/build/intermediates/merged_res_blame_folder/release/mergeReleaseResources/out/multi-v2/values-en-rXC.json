@@ -1,0 +1,34 @@
+{
+    "logs": [
+        {
+            "outputFile": "expo.modules.podcastauto.podcast-auto-release-14:/values-en-rXC/values-en-rXC.xml",
+            "map": [
+                {
+                    "source": "/home/kevin/.gradle/caches/9.3.1/transforms/8e70c63ce7583ea45a754d9780c3a4d1/transformed/core-1.15.0/res/values-en-rXC/values-en-rXC.xml",
+                    "from": {
+                        "startLines": "2,3,4,5,6,7,8,9",
+                        "startColumns": "4,4,4,4,4,4,4,4",
+                        "startOffsets": "55,251,456,657,858,1065,1270,1482",
+                        "endColumns": "195,204,200,200,206,204,211,203",
+                        "endOffsets": "246,451,652,853,1060,1265,1477,1681"
+                    }
+                }
+            ]
+        },
+        {
+            "outputFile": "expo.modules.podcastauto.podcast-auto-mergeReleaseResources-12:/values-en-rXC/values-en-rXC.xml",
+            "map": [
+                {
+                    "source": "/home/kevin/.gradle/caches/9.3.1/transforms/8e70c63ce7583ea45a754d9780c3a4d1/transformed/core-1.15.0/res/values-en-rXC/values-en-rXC.xml",
+                    "from": {
+                        "startLines": "2,3,4,5,6,7,8,9",
+                        "startColumns": "4,4,4,4,4,4,4,4",
+                        "startOffsets": "55,251,456,657,858,1065,1270,1482",
+                        "endColumns": "195,204,200,200,206,204,211,203",
+                        "endOffsets": "246,451,652,853,1060,1265,1477,1681"
+                    }
+                }
+            ]
+        }
+    ]
+}

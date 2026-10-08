@@ -1,0 +1,18 @@
+[
+    {
+        "merged": "expo.modules.podcastauto.podcast-auto-release-14:/layout-v21/notification_template_custom_big.xml",
+        "source": "expo.modules.podcastauto.podcast-auto-core-1.15.0-5:/layout-v21/notification_template_custom_big.xml"
+    },
+    {
+        "merged": "expo.modules.podcastauto.podcast-auto-release-14:/layout-v21/notification_template_icon_group.xml",
+        "source": "expo.modules.podcastauto.podcast-auto-core-1.15.0-5:/layout-v21/notification_template_icon_group.xml"
+    },
+    {
+        "merged": "expo.modules.podcastauto.podcast-auto-release-14:/layout-v21/notification_action.xml",
+        "source": "expo.modules.podcastauto.podcast-auto-core-1.15.0-5:/layout-v21/notification_action.xml"
+    },
+    {
+        "merged": "expo.modules.podcastauto.podcast-auto-release-14:/layout-v21/notification_action_tombstone.xml",
+        "source": "expo.modules.podcastauto.podcast-auto-core-1.15.0-5:/layout-v21/notification_action_tombstone.xml"
+    }
+]

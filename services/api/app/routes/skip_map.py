@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Header, Query
 
@@ -21,8 +22,8 @@ def _parse_dt(value: str | None) -> datetime | None:
 @router.get("/skip-map/{episode_guid:path}", response_model=SkipMapResponse)
 async def read_skip_map(
     episode_guid: str,
-    x_app_key: str | None = Header(default=None),
-    audio_md5: str | None = Query(default=None, min_length=32, max_length=32),
+    x_app_key: Annotated[str | None, Header()] = None,
+    audio_md5: Annotated[str | None, Query(min_length=32, max_length=32)] = None,
 ) -> SkipMapResponse:
     check_app_key(x_app_key)
     row = await get_skip_map(episode_guid)

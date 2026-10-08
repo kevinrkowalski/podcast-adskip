@@ -9,7 +9,9 @@ import React, {
 } from 'react';
 import type { AdSegment, Episode, SkipMap } from '@/src/types';
 import * as player from '@/src/player/trackPlayer';
+import { syncAndroidAutoCatalog } from '@/src/player/androidAutoCatalog';
 import { getSkipMap, hydrateApiBaseUrl, hydrateAppKey } from '@/src/api/backend';
+import { fetchAndParseRss, parseMoreFromCachedXml } from '@/src/api/rss';
 import {
   cacheSkipMap,
   getAutoSkipEnabled,
@@ -103,6 +105,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const manualPrepareInFlight = useRef(false);
   const analyzeFingerprintRef = useRef<{ episodeGuid: string; audioMd5: string } | null>(null);
   const requestAnalyzeForEpisodeRef = useRef<((target: Episode) => Promise<void>) | null>(null);
+  const externalEpisodeChangeRef = useRef<((target: Episode) => void) | null>(null);
 
   const persistPosition = useCallback(async (force = false) => {
     const ep = episodeRef.current;
@@ -143,7 +146,22 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    player.initializePlayerBackend();
+    void syncAndroidAutoCatalog();
     return player.subscribePlayer((st) => {
+      const previousGuid = episodeRef.current?.guid;
+      const previousPositionMs = positionRef.current;
+      const previousDurationMs = durationRef.current;
+      const nextGuid = st.episode?.guid;
+      if (previousGuid && nextGuid && previousGuid !== nextGuid) {
+        void savePlaybackPosition(
+          previousGuid,
+          previousPositionMs,
+          previousDurationMs || undefined,
+        ).catch((error) => {
+          console.warn('[playback] Failed to persist previous episode position:', error);
+        });
+      }
       episodeRef.current = st.episode;
       positionRef.current = st.positionMs;
       durationRef.current = st.durationMs;
@@ -153,6 +171,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       setPositionMs(st.positionMs);
       setDurationMs(st.durationMs);
       setPlaybackRateState(st.playbackRate);
+      if (previousGuid && nextGuid && previousGuid !== nextGuid) {
+        externalEpisodeChangeRef.current?.(st.episode!);
+      }
 
       // Interval persist while playing.
       if (st.isPlaying && st.episode?.guid) {
@@ -466,6 +487,65 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       return null;
     }
   }, [abortLoadKeepCache, applySkipFilter, canUseAdDetection, clearAdDetection, getMatchingLocalSkipMap]);
+
+  useEffect(() => {
+    externalEpisodeChangeRef.current = (target) => {
+      setSkipMap(null);
+      skipMapRef.current = null;
+      setAnalyzeStatus(null);
+      setAnalyzeError(null);
+      setAudioMismatchWarning(null);
+      setUploadProgress(null);
+      skipLoadGen.current += 1;
+      if (!target.description?.trim() && target.feedUrl) {
+        const feedMeta = {
+          collectionId: target.collectionId,
+          podcastTitle: target.podcastTitle,
+          artworkUrl: target.artworkUrl,
+        };
+        const applyNotes = (description?: string) => {
+          if (!description?.trim() || episodeRef.current?.guid !== target.guid) return;
+          const enriched = { ...target, description };
+          episodeRef.current = enriched;
+          setEpisode(enriched);
+          player.updateEpisodeMetadata(enriched);
+        };
+        const cachedFeed = parseMoreFromCachedXml(target.feedUrl, feedMeta, 150);
+        const cachedMatch = cachedFeed?.episodes.find((item) => item.guid === target.guid);
+        if (cachedMatch?.description) {
+          applyNotes(cachedMatch.description);
+        } else {
+          void fetchAndParseRss(target.feedUrl, feedMeta, { maxItems: 150 })
+            .then((parsed) => {
+              const match = parsed.episodes.find((item) => item.guid === target.guid);
+              applyNotes(match?.description);
+            })
+            .catch((error) => {
+              console.warn('[playback] Could not restore show notes for Android Auto episode:', error);
+            });
+        }
+      }
+      void (async () => {
+        try {
+          const globallyEnabled = await getAutoSkipEnabled();
+          const enabled = globallyEnabled && await isPodcastAdDetectionEnabled({
+            collectionId: target.collectionId,
+            feedUrl: target.feedUrl,
+          });
+          if (episodeRef.current?.guid !== target.guid) return;
+          setAdDetectionEnabledState(enabled);
+          player.setAdDetectionEnabled(enabled);
+          await loadSkipMap(target, enabled);
+        } catch (error) {
+          if (episodeRef.current?.guid !== target.guid) return;
+          console.warn('[playback] Could not load skip map for Android Auto episode:', error);
+        }
+      })();
+    };
+    return () => {
+      externalEpisodeChangeRef.current = null;
+    };
+  }, [loadSkipMap]);
 
   const restoreCurrentSkipMap = useCallback(async (): Promise<SkipMap | null> => {
     const current = episodeRef.current;

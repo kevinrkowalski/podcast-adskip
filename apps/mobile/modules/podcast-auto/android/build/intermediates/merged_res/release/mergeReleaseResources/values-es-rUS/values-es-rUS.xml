@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string msgid="881409763997275156" name="call_notification_answer_action">"Responder"</string>
+    <string msgid="8793775615905189152" name="call_notification_answer_video_action">"Video"</string>
+    <string msgid="3229508546291798546" name="call_notification_decline_action">"Rechazar"</string>
+    <string msgid="2659457946726154263" name="call_notification_hang_up_action">"Colgar"</string>
+    <string msgid="6107532579223922871" name="call_notification_incoming_text">"Llamada entrante"</string>
+    <string msgid="8623827134497363134" name="call_notification_ongoing_text">"Llamada en curso"</string>
+    <string msgid="59049573811482460" name="call_notification_screening_text">"Filtrando una llamada entrante"</string>
+    <string name="default_notification_channel_name">Está sonando</string>
+    <string name="error_message_authentication_expired">Accede para usar esta app</string>
+    <string name="error_message_bad_value">Datos de entrada incorrectos</string>
+    <string name="error_message_concurrent_stream_limit">Se está escuchando contenido en demasiados dispositivos</string>
+    <string name="error_message_content_already_playing">Ya se está reproduciendo ese contenido</string>
+    <string name="error_message_disconnected">Se desconectó de la app de música</string>
+    <string name="error_message_end_of_playlist">No hay más contenido en la fila</string>
+    <string name="error_message_fallback">Se produjo un error. Vuelve a intentarlo más tarde.</string>
+    <string name="error_message_info_cancelled">No se pudo completar la acción. Vuelve a intentarlo.</string>
+    <string name="error_message_invalid_state">No se puede realizar esa acción en este momento</string>
+    <string name="error_message_io">Error de entrada/salida</string>
+    <string name="error_message_not_available_in_region">No se puede acceder a ese contenido en esta región</string>
+    <string name="error_message_not_supported">Esta app no puede realizar esa acción</string>
+    <string name="error_message_parental_control_restricted">Ese contenido está bloqueado</string>
+    <string name="error_message_permission_denied">Acceso denegado</string>
+    <string name="error_message_premium_account_required">Se requiere acceso Premium</string>
+    <string name="error_message_setup_required">Se requiere la configuración</string>
+    <string name="error_message_skip_limit_reached">No se pueden omitir más pistas</string>
+    <string name="exo_download_completed">Se completó la descarga</string>
+    <string name="exo_download_description">Descargar</string>
+    <string name="exo_download_downloading">Descargando</string>
+    <string name="exo_download_failed">No se pudo descargar</string>
+    <string name="exo_download_notification_channel_name">Descargas</string>
+    <string name="exo_download_paused">Se pausaron las descargas</string>
+    <string name="exo_download_paused_for_network">Esperando red para descargas</string>
+    <string name="exo_download_paused_for_wifi">Esperando Wi-Fi para descargas</string>
+    <string name="exo_download_removing">Quitando descargas</string>
+    <string name="media3_controls_pause_description">Pausar</string>
+    <string name="media3_controls_play_description">Reproducir</string>
+    <string name="media3_controls_seek_back_description">Retroceder</string>
+    <string name="media3_controls_seek_forward_description">Avanzar</string>
+    <string name="media3_controls_seek_to_next_description">Saltar al siguiente elemento</string>
+    <string name="media3_controls_seek_to_previous_description">Saltar al elemento anterior</string>
+    <string msgid="6277540029070332960" name="status_bar_notification_info_overflow">"999+"</string>
+</resources>

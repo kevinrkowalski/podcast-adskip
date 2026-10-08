@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string msgid="881409763997275156" name="call_notification_answer_action">"Cavab verin"</string>
+    <string msgid="8793775615905189152" name="call_notification_answer_video_action">"Video"</string>
+    <string msgid="3229508546291798546" name="call_notification_decline_action">"İmtina edin"</string>
+    <string msgid="2659457946726154263" name="call_notification_hang_up_action">"Dəstəyi asın"</string>
+    <string msgid="6107532579223922871" name="call_notification_incoming_text">"Gələn zəng"</string>
+    <string msgid="8623827134497363134" name="call_notification_ongoing_text">"Davam edən zəng"</string>
+    <string msgid="59049573811482460" name="call_notification_screening_text">"Gələn zəng göstərilir"</string>
+    <string name="default_notification_channel_name">İndi oxudulur</string>
+    <string name="error_message_authentication_expired">Bu tətbiqi istifadə etmək üçün daxil olun</string>
+    <string name="error_message_bad_value">Səhv daxiletmə datası</string>
+    <string name="error_message_concurrent_stream_limit">Bir çox cihazda dinlənilir</string>
+    <string name="error_message_content_already_playing">Həmin kontent artıq işə salınıb</string>
+    <string name="error_message_disconnected">Media tətbiqindən ayrıldı</string>
+    <string name="error_message_end_of_playlist">Növbədə heç nə yoxdur</string>
+    <string name="error_message_fallback">Xəta baş verdi. Sonra cəhd edin.</string>
+    <string name="error_message_info_cancelled">Bitirmək mümkün olmadı. Yenidən cəhd edin.</string>
+    <string name="error_message_invalid_state">Hazırda etmək olmur</string>
+    <string name="error_message_io">Daxiletmə/çıxış xətası</string>
+    <string name="error_message_not_available_in_region">Həmin kontenti burada əldə etmək mümkün deyil</string>
+    <string name="error_message_not_supported">Bu tətbiq edə bilmir</string>
+    <string name="error_message_parental_control_restricted">Həmin kontent bloklanıb</string>
+    <string name="error_message_permission_denied">Giriş rədd edildi</string>
+    <string name="error_message_premium_account_required">Premium giriş tələb olunur</string>
+    <string name="error_message_setup_required">Ayarlama tələb olunur</string>
+    <string name="error_message_skip_limit_reached">Başqa trek ötürmək mümkün deyil</string>
+    <string name="exo_download_completed">Endirmə tamamlandı</string>
+    <string name="exo_download_description">Endirin</string>
+    <string name="exo_download_downloading">Endirilir</string>
+    <string name="exo_download_failed">Endirmə alınmadı</string>
+    <string name="exo_download_notification_channel_name">Endirmələr</string>
+    <string name="exo_download_paused">Endirmə durdurulub</string>
+    <string name="exo_download_paused_for_network">Endirmələr şəbəkəni gözləyir</string>
+    <string name="exo_download_paused_for_wifi">Endirmələr WiFi şəbəkəsini gözləyir</string>
+    <string name="exo_download_removing">Endirilənlər silinir</string>
+    <string name="media3_controls_pause_description">Durdurun</string>
+    <string name="media3_controls_play_description">Oxudun</string>
+    <string name="media3_controls_seek_back_description">Geri keçin</string>
+    <string name="media3_controls_seek_forward_description">İrəli keçin</string>
+    <string name="media3_controls_seek_to_next_description">Növbəti elementə keçin</string>
+    <string name="media3_controls_seek_to_previous_description">Əvvəlki elementə keçin</string>
+    <string msgid="6277540029070332960" name="status_bar_notification_info_overflow">"999+"</string>
+</resources>

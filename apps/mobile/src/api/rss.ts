@@ -1,5 +1,6 @@
 import type { Episode } from '@/src/types';
 import { cacheEpisodes, getCachedEpisodes } from '@/src/db/storage';
+import { syncAndroidAutoCatalog } from '@/src/player/androidAutoCatalog';
 
 /** Minimal RSS 2.0 / iTunes enclosure parser (no native XML dep). */
 
@@ -215,6 +216,7 @@ export async function loadRssEpisodesCached(
       forceRefresh: true,
     });
     await cacheEpisodes(feedUrl, parsed.episodes);
+    void syncAndroidAutoCatalog();
     opts?.onUpdate?.(parsed);
     return parsed;
   })();

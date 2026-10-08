@@ -1,0 +1,36 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="expo.modules.podcastauto" >
+4
+5    <uses-sdk android:minSdkVersion="24" />
+6
+7    <application>
+7-->/home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:2:3-15:17
+8        <meta-data
+8-->/home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:3:5-5:53
+9            android:name="com.google.android.gms.car.application"
+9-->/home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:4:7-60
+10            android:resource="@xml/automotive_app_desc" />
+10-->/home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:5:7-50
+11
+12        <service
+12-->/home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:6:5-14:15
+13            android:name="expo.modules.podcastauto.PodcastAutoPlaybackService"
+13-->/home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:7:7-73
+14            android:exported="true"
+14-->/home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:8:7-30
+15            android:foregroundServiceType="mediaPlayback" >
+15-->/home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:9:7-52
+16            <intent-filter>
+16-->/home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:10:7-13:23
+17                <action android:name="androidx.media3.session.MediaLibraryService" />
+17-->/home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:11:9-78
+17-->/home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:11:17-75
+18                <action android:name="android.media.browse.MediaBrowserService" />
+18-->/home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:12:9-75
+18-->/home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:12:17-72
+19            </intent-filter>
+20        </service>
+21    </application>
+22
+23</manifest>

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Header, Request
 
@@ -7,7 +8,6 @@ from app.db import get_skip_map, set_status
 from app.models.schemas import AnalyzeEpisodeRequest, AnalyzeEpisodeResponse
 from app.rate_limit import enforce_analyze_rate_limit
 from app.services.analyze_pipeline import run_analyze
-
 
 router = APIRouter(prefix="/v1", tags=["analyze"])
 
@@ -21,7 +21,7 @@ def _parse_dt(value: str | None) -> datetime | None:
         return None
 
 
-def _progress_kwargs(row: dict | None) -> dict:
+def _progress_kwargs(row: dict[str, Any] | None) -> dict[str, Any]:
     if not row:
         return {}
     return {
@@ -38,7 +38,7 @@ async def analyze_episode(
     body: AnalyzeEpisodeRequest,
     background_tasks: BackgroundTasks,
     request: Request,
-    x_app_key: str | None = Header(default=None),
+    x_app_key: Annotated[str | None, Header()] = None,
     sync: bool = False,
 ) -> AnalyzeEpisodeResponse:
     """Queue or sync-analyze an episode, validating cached audio after download."""

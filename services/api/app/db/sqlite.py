@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -81,7 +82,7 @@ async def delete_expired_skip_maps(
         return cursor.rowcount
 
 
-def _row_to_dict(row: aiosqlite.Row) -> dict:
+def _row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:
     keys = set(row.keys())
     status = row["status"]
     stage = row["stage"] if "stage" in keys else None
@@ -97,7 +98,7 @@ def _row_to_dict(row: aiosqlite.Row) -> dict:
     if status == "pending" and not stage:
         stage = "queued"
     progress = estimate_progress(
-        status=status if status in ("ready", "pending", "error", "queued") else status,
+        status=status,
         stage=stage,
         duration_ms=duration_ms,
         started_at=started_at or (row["created_at"] if status == "pending" else None),
@@ -126,7 +127,7 @@ def _row_to_dict(row: aiosqlite.Row) -> dict:
     }
 
 
-async def get_skip_map(episode_guid: str) -> dict | None:
+async def get_skip_map(episode_guid: str) -> dict[str, Any] | None:
     async with aiosqlite.connect(_db_path()) as db:
         db.row_factory = aiosqlite.Row
         await _ensure_columns(db)
@@ -227,7 +228,7 @@ async def save_skip_map(
     analyzed_audio_duration_ms: int | None = None,
     audio_sha256: str | None = None,
     audio_md5: str | None = None,
-) -> dict:
+) -> dict[str, Any]:
     now = _now()
     payload = json.dumps([s.model_dump() for s in segments])
     async with aiosqlite.connect(_db_path()) as db:

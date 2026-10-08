@@ -61,6 +61,9 @@ def _parse_iso(value: str | None) -> datetime | None:
     return dt
 
 
+ProgressInfo = dict[str, str | float | int | None]
+
+
 def estimate_progress(
     *,
     status: str,
@@ -69,7 +72,7 @@ def estimate_progress(
     started_at: str | None,
     stage_updated_at: str | None = None,
     now: datetime | None = None,
-) -> dict:
+) -> ProgressInfo:
     """Return progress_pct, eta_seconds, stage_label for API responses."""
     label = stage_label(stage)
     if status == "ready":
