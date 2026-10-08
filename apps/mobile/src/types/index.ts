@@ -55,6 +55,8 @@ export interface SkipMap {
   analyzed_audio_size_bytes?: number | null;
   /** Duration of analyzed audio in milliseconds. */
   analyzed_audio_duration_ms?: number | null;
+  /** MD5 content fingerprint used to validate a skip map against cached audio. */
+  audio_md5?: string | null;
 }
 
 export interface PodcastSearchResult {

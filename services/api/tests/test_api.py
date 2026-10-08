@@ -65,11 +65,15 @@ def test_analyze_sync_stub():
 
         cached = client.get("/v1/skip-map/test-guid-001")
         assert cached.status_code == 200
-        assert cached.json()["status"] == "ready"
-        assert len(cached.json()["segments"]) >= 1
+        assert cached.json()["status"] == "missing"
 
 
 def test_analyze_uploaded_audio_sync_and_skip_map_metadata():
+    import asyncio
+    import hashlib
+
+    from app.db.sqlite import get_skip_map
+
     audio = b"test-audio-bytes"
     with TestClient(app) as client:
         response = client.post(
@@ -90,13 +94,98 @@ def test_analyze_uploaded_audio_sync_and_skip_map_metadata():
         assert body["analyzed_audio_size_bytes"] == len(audio)
         assert body["analyzed_audio_duration_ms"] == 1_800_000
 
-        cached = client.get("/v1/skip-map/uploaded-guid")
+        cached = client.get(
+            f"/v1/skip-map/uploaded-guid?audio_md5={hashlib.md5(audio, usedforsecurity=False).hexdigest()}"
+        )
         assert cached.status_code == 200
         cached_body = cached.json()
         assert cached_body["status"] == "ready"
         assert cached_body["audio_url"] == body["audio_url"]
         assert cached_body["analyzed_audio_size_bytes"] == len(audio)
         assert cached_body["analyzed_audio_duration_ms"] == 1_800_000
+        assert cached_body["audio_md5"] == hashlib.md5(audio, usedforsecurity=False).hexdigest()
+        mismatch = client.get(
+            f"/v1/skip-map/uploaded-guid?audio_md5={hashlib.md5(b'other audio', usedforsecurity=False).hexdigest()}"
+        )
+        assert mismatch.json()["status"] == "missing"
+
+        stored = asyncio.run(get_skip_map("uploaded-guid"))
+        assert stored["audio_sha256"] == hashlib.sha256(audio).hexdigest()
+
+        # Identical bytes reuse the cached result without a new analysis.
+        same_audio = client.post(
+            "/v1/analyze-episode-upload?sync=true",
+            files={"audio_file": ("episode.mp3", audio, "audio/mpeg")},
+            data={"episode_guid": "uploaded-guid", "duration_ms": "1800000"},
+        )
+        assert same_audio.status_code == 200, same_audio.text
+        assert same_audio.json()["analyzed_at"] == body["analyzed_at"]
+
+        # A different injected-ad variant has different bytes and must refresh the map.
+        changed_audio = b"same episode, different inserted ad"
+        changed = client.post(
+            "/v1/analyze-episode-upload?sync=true",
+            files={"audio_file": ("episode.mp3", changed_audio, "audio/mpeg")},
+            data={"episode_guid": "uploaded-guid", "duration_ms": "1800000"},
+        )
+        assert changed.status_code == 200, changed.text
+        assert changed.json()["analyzed_at"] != body["analyzed_at"]
+        stored = asyncio.run(get_skip_map("uploaded-guid"))
+        assert stored["audio_sha256"] == hashlib.sha256(changed_audio).hexdigest()
+        assert stored["audio_md5"] == hashlib.md5(changed_audio, usedforsecurity=False).hexdigest()
+
+
+def test_url_analysis_cache_revalidates_downloaded_audio(monkeypatch, tmp_path):
+    import asyncio
+
+    from app.config import Settings
+    from app.db import sqlite
+    from app.services import analyze_pipeline
+
+    database_path = tmp_path / "url-cache.db"
+    monkeypatch.setattr(sqlite, "_db_path", lambda: database_path)
+    audio_bytes = [b"variant one"]
+    transcription_calls = 0
+
+    async def fake_download_audio(_url, _max_mb):
+        path = tmp_path / f"download-{len(list(tmp_path.glob('download-*.mp3')))}.mp3"
+        path.write_bytes(audio_bytes[0])
+        return path
+
+    async def fake_transcribe_audio(_path, _settings):
+        nonlocal transcription_calls
+        transcription_calls += 1
+        return {"text": "episode transcript", "segments": [], "duration": 10}
+
+    monkeypatch.setattr(analyze_pipeline, "download_audio", fake_download_audio)
+    monkeypatch.setattr(analyze_pipeline, "transcribe_audio", fake_transcribe_audio)
+    settings = Settings(openrouter_api_key="test-key", llm_provider="stub", mock_analyze=False)
+
+    async def _run():
+        await sqlite.init_db()
+        first = await analyze_pipeline.run_analyze(
+            episode_guid="url-hash-guid",
+            audio_url="https://example.com/episode.mp3",
+            settings=settings,
+        )
+        same = await analyze_pipeline.run_analyze(
+            episode_guid="url-hash-guid",
+            audio_url="https://example.com/episode.mp3",
+            settings=settings,
+        )
+        audio_bytes[0] = b"variant two with inserted ad"
+        changed = await analyze_pipeline.run_analyze(
+            episode_guid="url-hash-guid",
+            audio_url="https://example.com/episode.mp3",
+            settings=settings,
+        )
+        return first, same, changed
+
+    first, same, changed = asyncio.run(_run())
+    assert first["status"] == same["status"] == changed["status"] == "ready"
+    assert transcription_calls == 2
+    assert same["audio_sha256"] == first["audio_sha256"]
+    assert changed["audio_sha256"] != first["audio_sha256"]
 
 
 def test_heuristic_labels_sponsor_text():
@@ -269,6 +358,49 @@ def test_analyze_rate_limit_returns_429():
         os.environ.pop("ANALYZE_RATE_WINDOW_SECONDS", None)
         get_settings.cache_clear()
         reset_analyze_limiter()
+
+
+def test_expired_skip_maps_are_deleted_only_after_retention(monkeypatch, tmp_path):
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+
+    import aiosqlite
+    from app.db import sqlite
+
+    database_path = tmp_path / "retention.db"
+    monkeypatch.setattr(sqlite, "_db_path", lambda: database_path)
+    now = datetime(2026, 10, 8, tzinfo=timezone.utc)
+
+    async def _seed_and_cleanup():
+        await sqlite.init_db()
+        expired = (now - timedelta(days=91)).isoformat()
+        boundary = (now - timedelta(days=90)).isoformat()
+        recent = (now - timedelta(days=89)).isoformat()
+        async with aiosqlite.connect(database_path) as db:
+            await db.executemany(
+                """
+                INSERT INTO skip_maps (
+                    episode_guid, status, analyzed_at, created_at, updated_at
+                ) VALUES (?, 'ready', ?, ?, ?)
+                """,
+                [
+                    ("expired-analyzed", expired, expired, expired),
+                    ("expired-fallback", None, expired, expired),
+                    ("retention-boundary", boundary, boundary, boundary),
+                    ("recent", recent, recent, recent),
+                ],
+            )
+            await db.commit()
+
+        deleted = await sqlite.delete_expired_skip_maps(90, now=now)
+        async with aiosqlite.connect(database_path) as db:
+            cursor = await db.execute("SELECT episode_guid FROM skip_maps ORDER BY episode_guid")
+            remaining = {row[0] for row in await cursor.fetchall()}
+        return deleted, remaining
+
+    deleted, remaining = asyncio.run(_seed_and_cleanup())
+    assert deleted == 2
+    assert remaining == {"recent", "retention-boundary"}
 
 
 def test_pending_skip_map_includes_progress_fields():

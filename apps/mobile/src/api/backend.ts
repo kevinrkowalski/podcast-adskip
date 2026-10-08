@@ -91,8 +91,9 @@ export async function healthCheck(): Promise<{ status: string; mock_mode: boolea
   return res.json();
 }
 
-export async function getSkipMap(episodeGuid: string): Promise<SkipMap> {
-  const res = await fetch(`${resolveBaseUrl()}/v1/skip-map/${encodeURIComponent(episodeGuid)}`, {
+export async function getSkipMap(episodeGuid: string, audioMd5?: string | null): Promise<SkipMap> {
+  const query = audioMd5 ? `?audio_md5=${encodeURIComponent(audioMd5)}` : '';
+  const res = await fetch(`${resolveBaseUrl()}/v1/skip-map/${encodeURIComponent(episodeGuid)}${query}`, {
     headers: headers(),
   });
   if (!res.ok) throw new Error(`skip-map failed: ${res.status}`);

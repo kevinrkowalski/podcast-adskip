@@ -41,25 +41,12 @@ async def analyze_episode(
     x_app_key: str | None = Header(default=None),
     sync: bool = False,
 ) -> AnalyzeEpisodeResponse:
-    """Queue (default) or sync-analyze an episode. Returns cached map if ready."""
+    """Queue or sync-analyze an episode, validating cached audio after download."""
     # Per-IP limit before auth so stolen-key / brute traffic cannot burn OpenRouter.
     enforce_analyze_rate_limit(request)
     check_app_key(x_app_key)
 
     existing = await get_skip_map(body.episode_guid)
-    if existing and existing["status"] == "ready" and not body.force:
-        return AnalyzeEpisodeResponse(
-            status="ready",
-            episode_guid=body.episode_guid,
-            segments=existing.get("segments") or [],
-            model=existing.get("model"),
-            analyzed_at=_parse_dt(existing.get("analyzed_at")),
-            audio_url=existing.get("audio_url"),
-            analyzed_audio_size_bytes=existing.get("analyzed_audio_size_bytes"),
-            analyzed_audio_duration_ms=existing.get("analyzed_audio_duration_ms"),
-            **_progress_kwargs(existing),
-        )
-
     if existing and existing["status"] == "pending" and not body.force:
         return AnalyzeEpisodeResponse(
             status="queued",
@@ -86,6 +73,7 @@ async def analyze_episode(
             title=body.title,
             duration_ms=body.duration_ms,
             feed_url=body.feed_url,
+            force=body.force,
         )
         return AnalyzeEpisodeResponse(
             status=result["status"],
@@ -97,6 +85,7 @@ async def analyze_episode(
             audio_url=result.get("audio_url"),
             analyzed_audio_size_bytes=result.get("analyzed_audio_size_bytes"),
             analyzed_audio_duration_ms=result.get("analyzed_audio_duration_ms"),
+            audio_md5=result.get("audio_md5"),
             **_progress_kwargs(result),
         )
 
@@ -107,6 +96,7 @@ async def analyze_episode(
         title=body.title,
         duration_ms=body.duration_ms,
         feed_url=body.feed_url,
+        force=body.force,
     )
     queued = await get_skip_map(body.episode_guid)
     return AnalyzeEpisodeResponse(

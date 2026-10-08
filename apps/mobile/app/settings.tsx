@@ -29,6 +29,7 @@ import {
   setAppKeyOverride,
 } from '@/src/api/backend';
 import { importOpmlSubscriptions } from '@/src/import/importOpml';
+import { clearAudioCache } from '@/src/api/audioUpload';
 import { usePlayback } from '@/src/store/PlaybackContext';
 import { theme } from '@/constants/Colors';
 
@@ -155,15 +156,21 @@ export default function SettingsScreen() {
   const onClearCache = () => {
     Alert.alert(
       'Clear cache?',
-      'Removes cached episode lists and skip maps. Subscriptions and settings stay.',
+      'Removes cached episode lists, skip maps, and downloaded episode audio. Subscriptions and settings stay.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Clear',
           style: 'destructive',
           onPress: async () => {
-            const n = await clearCaches();
-            setCacheMsg(`Cleared ${n} cached item${n === 1 ? '' : 's'}`);
+            try {
+              const n = await clearCaches();
+              await clearAudioCache();
+              setCacheMsg(`Cleared ${n} cached records and downloaded audio.`);
+            } catch (error) {
+              console.warn('[settings] Failed to clear cache:', error);
+              setCacheMsg('Could not clear all cached data. Please try again.');
+            }
           },
         },
       ],
@@ -246,8 +253,11 @@ export default function SettingsScreen() {
 
           <Text style={[styles.section, { marginTop: 28 }]}>Storage</Text>
           <Pressable style={styles.btnDanger} onPress={onClearCache}>
-            <Text style={styles.btnText}>Clear episode & skip-map cache</Text>
+            <Text style={styles.btnText}>Clear episode, skip-map & audio cache</Text>
           </Pressable>
+          <Text style={styles.hint}>
+            Downloaded analysis audio and its associated skip maps expire after 14 days.
+          </Text>
           {!!cacheMsg && <Text style={styles.health}>{cacheMsg}</Text>}
 
           <Text style={[styles.section, { marginTop: 28 }]}>Library</Text>

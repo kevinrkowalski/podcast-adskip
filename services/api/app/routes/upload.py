@@ -1,5 +1,6 @@
 """File upload endpoint for client-side audio analysis."""
 
+import asyncio
 import logging
 import tempfile
 from datetime import datetime
@@ -12,6 +13,7 @@ from app.db import get_skip_map, set_status
 from app.models.schemas import AnalyzeEpisodeResponse
 from app.rate_limit import enforce_analyze_rate_limit
 from app.services.analyze_pipeline import run_analyze_from_file
+from app.services.audio_fingerprint import file_fingerprints
 
 logger = logging.getLogger(__name__)
 
@@ -62,30 +64,7 @@ async def analyze_episode_upload(
     enforce_analyze_rate_limit(request)
     check_app_key(x_app_key)
     
-    # Check cache (unless force)
-    existing = await get_skip_map(episode_guid)
-    if existing and existing["status"] == "ready" and not force:
-        logger.info("Returning cached skip map for %s (upload endpoint)", episode_guid)
-        return AnalyzeEpisodeResponse(
-            status="ready",
-            episode_guid=episode_guid,
-            segments=existing.get("segments") or [],
-            model=existing.get("model"),
-            analyzed_at=_parse_dt(existing.get("analyzed_at")),
-            audio_url=existing.get("audio_url"),
-            analyzed_audio_size_bytes=existing.get("analyzed_audio_size_bytes"),
-            analyzed_audio_duration_ms=existing.get("analyzed_audio_duration_ms"),
-            **_progress_kwargs(existing),
-        )
-    
-    if existing and existing["status"] == "pending" and not force:
-        return AnalyzeEpisodeResponse(
-            status="queued",
-            episode_guid=episode_guid,
-            message="Analysis already in progress",
-            **_progress_kwargs(existing),
-        )
-    
+
     # Save uploaded file to temp location
     suffix = Path(audio_file.filename or "audio.mp3").suffix or ".mp3"
     if len(suffix) > 8:
@@ -102,12 +81,41 @@ async def analyze_episode_upload(
             while chunk := await audio_file.read(chunk_size):
                 f.write(chunk)
         
+        audio_sha256, audio_md5 = await asyncio.to_thread(file_fingerprints, tmp_path)
         logger.info(
-            "Received upload for %s: %s bytes, starting analysis",
+            "Received upload for %s: %s bytes (sha256=%s), checking cached analysis",
             episode_guid,
             tmp_path.stat().st_size,
+            audio_sha256,
         )
-        
+
+        # A GUID is not a stable identity for dynamically inserted audio. Only
+        # reuse a map after matching the exact uploaded bytes.
+        existing = await get_skip_map(episode_guid)
+        if existing and not force and existing.get("audio_sha256") == audio_sha256:
+            tmp_path.unlink(missing_ok=True)
+            if existing["status"] == "ready":
+                logger.info("Returning matching cached skip map for %s", episode_guid)
+                return AnalyzeEpisodeResponse(
+                    status="ready",
+                    episode_guid=episode_guid,
+                    segments=existing.get("segments") or [],
+                    model=existing.get("model"),
+                    analyzed_at=_parse_dt(existing.get("analyzed_at")),
+                    audio_url=existing.get("audio_url"),
+                    analyzed_audio_size_bytes=existing.get("analyzed_audio_size_bytes"),
+                    analyzed_audio_duration_ms=existing.get("analyzed_audio_duration_ms"),
+                    audio_md5=existing.get("audio_md5"),
+                    **_progress_kwargs(existing),
+                )
+            if existing["status"] == "pending":
+                return AnalyzeEpisodeResponse(
+                    status="queued",
+                    episode_guid=episode_guid,
+                    message="Analysis already in progress for this audio",
+                    **_progress_kwargs(existing),
+                )
+
         if sync:
             result = await run_analyze_from_file(
                 episode_guid=episode_guid,
@@ -116,6 +124,8 @@ async def analyze_episode_upload(
                 title=title,
                 duration_ms=duration_ms,
                 feed_url=feed_url,
+                audio_sha256=audio_sha256,
+                audio_md5=audio_md5,
             )
             return AnalyzeEpisodeResponse(
                 status=result["status"],
@@ -127,6 +137,7 @@ async def analyze_episode_upload(
                 audio_url=result.get("audio_url"),
                 analyzed_audio_size_bytes=result.get("analyzed_audio_size_bytes"),
                 analyzed_audio_duration_ms=result.get("analyzed_audio_duration_ms"),
+                audio_md5=result.get("audio_md5"),
                 **_progress_kwargs(result),
             )
         
@@ -146,6 +157,8 @@ async def analyze_episode_upload(
             episode_guid=episode_guid,
             audio_path=tmp_path,
             audio_url=audio_url,
+            audio_sha256=audio_sha256,
+            audio_md5=audio_md5,
             title=title,
             duration_ms=duration_ms,
             feed_url=feed_url,
@@ -156,6 +169,7 @@ async def analyze_episode_upload(
             status="queued",
             episode_guid=episode_guid,
             message="Analysis queued (client upload)",
+            audio_md5=audio_md5,
             **_progress_kwargs(queued),
         )
         

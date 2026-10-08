@@ -22,6 +22,7 @@ const KEYS = {
   subscriptions: '@podcast-adskip/subscriptions',
   episodes: '@podcast-adskip/episodes/',
   skipMaps: '@podcast-adskip/skipmaps/',
+  audioCache: '@podcast-adskip/audioCache/',
   /** Slim per-episode resume: value is just `${positionMs}` (optional `:${durationMs}`). */
   positions: '@podcast-adskip/pos/',
   autoSkip: '@podcast-adskip/autoSkip',
@@ -284,6 +285,101 @@ export async function getCachedSkipMap(
     }
   }
   return byUrl;
+}
+
+export type AudioCacheMetadata = {
+  fileName: string;
+  episodeGuid: string;
+  audioUrl: string;
+  cachedAtMs: number;
+  audioMd5?: string;
+};
+
+function audioCacheMetadataKey(fileName: string): string {
+  return KEYS.audioCache + encodeURIComponent(fileName);
+}
+
+export async function saveAudioCacheMetadata(metadata: AudioCacheMetadata): Promise<void> {
+  await AsyncStorage.setItem(audioCacheMetadataKey(metadata.fileName), JSON.stringify(metadata));
+}
+
+export async function getAudioCacheMetadata(
+  fileName: string,
+): Promise<AudioCacheMetadata | null> {
+  try {
+    const raw = await AsyncStorage.getItem(audioCacheMetadataKey(fileName));
+    if (!raw) return null;
+    const metadata = JSON.parse(raw) as AudioCacheMetadata;
+    if (
+      metadata.fileName !== fileName ||
+      !metadata.episodeGuid ||
+      !metadata.audioUrl ||
+      !Number.isFinite(metadata.cachedAtMs)
+    ) {
+      return null;
+    }
+    return metadata;
+  } catch (error) {
+    console.warn('[storage] audio-cache metadata read skipped:', error);
+    return null;
+  }
+}
+
+export async function getAllAudioCacheMetadata(): Promise<AudioCacheMetadata[]> {
+  const keys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(KEYS.audioCache));
+  const entries: AudioCacheMetadata[] = [];
+  for (const key of keys) {
+    try {
+      const raw = await AsyncStorage.getItem(key);
+      if (!raw) continue;
+      const metadata = JSON.parse(raw) as AudioCacheMetadata;
+      if (
+        typeof metadata.fileName === 'string' &&
+        typeof metadata.episodeGuid === 'string' &&
+        typeof metadata.audioUrl === 'string' &&
+        Number.isFinite(metadata.cachedAtMs)
+      ) {
+        entries.push(metadata);
+      }
+    } catch (error) {
+      console.warn('[storage] audio-cache metadata entry skipped:', error);
+    }
+  }
+  return entries;
+}
+
+export async function removeAudioCacheMetadata(fileName: string): Promise<void> {
+  await AsyncStorage.removeItem(audioCacheMetadataKey(fileName));
+}
+
+export async function removeAllAudioCacheMetadata(): Promise<void> {
+  const keys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(KEYS.audioCache));
+  if (keys.length) await AsyncStorage.multiRemove(keys);
+}
+
+export async function getCachedSkipMaps(): Promise<SkipMap[]> {
+  const keys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(KEYS.skipMaps));
+  const maps = new Map<string, SkipMap>();
+  for (const key of keys) {
+    try {
+      const map = parseSkipMapRaw(await AsyncStorage.getItem(key));
+      if (map?.episode_guid) maps.set(map.episode_guid, map);
+    } catch (error) {
+      console.warn('[storage] skip-map scan skipped:', error);
+    }
+  }
+  return [...maps.values()];
+}
+
+export async function removeCachedSkipMap(
+  guid: string,
+  enclosureUrl?: string | null,
+): Promise<void> {
+  const keys = new Set<string>();
+  if (guid) keys.add(skipMapGuidKey(guid));
+  const url = enclosureUrl?.trim();
+  if (url) keys.add(skipMapUrlKey(url));
+  if (keys.size) await AsyncStorage.multiRemove([...keys]);
 }
 
 export async function getAutoSkipEnabled(): Promise<boolean> {
@@ -569,7 +665,10 @@ export async function getPlaybackPositions(
 export async function clearCaches(): Promise<number> {
   const keys = await AsyncStorage.getAllKeys();
   const toRemove = keys.filter(
-    (k) => k.startsWith(KEYS.episodes) || k.startsWith(KEYS.skipMaps),
+    (k) =>
+      k.startsWith(KEYS.episodes) ||
+      k.startsWith(KEYS.skipMaps) ||
+      k.startsWith(KEYS.audioCache),
   );
   if (toRemove.length) await AsyncStorage.multiRemove(toRemove);
   return toRemove.length;

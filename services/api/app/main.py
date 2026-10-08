@@ -1,22 +1,49 @@
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.db import init_db
+from app.db.sqlite import delete_expired_skip_maps
 from app.routes import analyze, health, skip_map, upload
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
+
+
+async def _cleanup_expired_skip_maps_periodically() -> None:
+    while True:
+        try:
+            deleted = await delete_expired_skip_maps(settings.skip_map_retention_days)
+            if deleted:
+                logger.info("Deleted %d expired skip-map records", deleted)
+        except Exception:
+            logger.exception("Scheduled skip-map cleanup failed")
+        await asyncio.sleep(24 * 60 * 60)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await init_db()
-    yield
+    try:
+        deleted = await delete_expired_skip_maps(settings.skip_map_retention_days)
+        if deleted:
+            logger.info("Deleted %d expired skip-map records", deleted)
+    except Exception:
+        logger.exception("Startup skip-map cleanup failed")
+
+    cleanup_task = asyncio.create_task(_cleanup_expired_skip_maps_periodically())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup_task
 
 
 _docs_enabled = not (settings.app_key or "").strip()

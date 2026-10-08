@@ -8,6 +8,7 @@ import 'react-native-reanimated';
 
 import { PlaybackProvider } from '@/src/store/PlaybackContext';
 import { hydrateApiBaseUrl, hydrateAppKey } from '@/src/api/backend';
+import { pruneExpiredAudioCache } from '@/src/api/audioUpload';
 import { theme } from '@/constants/Colors';
 
 export { ErrorBoundary } from 'expo-router';
@@ -49,8 +50,12 @@ export default function RootLayout() {
       /* ignore — fallback URL still works */
     });
     hydrateAppKey().catch(() => {
-      /* ignore — empty key still works for open LAN */
+      /* ignore — auth key may be entered in Settings */
     });
+  }, []);
+
+  useEffect(() => {
+    void pruneExpiredAudioCache();
   }, []);
 
   // Keep the navigator mounted from the first render. The splash screen

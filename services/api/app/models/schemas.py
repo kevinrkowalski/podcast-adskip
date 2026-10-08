@@ -51,6 +51,7 @@ class AnalyzeEpisodeResponse(AnalyzeProgressFields):
     audio_url: str | None = None
     analyzed_audio_size_bytes: int | None = Field(default=None, ge=0)
     analyzed_audio_duration_ms: int | None = Field(default=None, ge=0)
+    audio_md5: str | None = None
 
 
 class SkipMapResponse(AnalyzeProgressFields):
@@ -63,6 +64,7 @@ class SkipMapResponse(AnalyzeProgressFields):
     audio_url: str | None = None
     analyzed_audio_size_bytes: int | None = Field(default=None, ge=0)
     analyzed_audio_duration_ms: int | None = Field(default=None, ge=0)
+    audio_md5: str | None = None
 
 
 class HealthResponse(BaseModel):

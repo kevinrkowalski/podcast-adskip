@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -33,6 +33,8 @@ _MIGRATE_COLS = (
     ("duration_ms", "INTEGER"),
     ("analyzed_audio_size_bytes", "INTEGER"),
     ("analyzed_audio_duration_ms", "INTEGER"),
+    ("audio_sha256", "TEXT"),
+    ("audio_md5", "TEXT"),
 )
 
 
@@ -60,6 +62,23 @@ async def init_db() -> None:
         await db.execute(_CREATE)
         await _ensure_columns(db)
         await db.commit()
+
+
+async def delete_expired_skip_maps(
+    retention_days: int = 90,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Delete database records older than the configured retention period."""
+    days = max(1, retention_days)
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+    async with aiosqlite.connect(_db_path()) as db:
+        cursor = await db.execute(
+            "DELETE FROM skip_maps WHERE COALESCE(analyzed_at, updated_at, created_at) < ?",
+            (cutoff.isoformat(),),
+        )
+        await db.commit()
+        return cursor.rowcount
 
 
 def _row_to_dict(row: aiosqlite.Row) -> dict:
@@ -102,6 +121,8 @@ def _row_to_dict(row: aiosqlite.Row) -> dict:
         "duration_ms": duration_ms,
         "analyzed_audio_size_bytes": analyzed_audio_size_bytes,
         "analyzed_audio_duration_ms": analyzed_audio_duration_ms,
+        "audio_sha256": row["audio_sha256"] if "audio_sha256" in keys else None,
+        "audio_md5": row["audio_md5"] if "audio_md5" in keys else None,
     }
 
 
@@ -204,6 +225,8 @@ async def save_skip_map(
     title: str | None = None,
     analyzed_audio_size_bytes: int | None = None,
     analyzed_audio_duration_ms: int | None = None,
+    audio_sha256: str | None = None,
+    audio_md5: str | None = None,
 ) -> dict:
     now = _now()
     payload = json.dumps([s.model_dump() for s in segments])
@@ -214,8 +237,8 @@ async def save_skip_map(
             INSERT INTO skip_maps (
               episode_guid, status, segments_json, model, audio_url, feed_url, title,
               analyzed_at, error, stage, stage_updated_at, analyzed_audio_size_bytes,
-              analyzed_audio_duration_ms, created_at, updated_at
-            ) VALUES (?, 'ready', ?, ?, ?, ?, ?, ?, NULL, 'ready', ?, ?, ?, ?, ?)
+              analyzed_audio_duration_ms, audio_sha256, audio_md5, created_at, updated_at
+            ) VALUES (?, 'ready', ?, ?, ?, ?, ?, ?, NULL, 'ready', ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(episode_guid) DO UPDATE SET
               status = 'ready',
               segments_json = excluded.segments_json,
@@ -229,6 +252,8 @@ async def save_skip_map(
               stage_updated_at = excluded.stage_updated_at,
               analyzed_audio_size_bytes = excluded.analyzed_audio_size_bytes,
               analyzed_audio_duration_ms = excluded.analyzed_audio_duration_ms,
+              audio_sha256 = excluded.audio_sha256,
+              audio_md5 = excluded.audio_md5,
               updated_at = excluded.updated_at
             """,
             (
@@ -242,6 +267,8 @@ async def save_skip_map(
                 now,
                 analyzed_audio_size_bytes,
                 analyzed_audio_duration_ms,
+                audio_sha256,
+                audio_md5,
                 now,
                 now,
             ),
@@ -263,6 +290,8 @@ async def save_skip_map(
         "audio_url": audio_url,
         "analyzed_audio_size_bytes": analyzed_audio_size_bytes,
         "analyzed_audio_duration_ms": analyzed_audio_duration_ms,
+        "audio_sha256": audio_sha256,
+        "audio_md5": audio_md5,
         **progress,
         "started_at": None,
     }

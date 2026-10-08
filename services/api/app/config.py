@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     analyze_rate_window_seconds: int = 3600  # sliding window length
     cors_origins: str = "*"
     database_path: str = "data/skip_maps.db"
+    skip_map_retention_days: int = 90
     mock_analyze: bool = False  # force stub even if keys present
     # OpenRouter multipart STT cap is 25 MB; larger downloads are ffmpeg-chunked.
     # Legacy Groq allowed ~100 MB — raise only if using GROQ_API_KEY directly.

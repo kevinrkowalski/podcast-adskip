@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, Query
 
 from app.auth import check_app_key
 from app.db import get_skip_map
@@ -22,10 +22,15 @@ def _parse_dt(value: str | None) -> datetime | None:
 async def read_skip_map(
     episode_guid: str,
     x_app_key: str | None = Header(default=None),
+    audio_md5: str | None = Query(default=None, min_length=32, max_length=32),
 ) -> SkipMapResponse:
     check_app_key(x_app_key)
     row = await get_skip_map(episode_guid)
     if not row:
+        return SkipMapResponse(status="missing", episode_guid=episode_guid)
+    if row["status"] == "ready" and (
+        not audio_md5 or not row.get("audio_md5") or row["audio_md5"].lower() != audio_md5.lower()
+    ):
         return SkipMapResponse(status="missing", episode_guid=episode_guid)
     return SkipMapResponse(
         status=row["status"] if row["status"] in ("ready", "pending", "error") else "missing",
@@ -37,6 +42,7 @@ async def read_skip_map(
         audio_url=row.get("audio_url"),
         analyzed_audio_size_bytes=row.get("analyzed_audio_size_bytes"),
         analyzed_audio_duration_ms=row.get("analyzed_audio_duration_ms"),
+        audio_md5=row.get("audio_md5"),
         stage=row.get("stage"),
         stage_label=row.get("stage_label"),
         progress_pct=row.get("progress_pct"),

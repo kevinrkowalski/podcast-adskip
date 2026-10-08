@@ -39,6 +39,10 @@ Protected API routes always require an `APP_KEY`; there is no setting to disable
 
 `POST /v1/analyze-episode` also has an in-memory per-IP rate limit (default **10 requests / hour**, tunable via `ANALYZE_RATE_LIMIT` / `ANALYZE_RATE_WINDOW_SECONDS`). Exceeding it returns **429** with `Retry-After`. Limit resets on process restart.
 
+Cache hits on analysis POST endpoints are validated against a SHA-256 fingerprint of the audio bytes, not just the episode GUID. Uploaded audio is fingerprinted before cache lookup; URL-based analysis downloads and fingerprints the audio before reusing a result. Existing records without a fingerprint are analyzed again on the next POST request. Ready-map reads require the app to pass the MD5 fingerprint of its local cached audio as `audio_md5`; without a matching fingerprint the API returns `missing`. MD5 is used only as a compact content identifier, not as a security credential.
+
+Skip-map records are retained for **90 days** by default. The API removes expired records at startup and then once every 24 hours. Set `SKIP_MAP_RETENTION_DAYS` to change the retention period (minimum 1 day). This cleanup only removes server-side skip-map database records; it does not delete local app downloads.
+
 ## Docker
 
 ```bash

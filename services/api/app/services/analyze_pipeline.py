@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from pathlib import Path
 
 from app.config import Settings, get_settings
-from app.db import save_skip_map, set_status
+from app.db import get_skip_map, save_skip_map, set_status
+from app.services.audio_fingerprint import file_fingerprints
 from app.services.detect_ads import heuristic_segments, label_ads_llm
 from app.services.transcribe import download_audio, stub_transcript, transcribe_audio
 
@@ -69,9 +71,11 @@ async def run_analyze(
     title: str | None = None,
     duration_ms: int | None = None,
     feed_url: str | None = None,
+    force: bool = False,
     settings: Settings | None = None,
 ) -> dict:
     settings = settings or get_settings()
+    existing = await get_skip_map(episode_guid)
     await _stage(
         episode_guid,
         "queued",
@@ -98,6 +102,16 @@ async def run_analyze(
                 duration_ms=duration_ms,
             )
             audio_path = await download_audio(audio_url, settings.max_audio_mb)
+            audio_sha256, audio_md5 = await asyncio.to_thread(file_fingerprints, audio_path)
+            if (
+                not force
+                and existing
+                and existing.get("analyzed_at")
+                and existing.get("audio_sha256") == audio_sha256
+            ):
+                await set_status(episode_guid, "ready", stage="ready")
+                cached = await get_skip_map(episode_guid)
+                return cached or existing
 
             await _stage(
                 episode_guid,
@@ -149,6 +163,8 @@ async def run_analyze(
             title=title,
             analyzed_audio_size_bytes=analyzed_audio_size_bytes,
             analyzed_audio_duration_ms=analyzed_audio_duration_ms,
+            audio_sha256=audio_sha256 if settings.has_real_stt else None,
+            audio_md5=audio_md5 if settings.has_real_stt else None,
         )
         logger.info(
             "Analyze ready guid=%s segments=%s model=%s",
@@ -190,10 +206,16 @@ async def run_analyze_from_file(
     title: str | None = None,
     duration_ms: int | None = None,
     feed_url: str | None = None,
+    audio_sha256: str | None = None,
+    audio_md5: str | None = None,
     settings: Settings | None = None,
 ) -> dict:
     """Analyze a client-uploaded audio file and persist its source metadata."""
     settings = settings or get_settings()
+    if audio_sha256 is None or audio_md5 is None:
+        calculated_sha256, calculated_md5 = await asyncio.to_thread(file_fingerprints, audio_path)
+        audio_sha256 = audio_sha256 or calculated_sha256
+        audio_md5 = audio_md5 or calculated_md5
     try:
         await _stage(
             episode_guid,
@@ -236,6 +258,8 @@ async def run_analyze_from_file(
             title=title,
             analyzed_audio_size_bytes=audio_size_bytes,
             analyzed_audio_duration_ms=analyzed_audio_duration_ms,
+            audio_sha256=audio_sha256,
+            audio_md5=audio_md5,
         )
     except Exception as exc:  # noqa: BLE001 — persist a useful failed status
         err = str(exc) or exc.__class__.__name__
