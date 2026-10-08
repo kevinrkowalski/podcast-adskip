@@ -17,6 +17,7 @@ import {
   getAutoSkipEnabled,
   getCachedSkipMap,
   getPlaybackPosition,
+  clearPlaybackPosition,
   savePlaybackPosition,
   setAutoSkipEnabled,
   isPodcastAdDetectionEnabled,
@@ -61,6 +62,7 @@ type Ctx = {
   setPodcastAdDetection: (target: AdDetectionTarget, enabled: boolean) => Promise<void>;
   setPodcastSkipSetting: (target: AdDetectionTarget, settings: Partial<PodcastSkipSettings>) => Promise<void>;
   requestAnalyze: (force?: boolean) => Promise<void>;
+  clearCachedPlaybackData: () => boolean;
 };
 
 const PlaybackContext = createContext<Ctx | null>(null);
@@ -97,6 +99,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const isPlayingRef = useRef(false);
   const lastSavedAt = useRef(0);
   const lastSavedPos = useRef(-1);
+  const clearedPositionGuid = useRef<string | null>(null);
   /** Mirrors skipMap so setAutoSkip can restore without a stale closure. */
   const skipMapRef = useRef<SkipMap | null>(null);
   /** Bumped on auto-skip toggle to invalidate in-flight loadSkipMap work. */
@@ -109,7 +112,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
   const persistPosition = useCallback(async (force = false) => {
     const ep = episodeRef.current;
-    if (!ep?.guid) return;
+    if (!ep?.guid || clearedPositionGuid.current === ep.guid) return;
     const pos = positionRef.current;
     const dur = durationRef.current;
     const now = Date.now();
@@ -153,7 +156,12 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       const previousPositionMs = positionRef.current;
       const previousDurationMs = durationRef.current;
       const nextGuid = st.episode?.guid;
-      if (previousGuid && nextGuid && previousGuid !== nextGuid) {
+      if (
+        previousGuid &&
+        nextGuid &&
+        previousGuid !== nextGuid &&
+        clearedPositionGuid.current !== previousGuid
+      ) {
         void savePlaybackPosition(
           previousGuid,
           previousPositionMs,
@@ -162,6 +170,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           console.warn('[playback] Failed to persist previous episode position:', error);
         });
       }
+      if (previousGuid !== nextGuid) clearedPositionGuid.current = null;
       episodeRef.current = st.episode;
       positionRef.current = st.positionMs;
       durationRef.current = st.durationMs;
@@ -188,6 +197,24 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       void persistPosition(true);
     };
   }, [persistPosition]);
+
+  const clearCachedPlaybackData = useCallback((): boolean => {
+    if (manualPrepareInFlight.current) return false;
+
+    skipLoadGen.current += 1;
+    const guid = episodeRef.current?.guid;
+    clearedPositionGuid.current = guid ?? null;
+    if (guid) void clearPlaybackPosition(guid);
+    setSkipMap(null);
+    skipMapRef.current = null;
+    analyzeFingerprintRef.current = null;
+    setAnalyzeStatus(null);
+    setAnalyzeError(null);
+    setAudioMismatchWarning(null);
+    setUploadProgress(null);
+    player.setSkipSegments([]);
+    return true;
+  }, []);
 
   const clearAdDetection = useCallback((status = 'disabled') => {
     // Never clear while manual Prepare is running — Prepare must show progress and complete.
@@ -1113,6 +1140,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       setPodcastAdDetection,
       setPodcastSkipSetting,
       requestAnalyze,
+      clearCachedPlaybackData,
     }),
     [
       episode,
@@ -1137,6 +1165,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       setPodcastAdDetection,
       setPodcastSkipSetting,
       requestAnalyze,
+      clearCachedPlaybackData,
     ],
   );
 

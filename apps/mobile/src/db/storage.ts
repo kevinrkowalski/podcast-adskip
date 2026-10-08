@@ -661,14 +661,15 @@ export async function getPlaybackPositions(
   return out;
 }
 
-/** Clear episode + skip-map caches (keeps subscriptions and settings). */
+/** Clear episode, skip-map, audio metadata, and saved-position caches. */
 export async function clearCaches(): Promise<number> {
   const keys = await AsyncStorage.getAllKeys();
   const toRemove = keys.filter(
     (k) =>
       k.startsWith(KEYS.episodes) ||
       k.startsWith(KEYS.skipMaps) ||
-      k.startsWith(KEYS.audioCache),
+      k.startsWith(KEYS.audioCache) ||
+      k.startsWith(KEYS.positions),
   );
   if (toRemove.length) await AsyncStorage.multiRemove(toRemove);
   return toRemove.length;

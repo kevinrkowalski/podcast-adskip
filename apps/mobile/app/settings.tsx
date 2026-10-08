@@ -30,12 +30,13 @@ import {
 } from '@/src/api/backend';
 import { importOpmlSubscriptions } from '@/src/import/importOpml';
 import { clearAudioCache } from '@/src/api/audioUpload';
+import { clearCachedRssXml } from '@/src/api/rss';
 import { usePlayback } from '@/src/store/PlaybackContext';
 import { theme } from '@/constants/Colors';
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
-  const { setAutoSkip, autoSkip } = usePlayback();
+  const { setAutoSkip, autoSkip, clearCachedPlaybackData } = usePlayback();
   const [apiUrl, setApiUrlState] = useState(DEFAULT_API_URL);
   const [appKey, setAppKeyState] = useState('');
   const [saving, setSaving] = useState(false);
@@ -155,8 +156,8 @@ export default function SettingsScreen() {
 
   const onClearCache = () => {
     Alert.alert(
-      'Clear cache?',
-      'Removes cached episode lists, skip maps, and downloaded episode audio. Subscriptions and settings stay.',
+      'Clear on-device cache?',
+      'Removes cached episode lists, skip maps, and downloaded analysis audio from this device. Subscriptions and settings stay. Episode lists refresh from RSS, and valid skip maps may be restored from the API or regenerated when you play an episode.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -164,9 +165,16 @@ export default function SettingsScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
-              const n = await clearCaches();
+              if (!clearCachedPlaybackData()) {
+                setCacheMsg('Wait for the current analysis to finish, then clear the cache.');
+                return;
+              }
+              clearCachedRssXml();
               await clearAudioCache();
-              setCacheMsg(`Cleared ${n} cached records and downloaded audio.`);
+              const n = await clearCaches();
+              setCacheMsg(
+                `Cleared ${n} on-device cache records, saved play positions, in-memory segments, and downloaded analysis audio. Episode lists and API skip maps can return when reopened.`,
+              );
             } catch (error) {
               console.warn('[settings] Failed to clear cache:', error);
               setCacheMsg('Could not clear all cached data. Please try again.');
@@ -253,10 +261,10 @@ export default function SettingsScreen() {
 
           <Text style={[styles.section, { marginTop: 28 }]}>Storage</Text>
           <Pressable style={styles.btnDanger} onPress={onClearCache}>
-            <Text style={styles.btnText}>Clear episode, skip-map & audio cache</Text>
+            <Text style={styles.btnText}>Clear on-device cache & downloads</Text>
           </Pressable>
           <Text style={styles.hint}>
-            Downloaded analysis audio and its associated skip maps expire after 14 days.
+            Downloaded analysis audio and its associated local skip maps expire after 14 days. Server skip maps are retained for up to 90 days and may be restored when you play an episode.
           </Text>
           {!!cacheMsg && <Text style={styles.health}>{cacheMsg}</Text>}
 
