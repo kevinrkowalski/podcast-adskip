@@ -1,15 +1,18 @@
 import type { AdSegment, AdSegmentType, LegacyAdSegmentType } from '@/src/types';
 
-/** Map legacy segment types to new consolidated types. */
-export function mapLegacySegmentType(type: AdSegmentType | LegacyAdSegmentType | string): AdSegmentType {
-  const legacyMap: Record<string, AdSegmentType> = {
+export type NormalizedAdSegmentType = AdSegmentType | 'unknown';
+
+/** Map known legacy segment types; unknown values must never become advertisements. */
+export function mapLegacySegmentType(type: AdSegmentType | LegacyAdSegmentType | string): NormalizedAdSegmentType {
+  const legacyMap: Record<string, NormalizedAdSegmentType> = {
     sponsor: 'advertisement',
     midroll: 'advertisement',
     preroll: 'advertisement',
     postroll: 'advertisement',
     crosspromo: 'self_promotion',
     network: 'self_promotion',
-    unknown: 'advertisement',
+    intro_outro: 'intro_outro',
+    unknown: 'unknown',
   };
   
   // If already a new type, return as-is
@@ -17,7 +20,7 @@ export function mapLegacySegmentType(type: AdSegmentType | LegacyAdSegmentType |
     return type as AdSegmentType;
   }
   
-  return legacyMap[type] || 'advertisement';
+  return legacyMap[type] || 'unknown';
 }
 
 /** Normalize segment to use new type system. */
@@ -39,11 +42,25 @@ export type SkipFilter = {
  * Filter segments based on per-show skip settings.
  * Returns only segments that should be skipped according to the settings.
  */
+const MIN_AUTO_SKIP_CONFIDENCE = 0.8;
+const SHORT_SEGMENT_MS = 10_000;
+const SHORT_SEGMENT_CONFIDENCE = 0.9;
+
+/** Low-confidence or brief detections remain visible for manual review, not auto-skip. */
+export function isSafeToAutoSkip(seg: AdSegment): boolean {
+  if (!Number.isFinite(seg.confidence) || seg.confidence < MIN_AUTO_SKIP_CONFIDENCE) {
+    return false;
+  }
+  const durationMs = seg.end_ms - seg.start_ms;
+  return durationMs >= SHORT_SEGMENT_MS || seg.confidence >= SHORT_SEGMENT_CONFIDENCE;
+}
+
 export function filterSkippableSegments(
   segments: AdSegment[],
   filter: SkipFilter,
 ): AdSegment[] {
   return segments.filter((seg) => {
+    if (!isSafeToAutoSkip(seg)) return false;
     const normalizedType = mapLegacySegmentType(seg.type);
     switch (normalizedType) {
       case 'advertisement':
@@ -83,15 +100,6 @@ const SEGMENT_TYPE_LABELS: Record<AdSegmentType, string> = {
   self_promotion: 'Self promotion',
 };
 
-const LEGACY_SEGMENT_TYPE_LABELS: Record<LegacyAdSegmentType, string> = {
-  sponsor: 'Sponsor ad',
-  midroll: 'Mid-roll ad',
-  preroll: 'Pre-roll',
-  postroll: 'Post-roll',
-  crosspromo: 'Cross-promo',
-  network: 'Network promo',
-  unknown: 'Ad segment',
-};
 
 /** Human-readable label for a skip-map segment type. */
 export function segmentTypeLabel(type: AdSegmentType | LegacyAdSegmentType | string): string {
@@ -102,5 +110,5 @@ export function segmentTypeLabel(type: AdSegmentType | LegacyAdSegmentType | str
     return SEGMENT_TYPE_LABELS[normalizedType as AdSegmentType];
   }
   
-  return 'Ad segment';
+  return 'Unclassified segment';
 }

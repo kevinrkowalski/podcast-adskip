@@ -50,6 +50,9 @@ async def analyze_episode_upload(
     audio_file: Annotated[UploadFile, File()],
     episode_guid: Annotated[str, Form()],
     title: Annotated[str | None, Form()] = None,
+    podcast_title: Annotated[str | None, Form(max_length=300)] = None,
+    podcast_description: Annotated[str | None, Form(max_length=5000)] = None,
+    episode_description: Annotated[str | None, Form(max_length=5000)] = None,
     duration_ms: Annotated[int | None, Form()] = None,
     feed_url: Annotated[str | None, Form()] = None,
     audio_url: Annotated[str | None, Form()] = None,
@@ -93,6 +96,8 @@ async def analyze_episode_upload(
         # A GUID is not a stable identity for dynamically inserted audio. Only
         # reuse a map after matching the exact uploaded bytes.
         existing = await get_skip_map(episode_guid)
+        if existing and force and existing.get("audio_sha256") == audio_sha256:
+            logger.info("Forced reanalysis requested for matching audio: %s", episode_guid)
         if existing and not force and existing.get("audio_sha256") == audio_sha256:
             tmp_path.unlink(missing_ok=True)
             if existing["status"] == "ready":
@@ -123,6 +128,9 @@ async def analyze_episode_upload(
                 audio_path=tmp_path,
                 audio_url=audio_url,
                 title=title,
+                podcast_title=podcast_title,
+                podcast_description=podcast_description,
+                episode_description=episode_description,
                 duration_ms=duration_ms,
                 feed_url=feed_url,
                 audio_sha256=audio_sha256,
@@ -161,6 +169,9 @@ async def analyze_episode_upload(
             audio_sha256=audio_sha256,
             audio_md5=audio_md5,
             title=title,
+            podcast_title=podcast_title,
+            podcast_description=podcast_description,
+            episode_description=episode_description,
             duration_ms=duration_ms,
             feed_url=feed_url,
         )

@@ -72,6 +72,9 @@ async def run_analyze(
     episode_guid: str,
     audio_url: str,
     title: str | None = None,
+    podcast_title: str | None = None,
+    podcast_description: str | None = None,
+    episode_description: str | None = None,
     duration_ms: int | None = None,
     feed_url: str | None = None,
     force: bool = False,
@@ -134,10 +137,18 @@ async def run_analyze(
                 duration_ms=duration_ms,
             )
             if settings.has_llm:
-                segments = await label_ads_llm(transcript, settings)
+                segments = await label_ads_llm(
+                    transcript,
+                    settings,
+                    duration_ms,
+                    podcast_title=podcast_title,
+                    podcast_description=podcast_description,
+                    episode_title=title,
+                    episode_description=episode_description,
+                )
                 model_parts.append(_llm_model_label(settings))
             else:
-                segments = heuristic_segments(transcript)
+                segments = heuristic_segments(transcript, duration_ms)
                 model_parts.append("heuristic")
             model = "+".join(model_parts)
         else:
@@ -155,7 +166,7 @@ async def run_analyze(
                 "labeling",
                 duration_ms=duration_ms,
             )
-            segments = heuristic_segments(transcript)
+            segments = heuristic_segments(transcript, duration_ms)
             model = "stub-whisper+heuristic"
 
         await _stage(episode_guid, "saving", duration_ms=duration_ms)
@@ -209,6 +220,9 @@ async def run_analyze_from_file(
     audio_path: Path,
     audio_url: str | None = None,
     title: str | None = None,
+    podcast_title: str | None = None,
+    podcast_description: str | None = None,
+    episode_description: str | None = None,
     duration_ms: int | None = None,
     feed_url: str | None = None,
     audio_sha256: str | None = None,
@@ -239,10 +253,18 @@ async def run_analyze_from_file(
             model_parts = [settings.whisper_model]
             await _stage(episode_guid, "labeling", duration_ms=duration_ms)
             if settings.has_llm:
-                segments = await label_ads_llm(transcript, settings)
+                segments = await label_ads_llm(
+                    transcript,
+                    settings,
+                    duration_ms,
+                    podcast_title=podcast_title,
+                    podcast_description=podcast_description,
+                    episode_title=title,
+                    episode_description=episode_description,
+                )
                 model_parts.append(_llm_model_label(settings))
             else:
-                segments = heuristic_segments(transcript)
+                segments = heuristic_segments(transcript, duration_ms)
                 model_parts.append("heuristic")
             model = "+".join(model_parts)
         else:
@@ -250,7 +272,7 @@ async def run_analyze_from_file(
             transcript = stub_transcript(duration_ms)
             analyzed_audio_duration_ms = _transcript_duration_ms(transcript, duration_ms)
             await _stage(episode_guid, "labeling", duration_ms=duration_ms)
-            segments = heuristic_segments(transcript)
+            segments = heuristic_segments(transcript, duration_ms)
             model = "stub-whisper+heuristic"
 
         await _stage(episode_guid, "saving", duration_ms=duration_ms)

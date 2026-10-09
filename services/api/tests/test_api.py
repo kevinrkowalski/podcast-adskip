@@ -78,6 +78,9 @@ def test_analyze_uploaded_audio_sync_and_skip_map_metadata():
                 "episode_guid": "uploaded-guid",
                 "audio_url": "https://example.com/uploaded.mp3",
                 "title": "Uploaded episode",
+                "podcast_title": "A podcast",
+                "podcast_description": "A short show description.",
+                "episode_description": "A short episode description.",
                 "duration_ms": "1800000",
                 "force": "true",
             },
@@ -116,6 +119,15 @@ def test_analyze_uploaded_audio_sync_and_skip_map_metadata():
         )
         assert same_audio.status_code == 200, same_audio.text
         assert same_audio.json()["analyzed_at"] == body["analyzed_at"]
+
+        # Force bypasses the server cache even when the uploaded bytes are identical.
+        forced_audio = client.post(
+            "/v1/analyze-episode-upload?sync=true",
+            files={"audio_file": ("episode.mp3", audio, "audio/mpeg")},
+            data={"episode_guid": "uploaded-guid", "duration_ms": "1800000", "force": "true"},
+        )
+        assert forced_audio.status_code == 200, forced_audio.text
+        assert forced_audio.json()["analyzed_at"] != body["analyzed_at"]
 
         # A different injected-ad variant has different bytes and must refresh the map.
         changed_audio = b"same episode, different inserted ad"
@@ -190,6 +202,219 @@ def test_heuristic_labels_sponsor_text():
     segs = heuristic_segments(tx)
     assert any(s.start_ms == 0 for s in segs)
     assert any(s.type in ("preroll", "sponsor") for s in segs)
+
+
+def test_segment_taxonomy_includes_intro_outro_and_unknown():
+    from app.models.schemas import AdSegment
+    from app.services.detect_ads import _parse_llm_json
+
+    intro = AdSegment(start_ms=0, end_ms=12_000, type="intro_outro", confidence=0.95)
+    assert intro.type == "intro_outro"
+    parsed = _parse_llm_json(
+        '{"segments":[{"start_s":1,"end_s":3,"type":"unrecognized-label","confidence":0.9}]}'
+    )
+    assert parsed[0].type == "unknown"
+
+
+def test_merge_combines_nearby_segments_across_categories():
+    from app.models.schemas import AdSegment
+    from app.services.detect_ads import _merge
+
+    segments = [
+        AdSegment(start_ms=100_000, end_ms=115_000, type="crosspromo", confidence=0.9),
+        AdSegment(start_ms=118_000, end_ms=125_000, type="network", confidence=1.0),
+        AdSegment(start_ms=128_000, end_ms=140_000, type="sponsor", confidence=0.95),
+        AdSegment(start_ms=150_000, end_ms=160_000, type="crosspromo", confidence=0.9),
+    ]
+
+    merged = _merge(segments)
+    assert [(segment.start_ms, segment.end_ms) for segment in merged] == [
+        (100_000, 140_000),
+        (150_000, 160_000),
+    ]
+    assert merged[0].type == "network"
+    assert merged[0].confidence == 0.9
+
+
+def test_merge_uses_eight_second_gap_boundary():
+    from app.models.schemas import AdSegment
+    from app.services.detect_ads import _merge
+
+    merged = _merge(
+        [
+            AdSegment(start_ms=0, end_ms=10_000, type="network", confidence=0.9),
+            AdSegment(start_ms=18_000, end_ms=20_000, type="crosspromo", confidence=0.9),
+            AdSegment(start_ms=28_001, end_ms=30_000, type="network", confidence=0.9),
+        ]
+    )
+
+    assert [(segment.start_ms, segment.end_ms) for segment in merged] == [
+        (0, 20_000),
+        (28_001, 30_000),
+    ]
+
+
+def test_low_confidence_segments_are_dropped_before_merge():
+    from app.models.schemas import AdSegment
+    from app.services.detect_ads import _validated_segments
+
+    transcript = {
+        "duration": 100,
+        "segments": [
+            {"start": 10, "end": 12, "text": "Sponsored by Acme."},
+            {"start": 14, "end": 17, "text": "An uncertain nearby promotion."},
+        ],
+    }
+    actual = _validated_segments(
+        [
+            AdSegment(start_ms=10_000, end_ms=12_000, type="sponsor", confidence=0.9),
+            AdSegment(start_ms=14_000, end_ms=17_000, type="crosspromo", confidence=0.2),
+        ],
+        transcript,
+    )
+
+    assert [(segment.start_ms, segment.end_ms) for segment in actual] == [(10_000, 12_000)]
+    assert actual[0].confidence == 0.9
+
+
+def test_mid_episode_intro_outro_is_reclassified_from_transcript_evidence():
+    from app.models.schemas import AdSegment
+    from app.services.detect_ads import _validated_segments
+
+    transcript = {
+        "duration": 600,
+        "segments": [
+            {"start": 0, "end": 10, "text": "Welcome to the show."},
+            {"start": 120, "end": 125, "text": "After the break, we'll be right back."},
+            {"start": 150, "end": 155, "text": "Let's continue the discussion."},
+        ],
+    }
+    actual = _validated_segments(
+        [
+            AdSegment(start_ms=0, end_ms=10_000, type="intro_outro", confidence=0.95),
+            AdSegment(start_ms=120_000, end_ms=125_000, type="intro_outro", confidence=0.95),
+            AdSegment(start_ms=150_000, end_ms=155_000, type="intro_outro", confidence=0.95),
+        ],
+        transcript,
+    )
+
+    assert [segment.type for segment in actual] == ["intro_outro", "midroll", "unknown"]
+
+
+def test_stored_skip_maps_tolerate_obsolete_or_malformed_segments():
+    from app.db.sqlite import _decode_segments
+
+    segments = _decode_segments(
+        '[{"start_ms":1000,"end_ms":3000,"type":"advertisement","confidence":0.95},'
+        '{"start_ms":4000,"end_ms":2000,"type":"sponsor","confidence":0.9}]'
+    )
+    assert len(segments) == 1
+    assert segments[0].type == "unknown"
+    assert _decode_segments("not-json") == []
+
+
+def test_segment_sample_text_uses_overlapping_transcript_spans():
+    from app.models.schemas import AdSegment
+    from app.services.detect_ads import _with_sample_text
+
+    transcript = {
+        "segments": [
+            {"start": 1, "end": 3, "text": "Brought to you by Acme."},
+            {"start": 3, "end": 5, "text": "Visit Acme today!"},
+            {"start": 6, "end": 8, "text": "Unrelated episode discussion."},
+        ]
+    }
+    labeled = _with_sample_text(
+        [AdSegment(start_ms=1_000, end_ms=5_000, type="sponsor", confidence=0.9)],
+        transcript,
+    )
+
+    assert labeled[0].sample_text == "Brought to you by Acme. Visit Acme today!"
+
+
+def test_classifier_context_is_cleaned_and_separated_from_timed_transcript():
+    from app.services.detect_ads import _context_block, _user_content
+
+    context = _context_block(
+        podcast_title="The Science Show",
+        podcast_description="<p>Science &amp; culture</p>",
+        episode_title="A new discovery",
+        episode_description=None,
+    )
+    assert context is not None
+    assert "Science & culture" in context
+    prompt = _user_content("[10.0-12.0] Welcome to the show.", context)
+    assert "background context only" in prompt
+    assert "Timed transcript (use this as the sole source" in prompt
+    assert prompt.endswith("[10.0-12.0] Welcome to the show.")
+
+
+def test_heuristic_ignores_incidental_ad_mentions_and_keeps_explicit_brief_ads():
+    for text in (
+        "We mentioned the sponsor last week.",
+        "I use Squarespace for my website.",
+        "The episode discusses an advertisement from last year.",
+    ):
+        incidental = {
+            "duration": 20,
+            "segments": [{"start": 2, "end": 4, "text": text}],
+        }
+        assert heuristic_segments(incidental) == []
+
+    brief = {
+        "duration": 20,
+        "segments": [{"start": 2, "end": 4, "text": "Brought to you by Acme."}],
+    }
+    detected = heuristic_segments(brief)
+    assert len(detected) == 1
+    assert detected[0].start_ms == 2_000
+    assert detected[0].end_ms == 4_000
+
+
+def test_empty_or_invalid_llm_result_does_not_fall_back_to_keyword_guess():
+    from app.models.schemas import AdSegment
+    from app.services.detect_ads import _finish_labeling
+
+    transcript = {
+        "duration": 20,
+        "segments": [{"start": 2, "end": 4, "text": "Brought to you by Acme."}],
+    }
+    invalid_llm_segment = AdSegment(
+        start_ms=10_000,
+        end_ms=14_000,
+        type="sponsor",
+        confidence=0.95,
+    )
+
+    assert _finish_labeling([], transcript, None) == []
+    assert _finish_labeling([invalid_llm_segment], transcript, None) == []
+
+
+def test_llm_boundaries_snap_to_transcript_spans_and_episode_duration():
+    from app.services.detect_ads import _validated_segments
+    from app.models.schemas import AdSegment
+
+    transcript = {
+        "duration": 8,
+        "segments": [
+            {"start": 0, "end": 4, "text": "intro"},
+            {"start": 4.5, "end": 8, "text": "advertisement"},
+        ],
+    }
+    proposed = [AdSegment(start_ms=3_400, end_ms=30_000, type="sponsor", confidence=0.9)]
+    actual = _validated_segments(proposed, transcript)
+    assert len(actual) == 1
+    assert actual[0].start_ms == 4_500
+    assert actual[0].end_ms == 8_000
+
+
+def test_llm_boundaries_outside_transcript_are_rejected():
+    from app.services.detect_ads import _validated_segments
+    from app.models.schemas import AdSegment
+
+    transcript = {"duration": 10, "segments": [{"start": 1, "end": 8, "text": "speech"}]}
+    proposed = [AdSegment(start_ms=20_000, end_ms=25_000, type="sponsor", confidence=0.95)]
+    assert _validated_segments(proposed, transcript) == []
 
 
 def test_plan_chunk_count_and_merge():

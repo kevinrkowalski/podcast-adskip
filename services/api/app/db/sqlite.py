@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,8 @@ import aiosqlite
 from app.config import get_settings
 from app.models.schemas import AdSegment
 from app.services.progress import estimate_progress
+
+logger = logging.getLogger(__name__)
 
 _CREATE = """
 CREATE TABLE IF NOT EXISTS skip_maps (
@@ -82,6 +85,38 @@ async def delete_expired_skip_maps(
         return cursor.rowcount
 
 
+def _decode_segments(segments_json: str | None) -> list[AdSegment]:
+    try:
+        raw_segments = json.loads(segments_json or "[]")
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("Ignoring malformed segments JSON in skip-map row")
+        return []
+    if not isinstance(raw_segments, list):
+        logger.warning("Ignoring non-list segments payload in skip-map row")
+        return []
+
+    def validate_segment(raw: dict[str, Any]) -> AdSegment:
+        segment = AdSegment.model_validate(raw)
+        if segment.end_ms <= segment.start_ms:
+            raise ValueError("segment end must be after its start")
+        return segment
+
+    segments: list[AdSegment] = []
+    for raw in raw_segments:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            segments.append(validate_segment(raw))
+        except (TypeError, ValueError):
+            # Old cached maps may contain a newer or unknown type. Keep its timing
+            # visible as unclassified, but never turn it into an auto-skippable ad.
+            try:
+                segments.append(validate_segment({**raw, "type": "unknown"}))
+            except (TypeError, ValueError):
+                logger.warning("Skipping malformed segment in skip-map row")
+    return segments
+
+
 def _row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:
     keys = set(row.keys())
     status = row["status"]
@@ -107,7 +142,7 @@ def _row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:
     return {
         "episode_guid": row["episode_guid"],
         "status": status,
-        "segments": [AdSegment.model_validate(s) for s in json.loads(row["segments_json"] or "[]")],
+        "segments": _decode_segments(row["segments_json"]),
         "model": row["model"],
         "analyzed_at": row["analyzed_at"],
         "message": row["error"],

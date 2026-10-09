@@ -95,8 +95,7 @@ export async function updateSubscription(
 }
 
 /**
- * Keep only fields needed to render/play an episode. In particular, RSS
- * descriptions can be very large and are not needed by the mobile player.
+ * Keep episode metadata bounded while retaining short descriptions for analysis context.
  */
 function slimEpisode(ep: Episode): Episode {
   return {
@@ -110,6 +109,8 @@ function slimEpisode(ep: Episode): Episode {
     artworkUrl: ep.artworkUrl,
     feedUrl: ep.feedUrl,
     podcastTitle: ep.podcastTitle,
+    podcastDescription: ep.podcastDescription?.slice(0, 600),
+    description: ep.description?.slice(0, 1000),
     collectionId: ep.collectionId,
   };
 }

@@ -250,7 +250,7 @@ export default function SettingsScreen() {
           <View style={styles.switchRow}>
             <View style={{ flex: 1, minWidth: 0 }}>
               <Text style={styles.switchLabel}>Ad detection & auto-skip</Text>
-              <Text style={styles.hint}>Analyze episodes for ads and automatically skip detected segments. Off means no ad-detection API calls.</Text>
+              <Text style={styles.hint}>Off disables automatic analysis and skipping. You can still tap Prepare on an episode to request a manual analysis; its audio is uploaded to the configured API.</Text>
             </View>
             <Switch
               value={autoSkip}

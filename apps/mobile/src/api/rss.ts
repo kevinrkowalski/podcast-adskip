@@ -49,6 +49,7 @@ function parseDurationMs(raw?: string): number | undefined {
 
 export interface ParsedFeed {
   title?: string;
+  description?: string;
   imageUrl?: string;
   episodes: Episode[];
   /** True when parse stopped early due to maxItems (more items may exist in XML). */
@@ -109,6 +110,8 @@ export function parseRssXml(
   const channelEnd = xml.search(/<item\b/i);
   const channelHead = channelEnd >= 0 ? xml.slice(0, channelEnd) : xml.slice(0, 80_000);
   const title = textBetween(channelHead, 'title');
+  const description =
+    textBetween(channelHead, 'description') || textBetween(channelHead, 'itunes:summary');
   const imageUrl = extractChannelImage(channelHead) || meta?.artworkUrl;
 
   const episodes: Episode[] = [];
@@ -135,6 +138,7 @@ export function parseRssXml(
       enclosureUrl,
       enclosureType,
       description: textBetween(item, 'description'),
+      podcastDescription: description,
       artworkUrl:
         attr(item.match(/<itunes:image[^>]*>/i)?.[0] ?? '', 'href') || imageUrl || meta?.artworkUrl,
       feedUrl,
@@ -143,7 +147,7 @@ export function parseRssXml(
     });
   }
 
-  return { title, imageUrl, episodes, truncated: sawMore };
+  return { title, description, imageUrl, episodes, truncated: sawMore };
 }
 
 export async function fetchRssXml(

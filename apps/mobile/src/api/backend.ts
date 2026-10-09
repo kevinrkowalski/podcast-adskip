@@ -96,7 +96,10 @@ export async function getSkipMap(episodeGuid: string, audioMd5?: string | null):
   const res = await fetch(`${resolveBaseUrl()}/v1/skip-map/${encodeURIComponent(episodeGuid)}${query}`, {
     headers: headers(),
   });
-  if (!res.ok) throw new Error(`skip-map failed: ${res.status}`);
+  if (!res.ok) {
+    const detail = (await res.text()).trim().slice(0, 300);
+    throw new Error(`skip-map failed: ${res.status}${detail ? ` — ${detail}` : ''}`);
+  }
   return res.json();
 }
 
@@ -104,6 +107,9 @@ export async function analyzeEpisode(input: {
   episode_guid: string;
   audio_url: string;
   title?: string;
+  podcast_title?: string;
+  podcast_description?: string;
+  episode_description?: string;
   duration_ms?: number;
   feed_url?: string;
   force?: boolean;

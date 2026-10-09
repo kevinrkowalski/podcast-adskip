@@ -106,6 +106,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const skipLoadGen = useRef(0);
   /** True while requestAnalyze (manual Prepare) is in flight; prevents loadSkipMap/clearAdDetection from clobbering. */
   const manualPrepareInFlight = useRef(false);
+  const manualReanalysisGuidRef = useRef<string | null>(null);
   const analyzeFingerprintRef = useRef<{ episodeGuid: string; audioMd5: string } | null>(null);
   const requestAnalyzeForEpisodeRef = useRef<((target: Episode) => Promise<void>) | null>(null);
   const externalEpisodeChangeRef = useRef<((target: Episode) => void) | null>(null);
@@ -906,16 +907,21 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         console.warn('[playback] requestAnalyze: no episode or enclosureUrl');
         return;
       }
-      if (!(await canCallAdDetectionApi())) {
-        // Global kill-switch: no ad-detection API calls.
-        console.log('[playback] requestAnalyze: blocked by global kill-switch');
+      if (!force && !(await canCallAdDetectionApi())) {
+        console.log('[playback] requestAnalyze: automatic analysis blocked by Settings');
         return;
       }
       
-      console.log('[playback] requestAnalyze: starting download/upload flow for', targetEpisode.guid);
+      console.log(
+        '[playback] requestAnalyze: starting download/upload flow for',
+        targetEpisode.guid,
+        'force:',
+        force,
+      );
       
       // Set flag to prevent loadSkipMap / clearAdDetection from clobbering this manual prepare.
       manualPrepareInFlight.current = true;
+      if (force) manualReanalysisGuidRef.current = targetEpisode.guid;
       
       // Immediately update UI state so user sees feedback
       setAdDetectionEnabledState(true);
@@ -927,8 +933,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       
       try {
         // Re-check global setting after state updates
-        if (!(await canCallAdDetectionApi())) {
-          console.log('[playback] requestAnalyze: global kill-switch turned off during setup');
+        if (!force && !(await canCallAdDetectionApi())) {
+          console.log('[playback] requestAnalyze: automatic analysis disabled during setup');
           setAnalyzeStatus('disabled');
           setUploadProgress(null);
           return;
@@ -982,6 +988,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
             episodeGuid: targetEpisode.guid,
             audioUrl: targetEpisode.enclosureUrl,
             title: targetEpisode.title,
+            podcastTitle: targetEpisode.podcastTitle,
+            podcastDescription: targetEpisode.podcastDescription,
+            episodeDescription: targetEpisode.description,
             durationMs: targetEpisode.durationMs,
             feedUrl: targetEpisode.feedUrl,
             force,
@@ -1005,6 +1014,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
           ? { episodeGuid: targetEpisode.guid, audioMd5 }
           : null;
         console.log('[playback] requestAnalyze: upload complete, status:', result.status);
+        if (result.status !== 'queued' && result.status !== 'pending') {
+          if (manualReanalysisGuidRef.current === targetEpisode.guid) {
+            manualReanalysisGuidRef.current = null;
+          }
+        }
         setUploadProgress(null);
         setSkipMap(result);
         skipMapRef.current = result;
@@ -1044,6 +1058,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         setAnalyzeError(errorMsg);
         setUploadProgress(null);
         setAudioMismatchWarning(null);
+        if (manualReanalysisGuidRef.current === targetEpisode.guid) {
+          manualReanalysisGuidRef.current = null;
+        }
       } finally {
         // Clear flag so auto-analyze paths can run again.
         manualPrepareInFlight.current = false;
@@ -1068,7 +1085,10 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       while (!cancelled && Date.now() - started < ANALYZE_POLL_MAX_MS) {
         await new Promise((r) => setTimeout(r, ANALYZE_POLL_INTERVAL_MS));
         if (cancelled) return;
-        if (!(await canCallAdDetectionApi())) return;
+        if (
+          !(await canCallAdDetectionApi()) &&
+          manualReanalysisGuidRef.current !== guid
+        ) return;
         try {
           const fingerprint = analyzeFingerprintRef.current;
           const audioMd5 = fingerprint?.episodeGuid === guid ? fingerprint.audioMd5 : null;
@@ -1086,6 +1106,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
               console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
             }
             const ep = episodeRef.current;
+            if (manualReanalysisGuidRef.current === guid) {
+              manualReanalysisGuidRef.current = null;
+            }
             if (ep) {
               // Load settings and apply filter
               const settings = await getPodcastSkipSettings({
@@ -1103,10 +1126,21 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
             }
             return;
           }
-          if (map.status === 'error' || map.status === 'missing') return;
+          if (map.status === 'error' || map.status === 'missing') {
+            if (manualReanalysisGuidRef.current === guid) {
+              manualReanalysisGuidRef.current = null;
+            }
+            return;
+          }
         } catch {
+          if (manualReanalysisGuidRef.current === guid) {
+            manualReanalysisGuidRef.current = null;
+          }
           return;
         }
+      }
+      if (manualReanalysisGuidRef.current === guid) {
+        manualReanalysisGuidRef.current = null;
       }
     };
 

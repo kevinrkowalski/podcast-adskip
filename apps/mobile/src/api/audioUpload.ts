@@ -184,6 +184,9 @@ export async function uploadAudioForAnalysis(
     episodeGuid: string;
     audioUrl?: string;
     title?: string;
+    podcastTitle?: string;
+    podcastDescription?: string;
+    episodeDescription?: string;
     durationMs?: number;
     feedUrl?: string;
     force?: boolean;
@@ -222,6 +225,13 @@ export async function uploadAudioForAnalysis(
   formData.append('episode_guid', metadata.episodeGuid);
   if (metadata.audioUrl) formData.append('audio_url', metadata.audioUrl);
   if (metadata.title) formData.append('title', metadata.title);
+  if (metadata.podcastTitle) formData.append('podcast_title', metadata.podcastTitle.slice(0, 300));
+  if (metadata.podcastDescription) {
+    formData.append('podcast_description', metadata.podcastDescription.slice(0, 5000));
+  }
+  if (metadata.episodeDescription) {
+    formData.append('episode_description', metadata.episodeDescription.slice(0, 5000));
+  }
   if (metadata.durationMs) formData.append('duration_ms', metadata.durationMs.toString());
   if (metadata.feedUrl) formData.append('feed_url', metadata.feedUrl);
   if (metadata.force) formData.append('force', 'true');

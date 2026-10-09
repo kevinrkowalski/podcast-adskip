@@ -164,6 +164,12 @@ export default function PlayerScreen() {
         ? Math.max(0, Math.min(100, skipMap.progress_pct))
         : null;
 
+  const prepareCaption = isAnalyzing
+    ? 'Preparing…'
+    : segs.length > 0
+      ? 'Re-prepare'
+      : 'Prepare';
+
   const adSkipHint = useMemo(() => {
     // Show current analysis state if in progress or completed
     if (isAnalyzing) {
@@ -453,28 +459,21 @@ export default function PlayerScreen() {
 
               <Pressable
                 style={styles.actionItem}
-                onPress={() => {
-                  // Defensive check: only call if global settings allow
-                  if (autoSkip) {
-                    requestAnalyze(true);
-                  } else {
-                    console.log('[player] Prepare blocked: global auto-skip is OFF');
-                  }
-                }}
+                onPress={() => requestAnalyze(true)}
                 hitSlop={6}
-                accessibilityLabel="Prepare ad analysis"
-                // Prepare button is ONLY disabled by global Settings kill-switch.
-                // When global is ON but per-show detection is OFF, Prepare still works
-                // (it enables detection for this user-initiated analysis).
-                disabled={!autoSkip}>
+                accessibilityLabel={
+                  segs.length > 0
+                    ? 'Force re-prepare ad analysis'
+                    : 'Prepare ad analysis'
+                }
+                // Manual Prepare is allowed with auto-skip off; prevent duplicate uploads.
+                disabled={isAnalyzing}>
                 <SymbolView
                   name={{ ios: 'sparkles', android: 'auto_awesome', web: 'auto_awesome' }}
-                  tintColor={
-                    autoSkip ? theme.textSecondary : theme.textMuted
-                  }
+                  tintColor={isAnalyzing ? theme.textMuted : theme.textSecondary}
                   size={22}
                 />
-                <Text style={styles.actionCaption}>Prepare</Text>
+                <Text style={styles.actionCaption}>{prepareCaption}</Text>
               </Pressable>
 
               <Pressable
@@ -594,7 +593,7 @@ export default function PlayerScreen() {
                       idx < segs.length - 1 && styles.segRowBorder,
                     ]}
                     onPress={() => onSegmentPress(seg.start_ms)}
-                    accessibilityLabel={`${segmentTypeLabel(seg.type)}, ${formatMs(seg.start_ms)} to ${formatMs(seg.end_ms)}`}>
+                    accessibilityLabel={`${segmentTypeLabel(seg.type)}, ${formatMs(seg.start_ms)} to ${formatMs(seg.end_ms)}${seg.sample_text ? `, ${seg.sample_text}` : ''}`}>
                     <View style={styles.segDot} />
                     <View style={styles.segBody}>
                       <Text style={styles.segType}>{segmentTypeLabel(seg.type)}</Text>
@@ -602,6 +601,11 @@ export default function PlayerScreen() {
                         {formatMs(seg.start_ms)}–{formatMs(seg.end_ms)}
                         {conf != null ? ` · ${conf}%` : ''}
                       </Text>
+                      {seg.sample_text ? (
+                        <Text style={styles.segSample} numberOfLines={2}>
+                          {seg.sample_text}
+                        </Text>
+                      ) : null}
                     </View>
                     <SymbolView
                       name={{
@@ -1008,5 +1012,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 2,
     fontVariant: ['tabular-nums'],
+  },
+  segSample: {
+    color: theme.textMuted,
+    fontSize: 12,
+    lineHeight: 16,
+    marginTop: 4,
   },
 });

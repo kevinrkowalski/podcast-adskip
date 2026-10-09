@@ -13,13 +13,16 @@ export type LegacyAdSegmentType =
   | 'postroll'
   | 'crosspromo'
   | 'network'
+  | 'intro_outro'
   | 'unknown';
 
 export interface AdSegment {
   start_ms: number;
   end_ms: number;
-  type: AdSegmentType | LegacyAdSegmentType;
+  type: AdSegmentType | LegacyAdSegmentType | (string & {});
   confidence: number;
+  /** Short transcript excerpt overlapping this detected segment. */
+  sample_text?: string | null;
 }
 
 export type SkipMapStatus = 'ready' | 'pending' | 'missing' | 'error' | 'queued';
@@ -90,6 +93,7 @@ export interface Episode {
   artworkUrl?: string;
   feedUrl: string;
   podcastTitle?: string;
+  podcastDescription?: string;
   collectionId?: number;
 }
 
