@@ -33,6 +33,7 @@ import { syncAndroidAutoCatalog } from '@/src/player/androidAutoCatalog';
 import { usePlayback } from '@/src/store/PlaybackContext';
 import type { Episode, PodcastSearchResult } from '@/src/types';
 import { theme } from '@/constants/Colors';
+import { displayFontFamily } from '@/constants/Typography';
 
 const EPISODES_PAGE_SIZE = 20;
 /** First RSS parse budget — never full archive on open. */
@@ -319,7 +320,7 @@ export default function PodcastDetailScreen() {
           title: show?.collectionName ?? 'Podcast',
           headerStyle: { backgroundColor: theme.background },
           headerTintColor: theme.text,
-          headerTitleStyle: { fontWeight: '600' },
+          headerTitleStyle: { fontFamily: displayFontFamily, fontSize: 20, fontWeight: '600' },
           headerShadowVisible: false,
         }}
       />
@@ -343,6 +344,7 @@ export default function PodcastDetailScreen() {
                 />
               )}
               <View style={styles.headerMeta}>
+                <Text style={styles.showEyebrow}>PODCAST</Text>
                 <Text style={styles.title}>{show.collectionName}</Text>
                 <Text style={styles.artist}>{show.artistName}</Text>
                 <Pressable
@@ -538,20 +540,37 @@ const styles = StyleSheet.create({
   },
   header: { marginBottom: 8, paddingTop: 8 },
   art: {
-    width: 120,
-    height: 120,
-    borderRadius: 14,
+    width: 136,
+    height: 136,
+    borderRadius: 19,
     backgroundColor: theme.surfaceElevated,
+    borderWidth: 1,
+    borderColor: theme.border,
     alignSelf: 'center',
-    marginBottom: 14,
+    marginBottom: 18,
+    shadowColor: '#000',
+    shadowOpacity: 0.28,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 8,
   },
   headerMeta: { alignItems: 'center', marginBottom: 20 },
+  showEyebrow: {
+    color: theme.accentSoft,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 2,
+    marginBottom: 6,
+  },
   title: {
     color: theme.text,
-    fontSize: 22,
-    fontWeight: '800',
+    fontFamily: displayFontFamily,
+    fontSize: 27,
+    fontWeight: '600',
     textAlign: 'center',
     letterSpacing: -0.3,
+    lineHeight: 33,
+    paddingHorizontal: 10,
   },
   artist: {
     color: theme.textSecondary,
@@ -578,8 +597,10 @@ const styles = StyleSheet.create({
     gap: 12,
     width: '100%',
     backgroundColor: theme.surface,
-    borderRadius: 14,
-    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: theme.border,
+    padding: 15,
     marginTop: 14,
   },
   adDetectionLabel: {
@@ -595,7 +616,9 @@ const styles = StyleSheet.create({
   },
   skipSettingsCard: {
     backgroundColor: theme.surface,
-    borderRadius: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: theme.border,
     marginTop: 12,
     overflow: 'hidden',
   },
@@ -652,8 +675,9 @@ const styles = StyleSheet.create({
   },
   epHeading: {
     color: theme.text,
-    fontSize: 18,
-    fontWeight: '700',
+    fontFamily: displayFontFamily,
+    fontSize: 22,
+    fontWeight: '600',
   },
   sourceHint: {
     color: theme.textMuted,
@@ -663,7 +687,7 @@ const styles = StyleSheet.create({
   epRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 14,
+    paddingVertical: 16,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: theme.border,
     gap: 12,

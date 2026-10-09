@@ -9,10 +9,12 @@ import {
   View,
 } from 'react-native';
 import { Link, useFocusEffect, useRouter } from 'expo-router';
+import { SymbolView } from 'expo-symbols';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getSubscriptions } from '@/src/db/storage';
 import type { Subscription } from '@/src/types';
 import { theme } from '@/constants/Colors';
+import { displayFontFamily } from '@/constants/Typography';
 
 const NUM_COLUMNS = 3;
 const H_PAD = 16;
@@ -36,6 +38,7 @@ export default function LibraryScreen() {
     <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
       <View style={styles.headingRow}>
         <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.eyebrow}>YOUR LIBRARY</Text>
           <Text style={styles.heading}>Podcasts</Text>
           <Text style={styles.subheading}>
             {subs.length === 0
@@ -48,7 +51,11 @@ export default function LibraryScreen() {
           onPress={() => router.push('/settings')}
           hitSlop={10}
           accessibilityLabel="Settings">
-          <Text style={styles.gearIcon}>⚙</Text>
+          <SymbolView
+            name={{ ios: 'gearshape', android: 'settings', web: 'settings' }}
+            tintColor={theme.textSecondary}
+            size={19}
+          />
         </Pressable>
       </View>
       <FlatList
@@ -81,6 +88,12 @@ export default function LibraryScreen() {
                   ]}
                 />
               )}
+              <Text style={styles.tileTitle} numberOfLines={2}>
+                {item.collectionName}
+              </Text>
+              <Text style={styles.tileArtist} numberOfLines={1}>
+                {item.artistName}
+              </Text>
             </Pressable>
           </Link>
         )}
@@ -106,11 +119,19 @@ const styles = StyleSheet.create({
     gap: 12,
     marginBottom: 8,
   },
+  eyebrow: {
+    color: theme.accentSoft,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.8,
+    marginBottom: 3,
+  },
   heading: {
     color: theme.text,
-    fontSize: 28,
-    fontWeight: '800',
-    letterSpacing: -0.5,
+    fontFamily: displayFontFamily,
+    fontSize: 34,
+    fontWeight: '600',
+    letterSpacing: -0.8,
   },
   subheading: {
     color: theme.textSecondary,
@@ -128,23 +149,32 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.border,
   },
-  gearIcon: {
-    fontSize: 20,
-    color: theme.textSecondary,
-  },
   gridRow: {
     gap: GAP,
     marginBottom: GAP,
   },
   tile: {
-    borderRadius: 12,
+    borderRadius: 15,
     overflow: 'hidden',
+    marginBottom: 5,
   },
   art: {
-    borderRadius: 12,
+    borderRadius: 14,
     backgroundColor: theme.surfaceElevated,
   },
-  artPlaceholder: { backgroundColor: theme.border },
+  artPlaceholder: { backgroundColor: theme.surfaceElevated },
+  tileTitle: {
+    color: theme.text,
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '600',
+    marginTop: 8,
+  },
+  tileArtist: {
+    color: theme.textMuted,
+    fontSize: 11,
+    marginTop: 2,
+  },
   empty: {
     color: theme.textMuted,
     textAlign: 'center',

@@ -10,6 +10,7 @@ import { PlaybackProvider } from '@/src/store/PlaybackContext';
 import { hydrateApiBaseUrl, hydrateAppKey } from '@/src/api/backend';
 import { pruneExpiredAudioCache } from '@/src/api/audioUpload';
 import { theme } from '@/constants/Colors';
+import { displayFontFamily } from '@/constants/Typography';
 
 export { ErrorBoundary } from 'expo-router';
 
@@ -75,6 +76,7 @@ function RootLayoutNav() {
               contentStyle: { backgroundColor: theme.background },
               headerStyle: { backgroundColor: theme.background },
               headerTintColor: theme.text,
+              headerTitleStyle: { fontFamily: displayFontFamily, fontSize: 20, fontWeight: '600' },
               headerShadowVisible: false,
             }}>
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />

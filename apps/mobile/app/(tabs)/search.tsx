@@ -21,6 +21,7 @@ import {
 import { subscribe, getSubscriptions } from '@/src/db/storage';
 import type { PodcastSearchResult } from '@/src/types';
 import { theme } from '@/constants/Colors';
+import { displayFontFamily } from '@/constants/Typography';
 import { syncAndroidAutoCatalog } from '@/src/player/androidAutoCatalog';
 
 const NUM_COLUMNS = 3;
@@ -233,7 +234,8 @@ export default function SearchScreen() {
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
-      <Text style={styles.heading}>Search</Text>
+      <Text style={styles.eyebrow}>EXPLORE</Text>
+      <Text style={styles.heading}>Search podcasts</Text>
       <View style={styles.searchRow}>
         <TextInput
           style={styles.input}
@@ -250,7 +252,7 @@ export default function SearchScreen() {
           style={[styles.btn, !query.trim() && styles.btnDisabled]}
           onPress={onSearch}
           disabled={!query.trim() || loading}>
-          <Text style={styles.btnText}>Go</Text>
+          <Text style={styles.btnText}>Search</Text>
         </Pressable>
       </View>
 
@@ -306,26 +308,36 @@ const styles = StyleSheet.create({
     backgroundColor: theme.background,
     paddingHorizontal: H_PAD,
   },
+  eyebrow: {
+    color: theme.accentSoft,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1.8,
+    marginBottom: 3,
+  },
   heading: {
     color: theme.text,
-    fontSize: 28,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-    marginBottom: 14,
+    fontFamily: displayFontFamily,
+    fontSize: 32,
+    fontWeight: '600',
+    letterSpacing: -0.6,
+    marginBottom: 15,
   },
-  searchRow: { flexDirection: 'row', gap: 10, marginBottom: 4 },
+  searchRow: { flexDirection: 'row', gap: 10, marginBottom: 8 },
   input: {
     flex: 1,
-    borderRadius: 12,
-    paddingHorizontal: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: theme.border,
+    paddingHorizontal: 15,
     paddingVertical: 12,
     color: theme.text,
     backgroundColor: theme.surface,
-    fontSize: 16,
+    fontSize: 15,
   },
   btn: {
     backgroundColor: theme.accent,
-    borderRadius: 12,
+    borderRadius: 14,
     paddingHorizontal: 18,
     justifyContent: 'center',
   },
@@ -333,8 +345,9 @@ const styles = StyleSheet.create({
   btnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
   discoverHeading: {
     color: theme.text,
-    fontSize: 18,
-    fontWeight: '700',
+    fontFamily: displayFontFamily,
+    fontSize: 22,
+    fontWeight: '600',
   },
   discoverSub: {
     color: theme.textSecondary,
@@ -357,8 +370,8 @@ const styles = StyleSheet.create({
     borderColor: theme.border,
   },
   chipSelected: {
-    backgroundColor: theme.accent,
-    borderColor: theme.accent,
+    backgroundColor: theme.surfaceElevated,
+    borderColor: theme.accentSoft,
   },
   chipText: {
     color: theme.textSecondary,
@@ -366,7 +379,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   chipTextSelected: {
-    color: '#fff',
+    color: theme.accentSoft,
   },
   gridRow: {
     gap: GAP,
@@ -419,9 +432,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.border,
+    padding: 10,
+    marginBottom: 9,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.surface,
   },
   art: {
     width: 60,

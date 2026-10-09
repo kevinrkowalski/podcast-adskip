@@ -19,6 +19,7 @@ import { usePlayback } from '@/src/store/PlaybackContext';
 import { formatMs, segmentTypeLabel } from '@/src/player/skipLogic';
 import { Scrubber } from '@/components/Scrubber';
 import { theme } from '@/constants/Colors';
+import { displayFontFamily, monoFontFamily } from '@/constants/Typography';
 
 const { width: SCREEN_W } = Dimensions.get('window');
 const ART_SIZE = Math.min(SCREEN_W - 56, 340);
@@ -359,7 +360,7 @@ export default function PlayerScreen() {
                       ? { ios: 'pause.fill', android: 'pause', web: 'pause' }
                       : { ios: 'play.fill', android: 'play_arrow', web: 'play_arrow' }
                   }
-                  tintColor={theme.background}
+                  tintColor={theme.text}
                   size={32}
                 />
               </Pressable>
@@ -703,19 +704,22 @@ const styles = StyleSheet.create({
   art: {
     width: ART_SIZE,
     height: ART_SIZE,
-    borderRadius: 12,
+    borderRadius: 20,
     backgroundColor: theme.surfaceElevated,
+    borderWidth: 1,
+    borderColor: theme.border,
   },
   artPlaceholder: {
     backgroundColor: theme.border,
   },
   title: {
     color: theme.text,
-    fontSize: 20,
-    fontWeight: '700',
+    fontFamily: displayFontFamily,
+    fontSize: 26,
+    fontWeight: '600',
     textAlign: 'center',
-    letterSpacing: -0.2,
-    lineHeight: 26,
+    letterSpacing: -0.35,
+    lineHeight: 32,
     paddingHorizontal: 4,
   },
   show: {
@@ -737,7 +741,8 @@ const styles = StyleSheet.create({
   },
   time: {
     color: theme.textMuted,
-    fontSize: 12,
+    fontFamily: monoFontFamily,
+    fontSize: 10,
     fontVariant: ['tabular-nums'],
     fontWeight: '500',
   },
@@ -760,7 +765,7 @@ const styles = StyleSheet.create({
     width: 78,
     height: 78,
     borderRadius: 39,
-    backgroundColor: theme.text,
+    backgroundColor: theme.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -783,8 +788,9 @@ const styles = StyleSheet.create({
   },
   detailsTitle: {
     color: theme.text,
-    fontSize: 24,
-    fontWeight: '700',
+    fontFamily: displayFontFamily,
+    fontSize: 28,
+    fontWeight: '600',
     lineHeight: 30,
   },
   detailsShow: {

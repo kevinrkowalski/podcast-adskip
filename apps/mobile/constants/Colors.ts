@@ -1,64 +1,53 @@
-/** Pocket Casts–inspired dark palette. App forces dark UI. */
+/**
+ * Editorial midnight palette: deep evergreen-charcoal, warm paper text, and
+ * restrained brass accents. The app intentionally keeps the same palette in
+ * both system color modes for a consistent listening experience.
+ */
 
-const accent = '#F43E5C'; // warm rose / Pocket-like accent
-const accentSoft = '#FF6B81';
-const tint = accent;
+const accent = '#90663E';
+const accentSoft = '#CBA978';
+const tint = accentSoft;
+
+const palette = {
+  text: '#F2EEE5',
+  textSecondary: '#B4B8AE',
+  background: '#101714',
+  surface: '#18211D',
+  surfaceElevated: '#202B26',
+  border: '#2B3932',
+  tint,
+  accent,
+  accentSoft,
+  tabIconDefault: '#7F8A82',
+  tabIconSelected: tint,
+  success: '#83B69A',
+  danger: '#D9857A',
+  adMark: 'rgba(203, 169, 120, 0.58)',
+  progressTrack: '#2B3932',
+  progressFill: '#CBA978',
+};
 
 export default {
-  light: {
-    text: '#F5F5F7',
-    textSecondary: '#A1A1AA',
-    background: '#0B0B0F',
-    surface: '#16161C',
-    surfaceElevated: '#1E1E26',
-    border: '#2A2A33',
-    tint,
-    accent,
-    accentSoft,
-    tabIconDefault: '#6B6B76',
-    tabIconSelected: tint,
-    success: '#30D158',
-    danger: '#FF453A',
-    adMark: 'rgba(244, 62, 92, 0.55)',
-    progressTrack: '#2A2A33',
-    progressFill: accent,
-  },
-  dark: {
-    text: '#F5F5F7',
-    textSecondary: '#A1A1AA',
-    background: '#0B0B0F',
-    surface: '#16161C',
-    surfaceElevated: '#1E1E26',
-    border: '#2A2A33',
-    tint,
-    accent,
-    accentSoft,
-    tabIconDefault: '#6B6B76',
-    tabIconSelected: tint,
-    success: '#30D158',
-    danger: '#FF453A',
-    adMark: 'rgba(244, 62, 92, 0.55)',
-    progressTrack: '#2A2A33',
-    progressFill: accent,
-  },
+  light: palette,
+  dark: palette,
 };
 
 export const theme = {
-  text: '#F5F5F7',
-  textSecondary: '#A1A1AA',
-  textMuted: '#6B6B76',
-  background: '#0B0B0F',
-  surface: '#16161C',
-  surfaceElevated: '#1E1E26',
-  border: '#2A2A33',
-  accent: '#F43E5C',
-  accentSoft: '#FF6B81',
-  accentWarn: '#FFC107',
-  success: '#30D158',
-  danger: '#FF453A',
-  adMark: 'rgba(244, 62, 92, 0.55)',
-  progressTrack: '#2A2A33',
-  progressFill: '#F43E5C',
-  miniBar: '#141418',
-  tabBar: '#0F0F14',
+  text: '#F2EEE5',
+  textSecondary: '#B4B8AE',
+  textMuted: '#7F8A82',
+  background: '#101714',
+  surface: '#18211D',
+  surfaceElevated: '#202B26',
+  border: '#2B3932',
+  accent,
+  accentSoft,
+  accentWarn: '#E2BA7C',
+  success: '#83B69A',
+  danger: '#D9857A',
+  adMark: 'rgba(203, 169, 120, 0.58)',
+  progressTrack: '#2B3932',
+  progressFill: '#CBA978',
+  miniBar: '#151E1A',
+  tabBar: '#131B17',
 };

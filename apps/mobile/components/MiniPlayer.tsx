@@ -1,4 +1,5 @@
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { SymbolView } from 'expo-symbols';
 import { useRootNavigationState, useRouter, useSegments, type Href } from 'expo-router';
 import { usePlayback } from '@/src/store/PlaybackContext';
 import { theme } from '@/constants/Colors';
@@ -73,7 +74,13 @@ export function MiniPlayer() {
             hitSlop={10}
             style={styles.playBtn}
             accessibilityLabel={isPlaying ? 'Pause' : 'Play'}>
-            <Text style={styles.playIcon}>{isPlaying ? '❚❚' : '▶'}</Text>
+            <SymbolView
+              name={isPlaying
+                ? { ios: 'pause.fill', android: 'pause', web: 'pause' }
+                : { ios: 'play.fill', android: 'play_arrow', web: 'play_arrow' }}
+              tintColor={theme.text}
+              size={19}
+            />
           </Pressable>
           <Pressable
             onPress={() => {
@@ -98,7 +105,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   progress: {
-    height: 2,
+    height: 3,
     backgroundColor: theme.accent,
   },
   row: {
@@ -118,7 +125,7 @@ const styles = StyleSheet.create({
   art: {
     width: 44,
     height: 44,
-    borderRadius: 8,
+    borderRadius: 10,
     backgroundColor: theme.surfaceElevated,
   },
   artPlaceholder: {
@@ -156,13 +163,8 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: theme.surfaceElevated,
+    backgroundColor: theme.accent,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  playIcon: {
-    color: theme.text,
-    fontSize: 14,
-    fontWeight: '700',
   },
 });

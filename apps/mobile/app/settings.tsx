@@ -33,6 +33,7 @@ import { clearAudioCache } from '@/src/api/audioUpload';
 import { clearCachedRssXml } from '@/src/api/rss';
 import { usePlayback } from '@/src/store/PlaybackContext';
 import { theme } from '@/constants/Colors';
+import { displayFontFamily } from '@/constants/Typography';
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
@@ -298,9 +299,11 @@ const styles = StyleSheet.create({
   },
   section: {
     color: theme.text,
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 12,
+    fontFamily: displayFontFamily,
+    fontSize: 23,
+    fontWeight: '600',
+    marginBottom: 14,
+    letterSpacing: -0.2,
   },
   label: {
     color: theme.textSecondary,

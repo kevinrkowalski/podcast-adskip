@@ -46,8 +46,9 @@ export default function TabLayout() {
           paddingTop: 4,
         },
         tabBarLabelStyle: {
-          fontSize: 11,
+          fontSize: 10,
           fontWeight: '600',
+          letterSpacing: 0.25,
         },
         sceneStyle: { backgroundColor: theme.background },
       }}>
