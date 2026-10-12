@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   Alert,
+  Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Switch,
   Text,
@@ -29,6 +32,13 @@ import {
   setAppKeyOverride,
 } from '@/src/api/backend';
 import { importOpmlSubscriptions } from '@/src/import/importOpml';
+import {
+  clearPlaybackEventLog,
+  getPlaybackEventLog,
+  isIgnoringBatteryOptimizations,
+  openAppDetailsSettings,
+  requestIgnoreBatteryOptimizations,
+} from '@/src/player/androidAuto';
 import { clearAudioCache } from '@/src/api/audioUpload';
 import { clearCachedRssXml } from '@/src/api/rss';
 import { usePlayback } from '@/src/store/PlaybackContext';
@@ -284,9 +294,80 @@ export default function SettingsScreen() {
             Add shows from an .opml or .xml export. Existing subscriptions stay; duplicates are skipped.
           </Text>
           {!!importStatus && <Text style={styles.health}>{importStatus}</Text>}
+
+          {Platform.OS === 'android' && <PlaybackDiagnostics />}
         </ScrollView>
       )}
     </View>
+  );
+}
+
+function PlaybackDiagnostics() {
+  const [unrestricted, setUnrestricted] = useState<boolean | null>(() =>
+    isIgnoringBatteryOptimizations(),
+  );
+  const [log, setLog] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Re-check after returning from the system battery dialog.
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') setUnrestricted(isIgnoringBatteryOptimizations());
+    });
+    return () => sub.remove();
+  }, []);
+
+  const showLog = () => setLog(getPlaybackEventLog() || '(no events yet)');
+  const shareLog = async () => {
+    const text = getPlaybackEventLog() || '(no events yet)';
+    try {
+      await Share.share({ title: 'Podcast AdSkip playback log', message: text });
+    } catch {
+      /* user cancelled */
+    }
+  };
+
+  return (
+    <>
+      <Text style={[styles.section, { marginTop: 28 }]}>Background playback</Text>
+      <Text style={styles.hint}>
+        Battery optimization:{' '}
+        {unrestricted == null ? 'unknown' : unrestricted ? 'off (good)' : 'ON — may stop audio with the screen off'}
+      </Text>
+      {unrestricted === false && (
+        <Pressable style={styles.btn} onPress={requestIgnoreBatteryOptimizations}>
+          <Text style={styles.btnText}>Allow background playback</Text>
+        </Pressable>
+      )}
+      <Pressable style={styles.btnSecondary} onPress={openAppDetailsSettings}>
+        <Text style={styles.btnSecondaryText}>Open App info (set Battery to Unrestricted)</Text>
+      </Pressable>
+      <Text style={styles.hint}>
+        On OnePlus/OxygenOS also set App info → Battery → Unrestricted (or Allow background activity).
+      </Text>
+
+      <Text style={[styles.section, { marginTop: 28 }]}>Playback event log</Text>
+      <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
+        <Pressable style={styles.btnSecondary} onPress={showLog}>
+          <Text style={styles.btnSecondaryText}>{log ? 'Refresh log' : 'Show log'}</Text>
+        </Pressable>
+        <Pressable style={styles.btnSecondary} onPress={() => void shareLog()}>
+          <Text style={styles.btnSecondaryText}>Share log</Text>
+        </Pressable>
+        <Pressable
+          style={styles.btnSecondary}
+          onPress={() => {
+            clearPlaybackEventLog();
+            setLog(null);
+          }}>
+          <Text style={styles.btnSecondaryText}>Clear</Text>
+        </Pressable>
+      </View>
+      {!!log && (
+        <Text selectable style={[styles.hint, { fontFamily: 'monospace', fontSize: 11 }]}>
+          {log.split('\n').reverse().join('\n')}
+        </Text>
+      )}
+    </>
   );
 }
 
