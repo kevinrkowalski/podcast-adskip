@@ -33,8 +33,8 @@ class Settings(BaseSettings):
     max_audio_mb: int = 25
     # OpenRouter STT model slug (Whisper-class with verbose_json segments)
     whisper_model: str = "openai/whisper-large-v3-turbo"
-    # Cheap OpenRouter chat model for ad labeling
-    openrouter_llm_model: str = "google/gemini-2.5-flash"
+    # OpenRouter model for ad labeling; override via OPENROUTER_LLM_MODEL.
+    openrouter_llm_model: str = "google/gemini-3.8-flash"
     # Legacy Groq model ids (only used when llm_provider=groq / GROQ_API_KEY path)
     groq_llm_model: str = "llama-3.3-70b-versatile"
     gemini_model: str = "gemini-2.5-flash"

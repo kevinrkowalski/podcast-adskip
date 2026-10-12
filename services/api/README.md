@@ -17,7 +17,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 | Mode | Condition | Behavior |
 |------|-----------|----------|
-| **Real** | `OPENROUTER_API_KEY` set, `MOCK_ANALYZE` not true | Download → ffmpeg-chunk if >25MB → OpenRouter Whisper turbo `verbose_json` → OpenRouter chat labels (Gemini Flash default) → SQLite |
+| **Real** | `OPENROUTER_API_KEY` set, `MOCK_ANALYZE` not true | Download → ffmpeg-chunk if >25MB → OpenRouter Whisper turbo `verbose_json` → OpenRouter chat labels (Gemini 3.8 Flash default) → SQLite |
 | **Legacy Groq** | Only `GROQ_API_KEY` (no OpenRouter key) | Same pipeline via Groq SDK (optional; deprecated) |
 | **Stub** | No STT key or `MOCK_ANALYZE=true` | Fake transcript + keyword heuristic; no paid calls |
 
@@ -26,7 +26,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 | Role | Model | Notes |
 |------|-------|-------|
 | Transcription | `openai/whisper-large-v3-turbo` | OpenRouter STT `/audio/transcriptions`, `response_format=verbose_json`, `timestamp_granularities=["segment"]` |
-| Ad labels | `google/gemini-2.5-flash` | Cheap OpenRouter chat; override with `OPENROUTER_LLM_MODEL` (e.g. `meta-llama/llama-3.3-70b-instruct`) |
+| Ad labels | `google/gemini-3.8-flash` | OpenRouter chat; override with `OPENROUTER_LLM_MODEL` |
 
 If a future OpenRouter speech model lacked `verbose_json` segments, fall back to: (1) another Whisper-class STT slug that supports timestamps, or (2) chat multimodal `input_audio` only as a last resort (no reliable segment times — pair with heuristics). See root README.
 
