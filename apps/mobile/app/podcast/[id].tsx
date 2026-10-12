@@ -61,7 +61,7 @@ function mergeEpisodes(primary: Episode[], secondary: Episode[]): Episode[] {
 export default function PodcastDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const { playEpisode, setPodcastAdDetection, setPodcastSkipSetting } = usePlayback();
+  const { openEpisode, setPodcastAdDetection, setPodcastSkipSetting } = usePlayback();
   const [show, setShow] = useState<PodcastSearchResult | null>(null);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [visibleCount, setVisibleCount] = useState(EPISODES_PAGE_SIZE);
@@ -259,16 +259,16 @@ export default function PodcastDetailScreen() {
     );
   };
 
-  const onPlay = async (ep: Episode) => {
-    // Single navigation to root /now-playing (keeps show listings under Back).
-    // Start playEpisode first: it sets episode state synchronously before any
-    // await, so Now Playing does not mount on the empty "Nothing playing" flash.
+  const onPlay = (ep: Episode) => {
+    // Open the same player screen without loading audio or starting analysis;
+    // playback + auto-analyze start on the first Play tap there.
+    // openEpisode sets state synchronously before navigating, so Now Playing
+    // does not mount on the empty "Nothing playing" flash.
     try {
-      const playing = playEpisode(ep);
+      openEpisode(ep);
       router.push('/now-playing' as Href);
-      await playing;
     } catch (err) {
-      console.error('[podcast-detail] Failed to play episode:', err);
+      console.error('[podcast-detail] Failed to open episode:', err);
     }
   };
 

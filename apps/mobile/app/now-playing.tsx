@@ -101,25 +101,44 @@ function formatEtaSeconds(sec: number | null | undefined): string | null {
 export default function PlayerScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const playback = usePlayback();
   const {
-    episode,
-    isPlaying,
-    positionMs,
-    durationMs,
     playbackRate,
     autoSkip,
     adDetectionEnabled,
-    skipMap,
-    analyzeStatus,
-    analyzeError,
-    audioMismatchWarning,
-    uploadProgress,
-    togglePlay,
-    seek,
     setAutoSkip,
-    requestAnalyze,
     cyclePlaybackRate,
-  } = usePlayback();
+    openedEpisode,
+    closeOpenedEpisode,
+  } = playback;
+  // An episode opened from a show but not started yet: same screen, paused at
+  // its saved position. The loaded episode keeps playing until Play is tapped.
+  const opened =
+    openedEpisode && openedEpisode.episode.guid !== playback.episode?.guid
+      ? openedEpisode
+      : null;
+  const episode = opened ? opened.episode : playback.episode;
+  const isPlaying = opened ? false : playback.isPlaying;
+  const positionMs = opened ? opened.positionMs : playback.positionMs;
+  const durationMs = opened ? opened.durationMs : playback.durationMs;
+  const skipMap = opened ? null : playback.skipMap;
+  const analyzeStatus = opened ? null : playback.analyzeStatus;
+  const analyzeError = opened ? null : playback.analyzeError;
+  const audioMismatchWarning = opened ? null : playback.audioMismatchWarning;
+  const uploadProgress = opened ? null : playback.uploadProgress;
+  const togglePlay = opened ? playback.startOpenedEpisode : playback.togglePlay;
+  const seek = opened ? playback.seekOpenedEpisode : playback.seek;
+  const requestAnalyze = opened
+    ? async (force?: boolean) => {
+        // Manual Prepare on an unstarted episode: switch to it, then prepare.
+        await playback.startOpenedEpisode();
+        await playback.requestAnalyze(force);
+      }
+    : playback.requestAnalyze;
+
+  // Leaving the player drops an unstarted episode so the mini-player / next
+  // open reflect the live one.
+  useEffect(() => closeOpenedEpisode, [closeOpenedEpisode]);
   const [scrubPreview, setScrubPreview] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<PlayerTab>('playing');
   const [skipSheetVisible, setSkipSheetVisible] = useState(false);

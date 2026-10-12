@@ -54,6 +54,19 @@ type Ctx = {
   audioMismatchWarning: string | null;
   uploadProgress: { downloaded: number; uploaded: number; total: number } | null;
   playEpisode: (ep: Episode) => Promise<void>;
+  /**
+   * Episode opened on the player screen but not started yet (different from the
+   * loaded `episode`). Nothing is loaded/played/analyzed until startOpenedEpisode.
+   */
+  openedEpisode: OpenedEpisode | null;
+  /** Show `ep` on the player screen without loading audio or starting analysis. */
+  openEpisode: (ep: Episode) => void;
+  /** First Play on the opened episode: switch playback to it (runs auto-analyze rules). */
+  startOpenedEpisode: () => Promise<void>;
+  /** Move the opened (not started) episode's resume position. */
+  seekOpenedEpisode: (ms: number) => Promise<void>;
+  /** Drop the opened-but-not-started episode (player screen closed). */
+  closeOpenedEpisode: () => void;
   restoreCurrentSkipMap: () => Promise<SkipMap | null>;
   togglePlay: () => Promise<void>;
   seek: (ms: number) => Promise<void>;
@@ -63,6 +76,12 @@ type Ctx = {
   setPodcastSkipSetting: (target: AdDetectionTarget, settings: Partial<PodcastSkipSettings>) => Promise<void>;
   requestAnalyze: (force?: boolean) => Promise<void>;
   clearCachedPlaybackData: () => boolean;
+};
+
+export type OpenedEpisode = {
+  episode: Episode;
+  positionMs: number;
+  durationMs: number;
 };
 
 const PlaybackContext = createContext<Ctx | null>(null);
@@ -93,6 +112,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     total: number;
   } | null>(null);
 
+  const [openedEpisode, setOpenedEpisode] = useState<OpenedEpisode | null>(null);
+  const openedEpisodeRef = useRef<OpenedEpisode | null>(null);
   const episodeRef = useRef<Episode | null>(null);
   const positionRef = useRef(0);
   const durationRef = useRef(0);
@@ -742,6 +763,75 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     [applySkipFilter, canUseAdDetection, loadSkipMap],
   );
 
+  const updateOpened = useCallback((next: OpenedEpisode | null) => {
+    openedEpisodeRef.current = next;
+    setOpenedEpisode(next);
+  }, []);
+
+  const openEpisode = useCallback(
+    (ep: Episode) => {
+      // Re-opening the loaded episode shows its live state, as before.
+      if (episodeRef.current?.guid === ep.guid) {
+        updateOpened(null);
+        return;
+      }
+      // Set synchronously so the player screen never flashes stale/empty content.
+      updateOpened({ episode: ep, positionMs: 0, durationMs: ep.durationMs ?? 0 });
+      void (async () => {
+        try {
+          const saved = await getPlaybackPosition(ep.guid);
+          const cur = openedEpisodeRef.current;
+          if (!saved || cur?.episode.guid !== ep.guid) return;
+          updateOpened({
+            ...cur,
+            positionMs: saved.positionMs ?? 0,
+            durationMs: saved.durationMs || cur.durationMs,
+          });
+        } catch (err) {
+          console.warn('[playback] Failed to read saved position for opened episode:', err);
+        }
+      })();
+    },
+    [updateOpened],
+  );
+
+  const startOpenedEpisode = useCallback(async () => {
+    const opened = openedEpisodeRef.current;
+    if (!opened) return;
+    // playEpisode reads the saved resume position; flush any scrub first.
+    try {
+      await savePlaybackPosition(
+        opened.episode.guid,
+        opened.positionMs,
+        opened.durationMs || undefined,
+      );
+    } catch (err) {
+      console.warn('[playback] Failed to persist opened episode position:', err);
+    }
+    const playing = playEpisode(opened.episode);
+    // playEpisode switched `episode` synchronously; drop the preview now.
+    updateOpened(null);
+    await playing;
+  }, [playEpisode, updateOpened]);
+
+  const seekOpenedEpisode = useCallback(
+    async (ms: number) => {
+      const cur = openedEpisodeRef.current;
+      if (!cur) return;
+      const max = cur.durationMs > 0 ? cur.durationMs : Number.MAX_SAFE_INTEGER;
+      const pos = Math.max(0, Math.min(Math.floor(ms), max));
+      updateOpened({ ...cur, positionMs: pos });
+      try {
+        await savePlaybackPosition(cur.episode.guid, pos, cur.durationMs || undefined);
+      } catch (err) {
+        console.warn('[playback] Failed to save opened episode position:', err);
+      }
+    },
+    [updateOpened],
+  );
+
+  const closeOpenedEpisode = useCallback(() => updateOpened(null), [updateOpened]);
+
   const togglePlay = useCallback(async () => {
     if (isPlayingRef.current) {
       await player.pause();
@@ -1166,6 +1256,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       audioMismatchWarning,
       uploadProgress,
       playEpisode,
+      openedEpisode,
+      openEpisode,
+      startOpenedEpisode,
+      seekOpenedEpisode,
+      closeOpenedEpisode,
       restoreCurrentSkipMap,
       togglePlay,
       seek,
@@ -1191,6 +1286,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       audioMismatchWarning,
       uploadProgress,
       playEpisode,
+      openedEpisode,
+      openEpisode,
+      startOpenedEpisode,
+      seekOpenedEpisode,
+      closeOpenedEpisode,
       restoreCurrentSkipMap,
       togglePlay,
       seek,
