@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.db import init_db
 from app.db.sqlite import delete_expired_skip_maps
-from app.routes import analyze, health, skip_map, upload
+from app.routes import analyze, feedback, health, skip_map, upload
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -70,6 +70,7 @@ app.include_router(health.router)
 app.include_router(analyze.router)
 app.include_router(skip_map.router)
 app.include_router(upload.router)
+app.include_router(feedback.router)
 
 
 @app.get("/")
