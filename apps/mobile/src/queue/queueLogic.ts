@@ -19,33 +19,69 @@ export function isQueued(queue: Episode[], guid: string): boolean {
   return queue.some((e) => e.guid === guid);
 }
 
-/** Append to the end; no-op if already queued (or it's the excluded/current guid). */
-export function addToQueue(queue: Episode[], ep: Episode, excludeGuid?: string | null): Episode[] {
-  if (!ep.guid || ep.guid === excludeGuid || isQueued(queue, ep.guid)) return queue;
+/** True when `playingGuid` is the item at index 0 (the playing episode lives there). */
+export function isPlayingAtTop(queue: Episode[], playingGuid?: string | null): boolean {
+  return !!playingGuid && queue[0]?.guid === playingGuid;
+}
+
+/** Up Next count shown in badges: everything except the playing item at index 0. */
+export function upNextCount(queue: Episode[], playingGuid?: string | null): number {
+  return isPlayingAtTop(queue, playingGuid) ? queue.length - 1 : queue.length;
+}
+
+/**
+ * An episode started playing: it lives at index 0. Already at 0 = no-op;
+ * queued elsewhere = moved to the top (never duplicated).
+ */
+export function addOnPlay(queue: Episode[], ep: Episode): Episode[] {
+  if (!ep.guid || queue[0]?.guid === ep.guid) return queue;
+  return [ep, ...queue.filter((e) => e.guid !== ep.guid)];
+}
+
+/** Append to the end; no-op if already queued. */
+export function addToQueue(queue: Episode[], ep: Episode): Episode[] {
+  if (!ep.guid || isQueued(queue, ep.guid)) return queue;
   return [...queue, ep];
 }
 
-/** Put at the front; moves it there if it's already queued. */
-export function playNext(queue: Episode[], ep: Episode, excludeGuid?: string | null): Episode[] {
-  if (!ep.guid || ep.guid === excludeGuid) return queue;
-  return [ep, ...queue.filter((e) => e.guid !== ep.guid)];
+/**
+ * Next in line: index 1 when the playing episode holds index 0, else index 0.
+ * Moves it there if already queued; no-op for the playing episode itself.
+ */
+export function playNext(queue: Episode[], ep: Episode, playingGuid?: string | null): Episode[] {
+  if (!ep.guid || ep.guid === playingGuid) return queue;
+  const rest = queue.filter((e) => e.guid !== ep.guid);
+  const at = isPlayingAtTop(rest, playingGuid) ? 1 : 0;
+  return [...rest.slice(0, at), ep, ...rest.slice(at)];
 }
 
 export function removeFromQueue(queue: Episode[], guid: string): Episode[] {
   return isQueued(queue, guid) ? queue.filter((e) => e.guid !== guid) : queue;
 }
 
-/** Move the item at `index` by `delta` (-1 up, +1 down), clamped. */
-export function moveInQueue(queue: Episode[], index: number, delta: number): Episode[] {
+/**
+ * Move the item at `index` by `delta` (-1 up, +1 down), clamped. The playing
+ * item at index 0 is pinned: it can't move and nothing can move above it.
+ */
+export function moveInQueue(
+  queue: Episode[],
+  index: number,
+  delta: number,
+  playingGuid?: string | null,
+): Episode[] {
   const to = index + delta;
-  if (index < 0 || index >= queue.length || to < 0 || to >= queue.length || delta === 0) return queue;
+  const min = isPlayingAtTop(queue, playingGuid) ? 1 : 0;
+  if (index < min || index >= queue.length || to < min || to >= queue.length || delta === 0) return queue;
   const next = [...queue];
   const [item] = next.splice(index, 1);
   next.splice(to, 0, item);
   return next;
 }
 
-/** Next episode to auto-play after `finishedGuid`, plus the queue without it. */
+/**
+ * Auto-advance: drop the finished episode; the next playable item becomes
+ * index 0 (it stays in the queue, so the add-on-play that follows is a no-op).
+ */
 export function takeNext(
   queue: Episode[],
   finishedGuid?: string | null,
@@ -53,7 +89,8 @@ export function takeNext(
   const rest = queue.filter((e) => e.guid !== finishedGuid);
   const idx = rest.findIndex((e) => !!e.enclosureUrl);
   if (idx < 0) return { next: null, rest };
-  return { next: rest[idx], rest: rest.filter((_, i) => i !== idx) };
+  const next = rest[idx];
+  return { next, rest: [next, ...rest.filter((_, i) => i !== idx)] };
 }
 
 /** Drop duplicate guids (keeps first) and malformed entries from persisted data. */

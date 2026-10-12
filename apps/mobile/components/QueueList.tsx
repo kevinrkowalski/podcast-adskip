@@ -2,6 +2,7 @@ import { Alert, FlatList, Image, Pressable, StyleSheet, Text, View } from 'react
 import type { ReactElement } from 'react';
 import { SymbolView } from 'expo-symbols';
 import { clearQueue, moveQueueItem, removeFromQueue, useQueue } from '@/src/queue/queueStore';
+import { isPlayingAtTop } from '@/src/queue/queueLogic';
 import { usePlayback } from '@/src/store/PlaybackContext';
 import type { Episode } from '@/src/types';
 import { theme } from '@/constants/Colors';
@@ -30,6 +31,10 @@ export function QueueList({
 }) {
   const queue = useQueue();
   const { episode: current, openEpisode } = usePlayback();
+  // The playing episode lives at index 0: show it once, as the Now Playing
+  // header, and list only what comes after it.
+  const offset = isPlayingAtTop(queue, current?.guid) ? 1 : 0;
+  const upNext = offset ? queue.slice(1) : queue;
 
   const onOpen = (ep: Episode) => {
     openEpisode(ep);
@@ -48,11 +53,11 @@ export function QueueList({
         </View>
       ) : null}
       <FlatList
-        data={queue}
+        data={upNext}
         keyExtractor={(item) => item.guid}
         contentContainerStyle={{ paddingBottom: 120 }}
         ListHeaderComponent={
-          queue.length ? <Text style={styles.sectionLabel}>UP NEXT · {queue.length}</Text> : null
+          upNext.length ? <Text style={styles.sectionLabel}>UP NEXT · {upNext.length}</Text> : null
         }
         ListEmptyComponent={
           <View style={styles.empty}>
@@ -84,13 +89,13 @@ export function QueueList({
                 icon={{ ios: 'chevron.up', android: 'keyboard_arrow_up', web: 'keyboard_arrow_up' }}
                 label="Move up"
                 disabled={index === 0}
-                onPress={() => void moveQueueItem(index, -1)}
+                onPress={() => void moveQueueItem(index + offset, -1)}
               />
               <IconBtn
                 icon={{ ios: 'chevron.down', android: 'keyboard_arrow_down', web: 'keyboard_arrow_down' }}
                 label="Move down"
-                disabled={index === queue.length - 1}
-                onPress={() => void moveQueueItem(index, 1)}
+                disabled={index === upNext.length - 1}
+                onPress={() => void moveQueueItem(index + offset, 1)}
               />
               <IconBtn
                 icon={{ ios: 'xmark', android: 'close', web: 'close' }}

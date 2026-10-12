@@ -1,13 +1,13 @@
 import { Pressable, StyleSheet, Text } from 'react-native';
 import { Stack, useRouter, type Href } from 'expo-router';
 import { QueueList, confirmClearQueue } from '@/components/QueueList';
-import { useQueue } from '@/src/queue/queueStore';
+import { useUpNextCount } from '@/src/queue/queueStore';
 import { theme } from '@/constants/Colors';
 
 /** Up Next page opened from the player's Up Next button (stack screen). */
 export default function QueueScreen() {
   const router = useRouter();
-  const count = useQueue().length;
+  const count = useUpNextCount();
   return (
     <>
       <Stack.Screen

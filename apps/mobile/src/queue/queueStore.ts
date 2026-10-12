@@ -6,6 +6,7 @@ import { useSyncExternalStore } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Episode } from '@/src/types';
 import {
+  addOnPlay,
   addToQueue as addPure,
   detectNewEpisodes,
   enableAutoQueueState,
@@ -14,6 +15,7 @@ import {
   playNext as playNextPure,
   removeFromQueue as removePure,
   takeNext,
+  upNextCount,
   type AutoQueueState,
 } from './queueLogic';
 
@@ -24,7 +26,7 @@ let queue: Episode[] = [];
 let hydrated = false;
 let hydrating: Promise<void> | null = null;
 const listeners = new Set<() => void>();
-/** Episode currently loaded in the player; never queued alongside itself. */
+/** Episode currently loaded in the player (kept at index 0 of the queue). */
 let currentGuid: string | null = null;
 
 function slim(ep: Episode): Episode {
@@ -80,12 +82,32 @@ export function useQueue(): Episode[] {
 }
 
 export function setCurrentQueueGuid(guid: string | null) {
+  if (guid === currentGuid) return;
   currentGuid = guid;
+  listeners.forEach((l) => l());
+}
+
+export function getCurrentQueueGuid(): string | null {
+  return currentGuid;
+}
+
+/** Badge/label count: queued episodes excluding the playing one at index 0. */
+export function useUpNextCount(): number {
+  const q = useQueue();
+  const playing = useSyncExternalStore(subscribe, getCurrentQueueGuid, getCurrentQueueGuid);
+  return upNextCount(q, playing);
+}
+
+/** An episode started (any path): it becomes / stays index 0. */
+export async function markPlaying(ep: Episode) {
+  setCurrentQueueGuid(ep.guid);
+  await hydrateQueue();
+  setQueue(addOnPlay(queue, slim(ep)));
 }
 
 export async function addToQueue(ep: Episode) {
   await hydrateQueue();
-  setQueue(addPure(queue, slim(ep), currentGuid));
+  setQueue(addPure(queue, slim(ep)));
 }
 
 export async function playNext(ep: Episode) {
@@ -100,15 +122,16 @@ export async function removeFromQueue(guid: string) {
 
 export async function moveQueueItem(index: number, delta: number) {
   await hydrateQueue();
-  setQueue(moveInQueue(queue, index, delta));
+  setQueue(moveInQueue(queue, index, delta, currentGuid));
 }
 
+/** Clear Up Next; the playing episode at index 0 stays. */
 export async function clearQueue() {
   await hydrateQueue();
-  setQueue([]);
+  setQueue(currentGuid && queue[0]?.guid === currentGuid ? [queue[0]] : []);
 }
 
-/** Pop the next playable episode after `finishedGuid` (removing both from the queue). */
+/** Auto-advance: remove the finished episode; the returned next one is now index 0. */
 export async function popNext(finishedGuid?: string | null): Promise<Episode | null> {
   await hydrateQueue();
   const { next, rest } = takeNext(queue, finishedGuid);
@@ -185,7 +208,7 @@ export function processFeedForAutoQueue(target: ShowTarget, feedEpisodes: Episod
     if (!toAdd.length) return;
     await hydrateQueue();
     let next = queue;
-    for (const ep of toAdd) next = addPure(next, slim(ep), currentGuid);
+    for (const ep of toAdd) next = addPure(next, slim(ep));
     setQueue(next);
     console.log('[queue] auto-added', toAdd.length, 'new episode(s) for', key);
   }).catch((e) => console.warn('[queue] auto-add failed:', e));

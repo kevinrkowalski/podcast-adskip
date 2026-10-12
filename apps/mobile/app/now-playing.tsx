@@ -17,7 +17,7 @@ import { SymbolView } from 'expo-symbols';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePlayback } from '@/src/store/PlaybackContext';
 import { showQueueActions } from '@/src/queue/queueActions';
-import { useQueue } from '@/src/queue/queueStore';
+import { useUpNextCount } from '@/src/queue/queueStore';
 import { formatMs, segmentTypeLabel } from '@/src/player/skipLogic';
 import { Scrubber } from '@/components/Scrubber';
 import { theme } from '@/constants/Colors';
@@ -104,7 +104,7 @@ export default function PlayerScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const playback = usePlayback();
-  const queueLength = useQueue().length;
+  const queueLength = useUpNextCount();
   const {
     playbackRate,
     autoSkip,
