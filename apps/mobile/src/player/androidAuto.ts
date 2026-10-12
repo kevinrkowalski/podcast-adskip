@@ -7,6 +7,10 @@ export type AndroidAutoStatus = {
   positionMs: number;
   durationMs: number;
   isPlaying: boolean;
+  /** True while ExoPlayer wants to play but is waiting on data. */
+  isBuffering?: boolean;
+  /** Last playback error message, if the player is in an error state. */
+  error?: string | null;
   playbackRate: number;
 };
 

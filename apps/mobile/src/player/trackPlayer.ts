@@ -13,6 +13,7 @@ import { Platform } from 'react-native';
 import type { AdSegment, Episode } from '@/src/types';
 import { seekTargetIfInAd } from './skipLogic';
 import {
+  type AndroidAutoStatus,
   configureAndroidAutoSkip,
   controlAndroidAutoPlayer,
   getAndroidAutoStatus,
@@ -33,7 +34,10 @@ const PODCAST_STREAM_HEADERS: Record<string, string> = {
 
 
 export type PlayerStatus = {
+  /** Reflects the native player's actual state, not just the last command. */
   isPlaying: boolean;
+  /** Playback requested but waiting on data (stream stall, seek). */
+  isBuffering?: boolean;
   positionMs: number;
   durationMs: number;
   playbackRate: number;
@@ -68,7 +72,14 @@ type ExpoAudioPlayer = {
   clearLockScreenControls: () => void;
   addListener: (
     event: string,
-    listener: (status: { playing?: boolean; currentTime?: number; duration?: number }) => void,
+    listener: (status: {
+      playing?: boolean;
+      currentTime?: number;
+      duration?: number;
+      isBuffering?: boolean;
+      didJustFinish?: boolean;
+      isLoaded?: boolean;
+    }) => void,
   ) => { remove: () => void };
 };
 
@@ -93,6 +104,12 @@ const SEEK_CATCHUP_MS = 1200;
 const SEEK_PIN_MAX_MS = 2500;
 /** Block auto-skip for this long after a manual seek (ms). */
 const MANUAL_SEEK_GRACE_MS = 3000;
+/**
+ * The Android playback service publishes status every 500 ms. If we hear nothing for
+ * this long, assume the service died (or ignored a command) and fall back to the state
+ * it persisted, instead of trusting the optimistic "playing" flag forever.
+ */
+const NATIVE_STATUS_STALE_MS = 3000;
 
 let status: PlayerStatus = {
   isPlaying: false,
@@ -119,6 +136,42 @@ let audioModeReady = false;
 let player: ExpoAudioPlayer | null = null;
 let statusSub: { remove: () => void } | null = null;
 let androidStatusUnsubscribe: (() => void) | null = null;
+/** Last time the Android service sent a status (or we sent it a command). */
+let lastNativeStatusAt = 0;
+
+function applyAndroidAutoStatus(nativeStatus: AndroidAutoStatus, fallbackEpisode?: Episode) {
+  lastNativeStatusAt = Date.now();
+  if (nativeStatus.episodeJson) {
+    try {
+      const nativeEpisode = JSON.parse(nativeStatus.episodeJson) as Episode;
+      status.episode = mergeEpisodeMetadata(nativeEpisode, status.episode);
+    } catch {
+      if (fallbackEpisode) status.episode = fallbackEpisode;
+    }
+  }
+  applyNativePosition(nativeStatus.positionMs);
+  if (nativeStatus.durationMs > 0) status.durationMs = nativeStatus.durationMs;
+  status.isPlaying = !!nativeStatus.isPlaying;
+  status.isBuffering = !!nativeStatus.isBuffering;
+  if (nativeStatus.error) console.warn('[player] native playback error:', nativeStatus.error);
+  if (Number.isFinite(nativeStatus.playbackRate)) {
+    playbackRate = nativeStatus.playbackRate;
+    status.playbackRate = playbackRate;
+  }
+}
+
+/** Correct the UI if the native service has gone silent while we think it's playing. */
+function reconcileStaleAndroidStatus() {
+  if (!status.isPlaying || Date.now() - lastNativeStatusAt < NATIVE_STATUS_STALE_MS) return;
+  const persisted = getAndroidAutoStatus();
+  status.isPlaying = persisted?.isPlaying ?? false;
+  status.isBuffering = false;
+  if (persisted && persisted.positionMs > 0 && pendingSeekMs == null) {
+    status.positionMs = persisted.positionMs;
+  }
+  // Don't re-check every tick; wait another window for a heartbeat.
+  lastNativeStatusAt = Date.now();
+}
 
 function emit() {
   listeners.forEach((l) => l({ ...status }));
@@ -287,6 +340,7 @@ function startTick() {
     } else if (backend === 'expo-audio') {
       syncFromNative();
     } else if (backend === 'android-auto') {
+      reconcileStaleAndroidStatus();
       emit();
       return;
     }
@@ -384,24 +438,12 @@ export async function loadAndPlay(
     releasePlayer();
     backend = 'android-auto';
     androidStatusUnsubscribe = subscribeAndroidAutoStatus((nativeStatus) => {
-      if (nativeStatus.episodeJson) {
-        try {
-          const nativeEpisode = JSON.parse(nativeStatus.episodeJson) as Episode;
-          status.episode = mergeEpisodeMetadata(nativeEpisode, status.episode);
-        } catch {
-          status.episode = episode;
-        }
-      }
-      applyNativePosition(nativeStatus.positionMs);
-      if (nativeStatus.durationMs > 0) status.durationMs = nativeStatus.durationMs;
-      status.isPlaying = nativeStatus.isPlaying;
-      if (Number.isFinite(nativeStatus.playbackRate)) {
-        playbackRate = nativeStatus.playbackRate;
-        status.playbackRate = playbackRate;
-      }
+      applyAndroidAutoStatus(nativeStatus, episode);
       emit();
     });
     loadAndroidAutoEpisode(episode, opts?.localFilePath, startMs);
+    // Optimistic until the service's first heartbeat confirms or corrects it.
+    lastNativeStatusAt = Date.now();
     status.isPlaying = true;
     startTick();
     emit();
@@ -439,6 +481,14 @@ export async function loadAndPlay(
         if (typeof st.playing === 'boolean') {
           status.isPlaying = st.playing;
         }
+        if (typeof st.isBuffering === 'boolean') {
+          status.isBuffering = st.isBuffering;
+        }
+        if (st.didJustFinish) {
+          // Reached the end (e.g. an auto-skip past a post-roll): show as stopped.
+          status.isPlaying = false;
+          status.isBuffering = false;
+        }
         if (typeof (st as { playbackRate?: number }).playbackRate === 'number') {
           playbackRate = (st as { playbackRate: number }).playbackRate;
           status.playbackRate = playbackRate;
@@ -474,10 +524,16 @@ export async function loadAndPlay(
 
 export async function play(): Promise<void> {
   if (backend === 'android-auto') {
+    lastNativeStatusAt = Date.now();
     controlAndroidAutoPlayer('play');
   } else if (backend === 'expo-audio' && player) {
     try {
       if (status.episode) activateLockScreen(status.episode);
+      // Replaying after the end: expo-audio won't restart from the end position.
+      if (status.durationMs > 0 && status.positionMs >= status.durationMs - 500) {
+        await player.seekTo(0);
+        status.positionMs = 0;
+      }
       player.play();
     } catch (e: any) {
       console.warn('[player] play failed:', e?.message ?? e);
@@ -490,6 +546,7 @@ export async function play(): Promise<void> {
 
 export async function pause(): Promise<void> {
   if (backend === 'android-auto') {
+    lastNativeStatusAt = Date.now();
     controlAndroidAutoPlayer('pause');
   } else if (backend === 'expo-audio' && player) {
     try {
@@ -499,6 +556,7 @@ export async function pause(): Promise<void> {
     }
   }
   status.isPlaying = false;
+  status.isBuffering = false;
   emit();
 }
 
@@ -590,24 +648,12 @@ export function initializePlayerBackend(): void {
   backend = 'android-auto';
   androidStatusUnsubscribe?.();
   androidStatusUnsubscribe = subscribeAndroidAutoStatus((nextStatus) => {
-    if (nextStatus.episodeJson) {
-      try {
-        status.episode = mergeEpisodeMetadata(
-          JSON.parse(nextStatus.episodeJson) as Episode,
-          status.episode,
-        );
-      } catch {
-        // Keep the last valid episode if the service emits malformed metadata.
-      }
-    }
-    applyNativePosition(nextStatus.positionMs);
-    if (nextStatus.durationMs > 0) status.durationMs = nextStatus.durationMs;
-    status.isPlaying = nextStatus.isPlaying;
-    status.playbackRate = nextStatus.playbackRate;
-    playbackRate = nextStatus.playbackRate;
+    applyAndroidAutoStatus(nextStatus);
     emit();
   });
-  if (nativeStatus.isPlaying) startTick();
+  lastNativeStatusAt = Date.now();
+  // Always tick so a stale persisted "playing" flag is reconciled.
+  startTick();
   emit();
 }
 
