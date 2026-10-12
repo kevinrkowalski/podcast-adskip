@@ -1,42 +1,58 @@
 -- Merging decision tree log ---
 manifest
-ADDED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:1:1-16:12
-INJECTED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:1:1-16:12
+ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:1:1-20:12
+INJECTED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:1:1-20:12
 	package
-		INJECTED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml
+		INJECTED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml
 	xmlns:android
-		ADDED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:1:11-69
+		ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:1:11-69
+uses-permission#android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:2:3-93
+	android:name
+		ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:2:20-90
+uses-permission#android.permission.FOREGROUND_SERVICE
+ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:3:3-75
+	android:name
+		ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:3:20-72
+uses-permission#android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK
+ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:4:3-90
+	android:name
+		ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:4:20-87
+uses-permission#android.permission.WAKE_LOCK
+ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:5:3-66
+	android:name
+		ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:5:20-63
 application
-ADDED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:2:3-15:17
+ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:6:3-19:17
 meta-data#com.google.android.gms.car.application
-ADDED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:3:5-5:53
+ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:7:5-9:53
 	android:resource
-		ADDED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:5:7-50
+		ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:9:7-50
 	android:name
-		ADDED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:4:7-60
+		ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:8:7-60
 service#expo.modules.podcastauto.PodcastAutoPlaybackService
-ADDED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:6:5-14:15
+ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:10:5-18:15
 	android:exported
-		ADDED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:8:7-30
+		ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:12:7-30
 	android:foregroundServiceType
-		ADDED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:9:7-52
+		ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:13:7-52
 	android:name
-		ADDED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:7:7-73
+		ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:11:7-73
 intent-filter#action:name:android.media.browse.MediaBrowserService+action:name:androidx.media3.session.MediaLibraryService
-ADDED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:10:7-13:23
+ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:14:7-17:23
 action#androidx.media3.session.MediaLibraryService
-ADDED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:11:9-78
+ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:15:9-78
 	android:name
-		ADDED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:11:17-75
+		ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:15:17-75
 action#android.media.browse.MediaBrowserService
-ADDED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:12:9-75
+ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:16:9-75
 	android:name
-		ADDED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:12:17-72
+		ADDED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml:16:17-72
 uses-sdk
-INJECTED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml reason: use-sdk injection requested
-INJECTED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml
-INJECTED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml
+INJECTED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml
+INJECTED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml
 	android:targetSdkVersion
-		INJECTED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml
+		INJECTED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml
 	android:minSdkVersion
-		INJECTED from /home/kevin/podcast-adskip/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml
+		INJECTED from /workspace/pa-fresh/apps/mobile/modules/podcast-auto/android/src/main/AndroidManifest.xml

@@ -16,6 +16,8 @@ import { useRouter, type Href } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePlayback } from '@/src/store/PlaybackContext';
+import { showQueueActions } from '@/src/queue/queueActions';
+import { useQueue } from '@/src/queue/queueStore';
 import { formatMs, segmentTypeLabel } from '@/src/player/skipLogic';
 import { Scrubber } from '@/components/Scrubber';
 import { theme } from '@/constants/Colors';
@@ -102,6 +104,7 @@ export default function PlayerScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const playback = usePlayback();
+  const queueLength = useQueue().length;
   const {
     playbackRate,
     autoSkip,
@@ -279,11 +282,10 @@ export default function PlayerScreen() {
   };
 
   const onMorePress = () => {
-    Alert.alert(
-      'More playback actions',
-      'Additional episode actions will appear here in a future update.',
-      [{ text: 'Done', style: 'cancel' }],
-    );
+    showQueueActions(episode, {
+      isCurrent: !opened,
+      onOpenQueue: () => router.push('/queue' as Href),
+    });
   };
 
   return (
@@ -499,13 +501,15 @@ export default function PlayerScreen() {
                 style={styles.actionItem}
                 onPress={onMorePress}
                 hitSlop={6}
-                accessibilityLabel="More playback actions">
+                accessibilityLabel="Up Next and queue actions">
                 <SymbolView
-                  name={{ ios: 'ellipsis', android: 'more_horiz', web: 'more_horiz' }}
+                  name={{ ios: 'list.bullet', android: 'queue_music', web: 'queue_music' }}
                   tintColor={theme.textSecondary}
                   size={22}
                 />
-                <Text style={styles.actionCaption}>More</Text>
+                <Text style={styles.actionCaption}>
+                  {queueLength > 0 ? `Up Next ${queueLength}` : 'Up Next'}
+                </Text>
               </Pressable>
             </View>
           </>

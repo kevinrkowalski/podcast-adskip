@@ -5,7 +5,6 @@ import {
   Image,
   Pressable,
   StyleSheet,
-  Switch,
   Text,
   View,
 } from 'react-native';
@@ -31,6 +30,9 @@ import {
 import { formatMs } from '@/src/player/skipLogic';
 import { syncAndroidAutoCatalog } from '@/src/player/androidAutoCatalog';
 import { usePlayback } from '@/src/store/PlaybackContext';
+import { isAutoQueueEnabled, setAutoQueueEnabled, useQueue } from '@/src/queue/queueStore';
+import { showQueueActions } from '@/src/queue/queueActions';
+import { ShowSettingsCard } from '@/components/ShowSettingsCard';
 import type { Episode, PodcastSearchResult } from '@/src/types';
 import { theme } from '@/constants/Colors';
 import { displayFontFamily } from '@/constants/Typography';
@@ -61,7 +63,7 @@ function mergeEpisodes(primary: Episode[], secondary: Episode[]): Episode[] {
 export default function PodcastDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const { openEpisode, setPodcastAdDetection, setPodcastSkipSetting } = usePlayback();
+  const { episode: currentEpisode, openEpisode, setPodcastAdDetection, setPodcastSkipSetting } = usePlayback();
   const [show, setShow] = useState<PodcastSearchResult | null>(null);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [visibleCount, setVisibleCount] = useState(EPISODES_PAGE_SIZE);
@@ -71,7 +73,8 @@ export default function PodcastDetailScreen() {
   const [isSub, setIsSub] = useState(false);
   const [adDetectionEnabled, setAdDetectionEnabled] = useState(true);
   const [skipSettings, setSkipSettings] = useState<PodcastSkipSettings | null>(null);
-  const [skipSettingsExpanded, setSkipSettingsExpanded] = useState(false);
+  const [autoQueue, setAutoQueue] = useState(false);
+  const queue = useQueue();
   const [sourceHint, setSourceHint] = useState<string | null>(null);
   const [positions, setPositions] = useState<Record<string, PlaybackPosition>>({});
   const [rssHasMore, setRssHasMore] = useState(false);
@@ -98,7 +101,7 @@ export default function PodcastDetailScreen() {
     setExpanding(false);
     setError(null);
     setSourceHint(null);
-    setSkipSettingsExpanded(false);
+    setAutoQueue(false);
     setRssHasMore(false);
     setPositions({});
     rssMaxItems.current = RSS_INITIAL_ITEMS;
@@ -145,6 +148,7 @@ export default function PodcastDetailScreen() {
       feedMeta.current = meta;
       setAdDetectionEnabled(await isPodcastAdDetectionEnabled(meta));
       setSkipSettings(await getPodcastSkipSettings(meta));
+      setAutoQueue(await isAutoQueueEnabled(meta));
 
       let nextEps: Episode[] = [];
       if (itunesEps.length) {
@@ -246,6 +250,17 @@ export default function PodcastDetailScreen() {
     );
   };
 
+  const onToggleAutoQueue = async (enabled: boolean) => {
+    if (!show?.feedUrl) return;
+    setAutoQueue(enabled);
+    // Everything already listed counts as seen: only later releases are added.
+    await setAutoQueueEnabled(
+      { collectionId: show.collectionId, feedUrl: show.feedUrl },
+      enabled,
+      episodes,
+    );
+  };
+
   const onToggleSkipSetting = async (
     setting: keyof PodcastSkipSettings,
     enabled: boolean,
@@ -310,6 +325,7 @@ export default function PodcastDetailScreen() {
   }, [episodes.length, refreshPositions, rssHasMore, visibleCount]);
 
   const displayedEpisodes = episodes.slice(0, visibleCount);
+  const queuedGuids = new Set(queue.map((e) => e.guid));
   const hasMoreEpisodes =
     displayedEpisodes.length < episodes.length || (rssHasMore && !!getCachedRssXml(feedMeta.current?.feedUrl ?? ''));
 
@@ -355,116 +371,14 @@ export default function PodcastDetailScreen() {
                   </Text>
                 </Pressable>
               </View>
-              <View style={styles.adDetectionRow}>
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={styles.adDetectionLabel}>Ad detection for this show</Text>
-                  <Text style={styles.adDetectionHint}>
-                    {adDetectionEnabled
-                      ? 'Auto-analyze on play'
-                      : 'Off · no auto-analyze on play; Prepare still works in the player'}
-                  </Text>
-                </View>
-                <Switch
-                  value={adDetectionEnabled}
-                  onValueChange={onToggleAdDetection}
-                  trackColor={{ false: theme.border, true: theme.accentSoft }}
-                  thumbColor={adDetectionEnabled ? theme.accent : '#ccc'}
-                />
-              </View>
-              
-              {skipSettings && (
-                <View style={styles.skipSettingsCard}>
-                  <Pressable
-                    style={styles.skipSettingsToggle}
-                    onPress={() => setSkipSettingsExpanded((expanded) => !expanded)}
-                    accessibilityRole="button"
-                    accessibilityLabel="Segment skipping settings"
-                    accessibilityState={{ expanded: skipSettingsExpanded }}>
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text style={styles.skipSettingsHeading}>Segment skipping</Text>
-                      <Text style={styles.skipSettingsHint}>
-                        {skipSettings.skipEnabled ? 'On for this show' : 'Off for this show'}
-                      </Text>
-                    </View>
-                    <SymbolView
-                      name={{
-                        ios: skipSettingsExpanded ? 'chevron.up' : 'chevron.down',
-                        android: skipSettingsExpanded ? 'keyboard_arrow_up' : 'keyboard_arrow_down',
-                        web: skipSettingsExpanded ? 'keyboard_arrow_up' : 'keyboard_arrow_down',
-                      }}
-                      size={18}
-                      tintColor={theme.textMuted}
-                    />
-                  </Pressable>
-
-                  {skipSettingsExpanded && (
-                    <View style={styles.skipSettingsContent}>
-                      <View style={styles.skipSettingsRow}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.skipSettingsLabel}>Skip segments for this show</Text>
-                          <Text style={styles.skipSettingsSubtext}>
-                            Master toggle · disable to skip nothing
-                          </Text>
-                        </View>
-                        <Switch
-                          value={skipSettings.skipEnabled}
-                          onValueChange={(v) => onToggleSkipSetting('skipEnabled', v)}
-                          trackColor={{ false: theme.border, true: theme.accentSoft }}
-                          thumbColor={skipSettings.skipEnabled ? theme.accent : '#ccc'}
-                        />
-                      </View>
-
-                      <View style={styles.skipSettingsRow}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.skipSettingsLabel}>Skip advertisements</Text>
-                          <Text style={styles.skipSettingsSubtext}>
-                            Paid sponsor reads and ad breaks
-                          </Text>
-                        </View>
-                        <Switch
-                          value={skipSettings.skipAdvertisement}
-                          onValueChange={(v) => onToggleSkipSetting('skipAdvertisement', v)}
-                          disabled={!skipSettings.skipEnabled}
-                          trackColor={{ false: theme.border, true: theme.accentSoft }}
-                          thumbColor={skipSettings.skipAdvertisement ? theme.accent : '#ccc'}
-                        />
-                      </View>
-
-                      <View style={styles.skipSettingsRow}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.skipSettingsLabel}>Skip intro/outro</Text>
-                          <Text style={styles.skipSettingsSubtext}>
-                            Theme music and show bumpers
-                          </Text>
-                        </View>
-                        <Switch
-                          value={skipSettings.skipIntroOutro}
-                          onValueChange={(v) => onToggleSkipSetting('skipIntroOutro', v)}
-                          disabled={!skipSettings.skipEnabled}
-                          trackColor={{ false: theme.border, true: theme.accentSoft }}
-                          thumbColor={skipSettings.skipIntroOutro ? theme.accent : '#ccc'}
-                        />
-                      </View>
-
-                      <View style={[styles.skipSettingsRow, { borderBottomWidth: 0 }]}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.skipSettingsLabel}>Skip self promotion</Text>
-                          <Text style={styles.skipSettingsSubtext}>
-                            Cross-promo and "subscribe" plugs
-                          </Text>
-                        </View>
-                        <Switch
-                          value={skipSettings.skipSelfPromotion}
-                          onValueChange={(v) => onToggleSkipSetting('skipSelfPromotion', v)}
-                          disabled={!skipSettings.skipEnabled}
-                          trackColor={{ false: theme.border, true: theme.accentSoft }}
-                          thumbColor={skipSettings.skipSelfPromotion ? theme.accent : '#ccc'}
-                        />
-                      </View>
-                    </View>
-                  )}
-                </View>
-              )}
+              <ShowSettingsCard
+                autoQueue={autoQueue}
+                onAutoQueueChange={onToggleAutoQueue}
+                adDetectionEnabled={adDetectionEnabled}
+                onAdDetectionChange={onToggleAdDetection}
+                skipSettings={skipSettings}
+                onSkipSettingChange={onToggleSkipSetting}
+              />
               <View style={styles.epHeadingRow}>
                 <Text style={styles.epHeading}>Episodes</Text>
               </View>
@@ -506,6 +420,7 @@ export default function PodcastDetailScreen() {
                   {item.pubDate ? new Date(item.pubDate).toLocaleDateString() : ''}
                   {item.duration ? ` · ${item.duration}` : ''}
                   {!item.enclosureUrl ? ' · no audio' : ''}
+                  {queuedGuids.has(item.guid) ? ' · Up Next' : ''}
                   {showResume
                     ? ` · Resume ${formatMs(pos.positionMs)}${pct != null ? ` (${pct}%)` : ''}`
                     : ''}
@@ -521,6 +436,21 @@ export default function PodcastDetailScreen() {
                   </View>
                 ) : null}
               </View>
+              {!!item.enclosureUrl && (
+                <Pressable
+                  onPress={() =>
+                    showQueueActions(item, { isCurrent: item.guid === currentEpisode?.guid })
+                  }
+                  hitSlop={8}
+                  style={styles.moreBtn}
+                  accessibilityLabel={`Queue actions for ${item.title}`}>
+                  <SymbolView
+                    name={{ ios: 'ellipsis', android: 'more_vert', web: 'more_vert' }}
+                    size={18}
+                    tintColor={theme.textMuted}
+                  />
+                </Pressable>
+              )}
               <View style={styles.playChip}>
                 <Text style={styles.playChipText}>{showResume ? '↻' : '▶'}</Text>
               </View>
@@ -591,80 +521,7 @@ const styles = StyleSheet.create({
   },
   subText: { color: '#fff', fontWeight: '700' },
   unsubText: { color: theme.danger },
-  adDetectionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    width: '100%',
-    backgroundColor: theme.surface,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: theme.border,
-    padding: 15,
-    marginTop: 14,
-  },
-  adDetectionLabel: {
-    color: theme.text,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  adDetectionHint: {
-    color: theme.textMuted,
-    fontSize: 12,
-    marginTop: 4,
-    lineHeight: 16,
-  },
-  skipSettingsCard: {
-    backgroundColor: theme.surface,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: theme.border,
-    marginTop: 12,
-    overflow: 'hidden',
-  },
-  skipSettingsToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    padding: 14,
-    minHeight: 64,
-  },
-  skipSettingsHeading: {
-    color: theme.text,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  skipSettingsHint: {
-    color: theme.textMuted,
-    fontSize: 12,
-    marginTop: 4,
-    lineHeight: 16,
-  },
 
-  skipSettingsContent: {
-    paddingHorizontal: 14,
-    paddingBottom: 6,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.border,
-  },
-  skipSettingsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.border,
-  },
-  skipSettingsLabel: {
-    color: theme.text,
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  skipSettingsSubtext: {
-    color: theme.textMuted,
-    fontSize: 12,
-    marginTop: 2,
-  },
   epHeadingRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -707,6 +564,7 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: theme.progressFill,
   },
+  moreBtn: { width: 28, height: 36, alignItems: 'center', justifyContent: 'center' },
   playChip: {
     width: 36,
     height: 36,
