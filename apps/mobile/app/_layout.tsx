@@ -86,6 +86,7 @@ function RootLayoutNav() {
               options={{ headerShown: false, animation: 'slide_from_right' }}
             />
             <Stack.Screen name="settings" options={{ title: 'Settings' }} />
+            <Stack.Screen name="queue" options={{ title: 'Up Next' }} />
           </Stack>
         </PlaybackProvider>
       </ThemeProvider>

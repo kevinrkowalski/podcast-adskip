@@ -8,3 +8,4 @@ web-build/
 *.p12
 *.mobileprovision
 expo-env.d.ts
+.test-build/

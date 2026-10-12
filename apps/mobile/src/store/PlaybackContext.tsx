@@ -37,6 +37,13 @@ import {
   type UploadProgress,
 } from '@/src/api/audioUpload';
 import { getApiBaseUrl, getResolvedAppKey } from '@/src/api/backend';
+import {
+  hydrateQueue,
+  popNext,
+  removeFromQueue as removeQueuedEpisode,
+  setCurrentQueueGuid,
+} from '@/src/queue/queueStore';
+import { startAutoQueueRefresh } from '@/src/queue/autoQueueRefresh';
 import { filterSkippableSegments, normalizeSegment } from '@/src/player/skipLogic';
 
 type Ctx = {
@@ -178,6 +185,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       const previousPositionMs = positionRef.current;
       const previousDurationMs = durationRef.current;
       const nextGuid = st.episode?.guid;
+      if (nextGuid) setCurrentQueueGuid(nextGuid);
       if (
         previousGuid &&
         nextGuid &&
@@ -631,6 +639,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
       setEpisode(ep);
       episodeRef.current = ep;
+      // Starting an episode takes it out of Up Next.
+      setCurrentQueueGuid(ep.guid);
+      void removeQueuedEpisode(ep.guid);
       setSkipMap(null);
       skipMapRef.current = null;
       setSkipSettingsState(null);
@@ -831,6 +842,33 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   );
 
   const closeOpenedEpisode = useCallback(() => updateOpened(null), [updateOpened]);
+
+  // Up Next: hydrate, refresh auto-add shows, and auto-advance when an episode ends
+  // (expo-audio didJustFinish, native service STATE_ENDED, or stub clock).
+  useEffect(() => {
+    void hydrateQueue();
+    return startAutoQueueRefresh();
+  }, []);
+
+  useEffect(() => {
+    return player.subscribeEnded((finished) => {
+      const current = episodeRef.current;
+      if (!finished?.guid || (current && current.guid !== finished.guid)) return;
+      void (async () => {
+        const next = await popNext(finished.guid);
+        if (!next || episodeRef.current?.guid !== finished.guid) return;
+        console.log('[playback] Up Next: advancing to', next.guid);
+        try {
+          await clearPlaybackPosition(finished.guid);
+        } catch {
+          /* non-fatal */
+        }
+        // Counts as starting it: same path as Play (auto-analyze rules apply).
+        if (openedEpisodeRef.current?.episode.guid === next.guid) updateOpened(null);
+        await playEpisode(next);
+      })();
+    });
+  }, [playEpisode, updateOpened]);
 
   const togglePlay = useCallback(async () => {
     if (isPlayingRef.current) {

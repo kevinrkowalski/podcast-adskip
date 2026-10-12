@@ -38,7 +38,8 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "skip-smoke": "node src/player/skipLogic.test.mjs",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "queue-test": "tsc src/queue/queueLogic.ts --outDir .test-build --module commonjs --target es2020 --skipLibCheck --ignoreConfig && node src/queue/queueLogic.test.cjs"
   },
   "private": true,
   "expo": {

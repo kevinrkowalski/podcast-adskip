@@ -417,6 +417,7 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
         exoPlayer.playWhenReady && exoPlayer.playbackState == Player.STATE_BUFFERING
       )
       .putExtra(EXTRA_PLAYBACK_RATE, exoPlayer.playbackParameters.speed)
+      .putExtra(EXTRA_ENDED, exoPlayer.playbackState == Player.STATE_ENDED)
     val reportedError = error ?: lastErrorMessage?.takeIf { exoPlayer.playerError != null }
     if (reportedError != null) intent.putExtra(EXTRA_ERROR, reportedError)
     sendBroadcast(intent)
@@ -723,6 +724,8 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     const val EXTRA_PLAYBACK_RATE = "playbackRate"
     const val EXTRA_ERROR = "error"
     const val EXTRA_IS_BUFFERING = "isBuffering"
+    /** True once ExoPlayer reached the end of the current item (drives Up Next auto-advance). */
+    const val EXTRA_ENDED = "ended"
 
     const val KEY_CATALOG = "catalog"
     const val KEY_CURRENT_EPISODE = "currentEpisode"

@@ -26,6 +26,6 @@
       applicationId="expo.modules.podcastauto"
       generatedSourceFolders="build/generated/ap_generated_sources/release/out:build/generated/source/buildConfig/release"
       generatedResourceFolders="build/generated/res/resValues/release"
-      desugaredMethodsFiles="/home/kevin/.gradle/caches/9.3.1/transforms/91920cb37cf952636334137458ecf314/transformed/D8BackportedDesugaredMethods.txt">
+      desugaredMethodsFiles="/home/box/.gradle/caches/9.3.1/transforms/91920cb37cf952636334137458ecf314/transformed/D8BackportedDesugaredMethods.txt">
   </artifact>
 </variant>

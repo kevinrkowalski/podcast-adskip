@@ -154,6 +154,14 @@ function applyAndroidAutoStatus(nativeStatus: AndroidAutoStatus, fallbackEpisode
   if (nativeStatus.durationMs > 0) status.durationMs = nativeStatus.durationMs;
   status.isPlaying = !!nativeStatus.isPlaying;
   status.isBuffering = !!nativeStatus.isBuffering;
+  if (nativeStatus.ended) {
+    status.isPlaying = false;
+    // Ignore a late heartbeat for the previous item right after a new load.
+    if (!fallbackEpisode || status.episode?.guid === fallbackEpisode.guid) reportEnded();
+  } else if (nativeStatus.isPlaying) {
+    // Replayed after finishing: allow a later end to advance again.
+    endedReportedFor = null;
+  }
   if (nativeStatus.error) console.warn('[player] native playback error:', nativeStatus.error);
   if (Number.isFinite(nativeStatus.playbackRate)) {
     playbackRate = nativeStatus.playbackRate;
@@ -172,6 +180,33 @@ function reconcileStaleAndroidStatus() {
   }
   // Don't re-check every tick; wait another window for a heartbeat.
   lastNativeStatusAt = Date.now();
+}
+
+type EndedListener = (episode: Episode | null) => void;
+const endedListeners = new Set<EndedListener>();
+/** Guid of the item we already reported as finished (one event per load). */
+let endedReportedFor: string | null = null;
+
+/** Fires once when the loaded episode plays to its end (all backends). */
+export function subscribeEnded(listener: EndedListener): () => void {
+  endedListeners.add(listener);
+  return () => {
+    endedListeners.delete(listener);
+  };
+}
+
+function reportEnded() {
+  const guid = status.episode?.guid ?? null;
+  if (!guid || endedReportedFor === guid) return;
+  endedReportedFor = guid;
+  const ep = status.episode;
+  endedListeners.forEach((l) => {
+    try {
+      l(ep);
+    } catch (e) {
+      console.warn('[player] ended listener failed:', e);
+    }
+  });
 }
 
 function emit() {
@@ -338,6 +373,10 @@ function startTick() {
         base + Math.round(500 * playbackRate),
         status.durationMs || base + Math.round(500 * playbackRate),
       );
+      if (status.durationMs > 0 && status.positionMs >= status.durationMs) {
+        status.isPlaying = false;
+        reportEnded();
+      }
     } else if (backend === 'expo-audio') {
       syncFromNative();
     } else if (backend === 'android-auto') {
@@ -412,6 +451,7 @@ export async function loadAndPlay(
   opts?: LoadPlayOptions,
 ): Promise<void> {
   clearPendingSeek();
+  endedReportedFor = null;
   const startMs =
     opts?.startPositionMs != null && opts.startPositionMs > 0
       ? Math.floor(opts.startPositionMs)
@@ -489,6 +529,7 @@ export async function loadAndPlay(
           // Reached the end (e.g. an auto-skip past a post-roll): show as stopped.
           status.isPlaying = false;
           status.isBuffering = false;
+          reportEnded();
         }
         if (typeof (st as { playbackRate?: number }).playbackRate === 'number') {
           playbackRate = (st as { playbackRate: number }).playbackRate;
