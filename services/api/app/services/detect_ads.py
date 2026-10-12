@@ -178,29 +178,123 @@ def _with_sample_text(
     ]
 
 
-def _merge(segments: list[AdSegment], gap_ms: int = 8000) -> list[AdSegment]:
+SEGMENT_MERGE_GAP_MS = 8_000
+SPEECHLESS_GAP_MERGE_MAX_MS = 20_000
+BREAK_BLOCK_GAP_MAX_MS = 30_000
+BREAK_CUE_LOOKBACK_MS = 15_000
+# Whisper span edges carry fractional ms (e.g. 387.7049s) while validated
+# segments are rounded, so allow a small tolerance before treating an edge
+# span as speech inside a gap.
+GAP_EDGE_TOLERANCE_MS = 50
+NON_SPEECH_TRANSCRIPT_LABEL = re.compile(
+    r"^[\s\[\]()*]*?(?:music|instrumental|applause|laughter|silence|inaudible)[\s\[\]()*]*$",
+    re.IGNORECASE,
+)
+BREAK_BLOCK_CUES = re.compile(
+    r"\b(?:we(?:'|’)?ll be right back|we will be right back|be right back|"
+    r"(?:right |back |more )?after (?:the|this|a) (?:short )?break|"
+    r"coming up,? after this|after this(?: short)? (?:break|message)|"
+    r"after these (?:messages|words)|stay with us|"
+    r"(?:let(?:'|’)?s|we(?:'|’)?ll|should we|time to) take (?:a|our|a quick|a short) break|"
+    r"a word from (?:our )?sponsors?|we(?:'|’)?ll return after (?:the|this) break)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_spoken_text_between(
+    transcript: dict[str, Any], start_ms: int, end_ms: int
+) -> bool:
+    lo = start_ms + GAP_EDGE_TOLERANCE_MS
+    hi = end_ms - GAP_EDGE_TOLERANCE_MS
+    if hi <= lo:
+        return False
+    for span in transcript.get("segments") or []:
+        try:
+            span_start = float(span.get("start", 0)) * 1000
+            span_end = float(span.get("end", 0)) * 1000
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if not math.isfinite(span_start) or not math.isfinite(span_end):
+            continue
+        if lo < span_end and hi > span_start:
+            text = re.sub(r"\s+", " ", str(span.get("text") or "")).strip()
+            if text and not NON_SPEECH_TRANSCRIPT_LABEL.fullmatch(text):
+                return True
+    return False
+
+
+def _ends_with_break_cue(transcript: dict[str, Any], seg: AdSegment) -> bool:
+    """True when the segment (or speech just before its end) announces a break."""
+    window_start = max(0, min(seg.start_ms, seg.end_ms - BREAK_CUE_LOOKBACK_MS))
+    return bool(BREAK_BLOCK_CUES.search(_transcript_text(transcript, window_start, seg.end_ms)))
+
+
+def _merge(
+    segments: list[AdSegment],
+    gap_ms: int = SEGMENT_MERGE_GAP_MS,
+    *,
+    transcript: dict[str, Any] | None = None,
+) -> list[AdSegment]:
+    """Merge nearby detections.
+
+    - Always merge within ``gap_ms``.
+    - With a transcript, bridge speechless (silence/music) gaps up to 20s.
+    - Once a break cue ("we'll be right back", "after the break", ...) opens a
+      block, bridge speechless gaps up to 30s so cue + gap + ads become one
+      midroll segment.
+    """
     if not segments:
         return []
     ordered = sorted(segments, key=lambda s: s.start_ms)
     merged = [ordered[0]]
     strongest_confidences = [ordered[0].confidence]
+    in_break = [
+        transcript is not None
+        and ordered[0].type != "unknown"
+        and _ends_with_break_cue(transcript, ordered[0])
+    ]
     for seg in ordered[1:]:
         last = merged[-1]
-        if seg.start_ms <= last.end_ms + gap_ms:
+        gap = seg.start_ms - last.end_ms
+        speechless = transcript is not None and (
+            gap <= 0 or not _has_spoken_text_between(transcript, last.end_ms, seg.start_ms)
+        )
+        within_regular_window = gap <= gap_ms
+        bridge_speechless_gap = speechless and gap <= SPEECHLESS_GAP_MERGE_MAX_MS
+        bridge_break_block = (
+            in_break[-1]
+            and last.type != "unknown"
+            and seg.type != "unknown"
+            and speechless
+            and gap <= BREAK_BLOCK_GAP_MAX_MS
+        )
+        if within_regular_window or bridge_speechless_gap or bridge_break_block:
             strongest_type = last.type
-            strongest_confidence = strongest_confidences[-1]
-            if seg.confidence > strongest_confidence:
+            if seg.confidence > strongest_confidences[-1]:
                 strongest_type = seg.type
                 strongest_confidences[-1] = seg.confidence
+            if in_break[-1] and last.type != "unknown" and seg.type != "unknown":
+                strongest_type = "midroll"
             merged[-1] = AdSegment(
                 start_ms=last.start_ms,
                 end_ms=max(last.end_ms, seg.end_ms),
                 type=strongest_type,
                 confidence=min(last.confidence, seg.confidence),
             )
+            if (
+                transcript is not None
+                and merged[-1].type != "unknown"
+                and _ends_with_break_cue(transcript, seg)
+            ):
+                in_break[-1] = True
         else:
             merged.append(seg)
             strongest_confidences.append(seg.confidence)
+            in_break.append(
+                transcript is not None
+                and seg.type != "unknown"
+                and _ends_with_break_cue(transcript, seg)
+            )
     return merged
 
 
@@ -281,7 +375,7 @@ def _validated_segments(
                 confidence=seg.confidence,
             )
         )
-    return _with_sample_text(_merge(validated), transcript)
+    return _with_sample_text(_merge(validated, transcript=transcript), transcript)
 
 
 def _windows(transcript: dict[str, Any], window_s: float = 120.0) -> list[str]:
