@@ -191,28 +191,34 @@ export async function setAutoQueueEnabled(
   await writeAutoQueue(all);
 }
 
-let autoQueueChain: Promise<void> = Promise.resolve();
+let autoQueueChain: Promise<unknown> = Promise.resolve();
 
-/** Called after a feed refresh: append newly published episodes when enabled. */
-export function processFeedForAutoQueue(target: ShowTarget, feedEpisodes: Episode[]): Promise<void> {
+/** Called after a feed refresh: append newly published episodes when enabled. Resolves to the number added. */
+export function processFeedForAutoQueue(target: ShowTarget, feedEpisodes: Episode[]): Promise<number> {
   // Serialize so concurrent refreshes don't double-add or lose seen state.
-  autoQueueChain = autoQueueChain.then(async () => {
+  const run = autoQueueChain.then(async (): Promise<number> => {
     const key = showKey(target);
-    if (!key || !feedEpisodes.length) return;
+    if (!key || !feedEpisodes.length) return 0;
     const all = await readAutoQueue();
     const state = all[key];
-    if (!state?.enabled) return;
+    if (!state?.enabled) return 0;
     const { toAdd, state: nextState } = detectNewEpisodes(state, feedEpisodes);
     all[key] = nextState;
     await writeAutoQueue(all);
-    if (!toAdd.length) return;
+    if (!toAdd.length) return 0;
     await hydrateQueue();
+    const before = queue.length;
     let next = queue;
     for (const ep of toAdd) next = addPure(next, slim(ep));
     setQueue(next);
-    console.log('[queue] auto-added', toAdd.length, 'new episode(s) for', key);
-  }).catch((e) => console.warn('[queue] auto-add failed:', e));
-  return autoQueueChain;
+    console.log('[queue] auto-added', next.length - before, 'new episode(s) for', key);
+    return next.length - before;
+  }).catch((e) => {
+    console.warn('[queue] auto-add failed:', e);
+    return 0;
+  });
+  autoQueueChain = run;
+  return run;
 }
 
 /** Shows with auto-add on (for the periodic subscription refresh). */

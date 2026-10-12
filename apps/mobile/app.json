@@ -68,7 +68,8 @@
           "enableBackgroundRecording": false,
           "recordAudioAndroid": false
         }
-      ]
+      ],
+      "expo-background-task"
     ],
     "experiments": {
       "typedRoutes": true

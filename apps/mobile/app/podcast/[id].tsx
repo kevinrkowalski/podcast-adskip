@@ -8,7 +8,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { Stack, useLocalSearchParams, useRouter, type Href } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter, type Href } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import { lookupPodcastWithEpisodes } from '@/src/api/itunes';
 import {
@@ -32,6 +32,7 @@ import { syncAndroidAutoCatalog } from '@/src/player/androidAutoCatalog';
 import { usePlayback } from '@/src/store/PlaybackContext';
 import { isAutoQueueEnabled, setAutoQueueEnabled, useQueue } from '@/src/queue/queueStore';
 import { showQueueActions } from '@/src/queue/queueActions';
+import { isPlayed, usePlayedVersion } from '@/src/played/playedStore';
 import { ShowSettingsCard } from '@/components/ShowSettingsCard';
 import type { Episode, PodcastSearchResult } from '@/src/types';
 import { theme } from '@/constants/Colors';
@@ -63,7 +64,7 @@ function mergeEpisodes(primary: Episode[], secondary: Episode[]): Episode[] {
 export default function PodcastDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const { episode: currentEpisode, openEpisode, setPodcastAdDetection, setPodcastSkipSetting } = usePlayback();
+  const { episode: currentEpisode, openEpisode, setEpisodePlayed, setPodcastAdDetection, setPodcastSkipSetting } = usePlayback();
   const [show, setShow] = useState<PodcastSearchResult | null>(null);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [visibleCount, setVisibleCount] = useState(EPISODES_PAGE_SIZE);
@@ -324,6 +325,20 @@ export default function PodcastDetailScreen() {
     }
   }, [episodes.length, refreshPositions, rssHasMore, visibleCount]);
 
+  usePlayedVersion();
+  // Progress bars: re-read saved positions when coming back from the player.
+  const episodesRef = useRef<Episode[]>([]);
+  episodesRef.current = episodes;
+  useFocusEffect(
+    useCallback(() => {
+      if (episodesRef.current.length) void refreshPositions(episodesRef.current);
+    }, [refreshPositions]),
+  );
+  const onSetPlayed = async (ep: Episode, value: boolean) => {
+    await setEpisodePlayed(ep, value);
+    void refreshPositions(episodesRef.current);
+  };
+
   const displayedEpisodes = episodes.slice(0, visibleCount);
   const queuedGuids = new Set(queue.map((e) => e.guid));
   const hasMoreEpisodes =
@@ -403,13 +418,14 @@ export default function PodcastDetailScreen() {
           const dur = pos?.durationMs ?? item.durationMs;
           const showResume =
             pos && isMeaningfulPosition(pos.positionMs, dur);
+          const played = isPlayed(item.guid);
           const pct =
             showResume && dur && dur > 0
               ? Math.min(99, Math.round((pos.positionMs / dur) * 100))
               : null;
           return (
             <Pressable
-              style={[styles.epRow, !item.enclosureUrl && styles.epDisabled]}
+              style={[styles.epRow, !item.enclosureUrl && styles.epDisabled, played && styles.epPlayed]}
               onPress={() => onPlay(item)}
               disabled={!item.enclosureUrl}>
               <View style={{ flex: 1, minWidth: 0 }}>
@@ -420,6 +436,7 @@ export default function PodcastDetailScreen() {
                   {item.pubDate ? new Date(item.pubDate).toLocaleDateString() : ''}
                   {item.duration ? ` · ${item.duration}` : ''}
                   {!item.enclosureUrl ? ' · no audio' : ''}
+                  {played ? ' · ✓ Played' : ''}
                   {queuedGuids.has(item.guid) && item.guid !== currentEpisode?.guid ? ' · Up Next' : ''}
                   {showResume
                     ? ` · Resume ${formatMs(pos.positionMs)}${pct != null ? ` (${pct}%)` : ''}`
@@ -439,7 +456,10 @@ export default function PodcastDetailScreen() {
               {!!item.enclosureUrl && (
                 <Pressable
                   onPress={() =>
-                    showQueueActions(item, { isCurrent: item.guid === currentEpisode?.guid })
+                    showQueueActions(item, {
+                      isCurrent: item.guid === currentEpisode?.guid,
+                      onSetPlayed: (ep, v) => void onSetPlayed(ep, v),
+                    })
                   }
                   hitSlop={8}
                   style={styles.moreBtn}
@@ -452,7 +472,7 @@ export default function PodcastDetailScreen() {
                 </Pressable>
               )}
               <View style={styles.playChip}>
-                <Text style={styles.playChipText}>{showResume ? '↻' : '▶'}</Text>
+                <Text style={styles.playChipText}>{played ? '✓' : showResume ? '↻' : '▶'}</Text>
               </View>
             </Pressable>
           );
@@ -550,6 +570,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   epDisabled: { opacity: 0.45 },
+  epPlayed: { opacity: 0.55 },
   epTitle: { color: theme.text, fontSize: 15, fontWeight: '600' },
   epMeta: { color: theme.textMuted, fontSize: 12, marginTop: 4 },
   resumeTrack: {
