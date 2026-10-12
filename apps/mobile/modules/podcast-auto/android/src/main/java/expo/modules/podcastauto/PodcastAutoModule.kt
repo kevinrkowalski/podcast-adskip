@@ -27,6 +27,8 @@ class PodcastAutoModule : Module() {
           "positionMs" to intent.getLongExtra(PodcastAutoPlaybackService.EXTRA_POSITION_MS, 0L),
           "durationMs" to intent.getLongExtra(PodcastAutoPlaybackService.EXTRA_DURATION_MS, 0L),
           "isPlaying" to intent.getBooleanExtra(PodcastAutoPlaybackService.EXTRA_IS_PLAYING, false),
+          "isBuffering" to intent.getBooleanExtra(PodcastAutoPlaybackService.EXTRA_IS_BUFFERING, false),
+          "error" to intent.getStringExtra(PodcastAutoPlaybackService.EXTRA_ERROR),
           "playbackRate" to intent.getFloatExtra(PodcastAutoPlaybackService.EXTRA_PLAYBACK_RATE, 1f).toDouble()
         )
       )
