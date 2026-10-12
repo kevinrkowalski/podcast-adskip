@@ -8,6 +8,7 @@ import { BottomTabBar } from 'expo-router/build/react-navigation/bottom-tabs';
 import { theme } from '@/constants/Colors';
 import { useClientOnlyValue } from '@/components/useClientOnlyValue';
 import { MiniPlayer } from '@/components/MiniPlayer';
+import { useQueue } from '@/src/queue/queueStore';
 
 export const unstable_settings = {
   initialRouteName: 'index',
@@ -29,6 +30,7 @@ function TabBarWithMini(props: React.ComponentProps<typeof BottomTabBar>) {
 }
 
 export default function TabLayout() {
+  const queueCount = useQueue().length;
   return (
     <Tabs
       initialRouteName="index"
@@ -72,6 +74,21 @@ export default function TabLayout() {
           tabBarIcon: ({ color }) => (
             <SymbolView
               name={{ ios: 'magnifyingglass', android: 'search', web: 'search' }}
+              tintColor={color}
+              size={24}
+            />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="up-next"
+        options={{
+          title: 'Up Next',
+          tabBarBadge: queueCount > 0 ? (queueCount > 99 ? '99+' : queueCount) : undefined,
+          tabBarBadgeStyle: { backgroundColor: theme.accent, color: '#fff', fontSize: 10 },
+          tabBarIcon: ({ color }) => (
+            <SymbolView
+              name={{ ios: 'list.bullet', android: 'queue_music', web: 'queue_music' }}
               tintColor={color}
               size={24}
             />
