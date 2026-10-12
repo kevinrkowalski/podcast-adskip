@@ -9,3 +9,6 @@ web-build/
 *.mobileprovision
 expo-env.d.ts
 .test-build/
+
+# native module build output
+modules/*/android/build/
