@@ -1,6 +1,7 @@
 import { Alert, type AlertButton } from 'react-native';
 import type { Episode } from '@/src/types';
-import { addToQueue, getQueue, playNext, removeFromQueue } from './queueStore';
+import { addToQueue, getCurrentQueueGuid, getQueue, playNext, removeFromQueue } from './queueStore';
+import { upNextCount } from './queueLogic';
 
 /**
  * Up Next actions for one episode as a native action dialog (Android shows up
@@ -13,7 +14,7 @@ export function showQueueActions(
   const queued = getQueue().some((e) => e.guid === ep.guid);
   const buttons: AlertButton[] = [];
   if (opts?.onOpenQueue) {
-    buttons.push({ text: `Up Next (${getQueue().length})`, onPress: opts.onOpenQueue });
+    buttons.push({ text: `Up Next (${upNextCount(getQueue(), getCurrentQueueGuid())})`, onPress: opts.onOpenQueue });
   }
   if (!opts?.isCurrent) {
     if (queued) {

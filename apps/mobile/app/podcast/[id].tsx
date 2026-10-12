@@ -420,7 +420,7 @@ export default function PodcastDetailScreen() {
                   {item.pubDate ? new Date(item.pubDate).toLocaleDateString() : ''}
                   {item.duration ? ` · ${item.duration}` : ''}
                   {!item.enclosureUrl ? ' · no audio' : ''}
-                  {queuedGuids.has(item.guid) ? ' · Up Next' : ''}
+                  {queuedGuids.has(item.guid) && item.guid !== currentEpisode?.guid ? ' · Up Next' : ''}
                   {showResume
                     ? ` · Resume ${formatMs(pos.positionMs)}${pct != null ? ` (${pct}%)` : ''}`
                     : ''}

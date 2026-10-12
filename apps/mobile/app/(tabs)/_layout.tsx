@@ -8,7 +8,7 @@ import { BottomTabBar } from 'expo-router/build/react-navigation/bottom-tabs';
 import { theme } from '@/constants/Colors';
 import { useClientOnlyValue } from '@/components/useClientOnlyValue';
 import { MiniPlayer } from '@/components/MiniPlayer';
-import { useQueue } from '@/src/queue/queueStore';
+import { useUpNextCount } from '@/src/queue/queueStore';
 
 export const unstable_settings = {
   initialRouteName: 'index',
@@ -30,7 +30,7 @@ function TabBarWithMini(props: React.ComponentProps<typeof BottomTabBar>) {
 }
 
 export default function TabLayout() {
-  const queueCount = useQueue().length;
+  const queueCount = useUpNextCount();
   return (
     <Tabs
       initialRouteName="index"

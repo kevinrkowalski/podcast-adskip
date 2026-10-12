@@ -2,7 +2,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter, type Href } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { QueueList, confirmClearQueue } from '@/components/QueueList';
-import { useQueue } from '@/src/queue/queueStore';
+import { useUpNextCount } from '@/src/queue/queueStore';
 import { theme } from '@/constants/Colors';
 import { displayFontFamily } from '@/constants/Typography';
 
@@ -10,7 +10,7 @@ import { displayFontFamily } from '@/constants/Typography';
 export default function UpNextTab() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const count = useQueue().length;
+  const count = useUpNextCount();
   return (
     <View style={[styles.container, { paddingTop: insets.top + 8 }]}>
       <View style={styles.headingRow}>

@@ -39,9 +39,8 @@ import {
 import { getApiBaseUrl, getResolvedAppKey } from '@/src/api/backend';
 import {
   hydrateQueue,
+  markPlaying,
   popNext,
-  removeFromQueue as removeQueuedEpisode,
-  setCurrentQueueGuid,
 } from '@/src/queue/queueStore';
 import { startAutoQueueRefresh } from '@/src/queue/autoQueueRefresh';
 import { filterSkippableSegments, normalizeSegment } from '@/src/player/skipLogic';
@@ -185,7 +184,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       const previousPositionMs = positionRef.current;
       const previousDurationMs = durationRef.current;
       const nextGuid = st.episode?.guid;
-      if (nextGuid) setCurrentQueueGuid(nextGuid);
+      // Started outside JS (e.g. Android Auto): keep it at the top of Up Next too.
+      if (st.episode && nextGuid && nextGuid !== previousGuid) void markPlaying(st.episode);
       if (
         previousGuid &&
         nextGuid &&
@@ -639,9 +639,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
 
       setEpisode(ep);
       episodeRef.current = ep;
-      // Starting an episode takes it out of Up Next.
-      setCurrentQueueGuid(ep.guid);
-      void removeQueuedEpisode(ep.guid);
+      // Starting an episode puts it at index 0 of Up Next (no-op if already there).
+      void markPlaying(ep);
       setSkipMap(null);
       skipMapRef.current = null;
       setSkipSettingsState(null);
