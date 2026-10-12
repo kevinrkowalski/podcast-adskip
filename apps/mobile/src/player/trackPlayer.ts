@@ -19,6 +19,7 @@ import {
   getAndroidAutoStatus,
   isAndroidAutoPlaybackAvailable,
   loadAndroidAutoEpisode,
+  logPlaybackEvent,
   subscribeAndroidAutoStatus,
 } from './androidAuto';
 
@@ -544,8 +545,14 @@ export async function play(): Promise<void> {
   emit();
 }
 
-export async function pause(): Promise<void> {
+/**
+ * Pause playback. Only ever called for explicit user actions (or Prepare restoring a
+ * paused state) — nothing in JS pauses native playback automatically (backgrounding,
+ * timers, or the stale-status fallback only change what the UI shows).
+ */
+export async function pause(reason = 'user'): Promise<void> {
   if (backend === 'android-auto') {
+    logPlaybackEvent(`pause requested (${reason})`);
     lastNativeStatusAt = Date.now();
     controlAndroidAutoPlayer('pause');
   } else if (backend === 'expo-audio' && player) {

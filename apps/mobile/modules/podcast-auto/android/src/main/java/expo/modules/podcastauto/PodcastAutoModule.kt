@@ -4,6 +4,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.core.content.ContextCompat
 import androidx.core.os.bundleOf
 import expo.modules.kotlin.modules.Module
@@ -116,6 +119,33 @@ class PodcastAutoModule : Module() {
           .putString(PodcastAutoPlaybackService.KEY_SKIP_SEGMENTS_PREFIX + episodeGuid, safeJson)
           .apply()
       }
+    }
+    Function("getEventLog") { PlaybackEventLog.read(context) }
+    Function("clearEventLog") { PlaybackEventLog.clear(context) }
+    Function("logEvent") { message: String -> PlaybackEventLog.log(context, "js: $message") }
+    Function("isIgnoringBatteryOptimizations") {
+      val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+      pm.isIgnoringBatteryOptimizations(context.packageName)
+    }
+    Function("requestIgnoreBatteryOptimizations") {
+      val pkg = Uri.parse("package:${context.packageName}")
+      val direct = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkg)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      try {
+        context.startActivity(direct)
+      } catch (_: Exception) {
+        context.startActivity(
+          Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+      }
+    }
+    Function("openAppDetailsSettings") {
+      // OxygenOS keeps its own "Battery usage: Unrestricted / Allow background activity"
+      // switch on the App info page, separate from the Android battery-optimization list.
+      context.startActivity(
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      )
     }
     Function("getStatus") {
       mapOf(

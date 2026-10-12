@@ -17,7 +17,9 @@ import androidx.media3.common.util.UnstableApi
 import androidx.core.content.ContextCompat
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaLibraryService.LibraryParams
@@ -42,6 +44,7 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
   private var activeEpisodeJson: String? = null
   private var lastPositionSaveMs = 0L
   private var errorRetryCount = 0
+  private var firstErrorAt = 0L
   private var lastErrorMessage: String? = null
 
   private val catalogUpdateReceiver = object : BroadcastReceiver() {
@@ -69,18 +72,32 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     }
   }
 
+  private fun log(event: String) = PlaybackEventLog.log(this, event)
+
   override fun onCreate() {
     super.onCreate()
+    log("service created")
     val httpFactory = DefaultHttpDataSource.Factory()
       .setUserAgent("PodcastAdSkip/1.0 (Linux; Android) Media3")
+      // Podcast CDNs/trackers often redirect between http and https.
+      .setAllowCrossProtocolRedirects(true)
+      .setConnectTimeoutMs(20_000)
+      .setReadTimeoutMs(30_000)
     val dataSourceFactory = DefaultDataSource.Factory(this, httpFactory)
     val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+      // Retry individual chunk loads many times before surfacing a fatal error.
+      .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(LOAD_RETRY_COUNT))
+    // Buffer several minutes ahead so short screen-off network naps don't starve playback.
+    val loadControl = DefaultLoadControl.Builder()
+      .setBufferDurationsMs(MIN_BUFFER_MS, MAX_BUFFER_MS, 2_500, 5_000)
+      .build()
     val audioAttributes = Media3AudioAttributes.Builder()
       .setUsage(C.USAGE_MEDIA)
       .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
       .build()
     val exoPlayer = ExoPlayer.Builder(this)
       .setMediaSourceFactory(mediaSourceFactory)
+      .setLoadControl(loadControl)
       .setAudioAttributes(audioAttributes, true)
       // Hold wake + Wi-Fi locks while playing so streams don't stall when the screen is off.
       .setWakeMode(C.WAKE_MODE_NETWORK)
@@ -90,6 +107,7 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     exoPlayer.setPlaybackSpeed(preferences.getFloat(KEY_PLAYBACK_RATE, 1f))
     exoPlayer.addListener(object : Player.Listener {
       override fun onIsPlayingChanged(isPlaying: Boolean) {
+        log("isPlaying=$isPlaying state=${stateName(exoPlayer.playbackState)} pos=${exoPlayer.currentPosition}")
         persistPlaybackState(exoPlayer)
         publishStatus()
       }
@@ -111,8 +129,11 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
       }
 
       override fun onPlaybackStateChanged(playbackState: Int) {
+        log("state=${stateName(playbackState)} playWhenReady=${exoPlayer.playWhenReady} pos=${exoPlayer.currentPosition}")
         if (playbackState == Player.STATE_READY) {
+          if (errorRetryCount > 0) log("recovered after $errorRetryCount retries")
           errorRetryCount = 0
+          firstErrorAt = 0L
           lastErrorMessage = null
         }
         persistPlaybackState(exoPlayer)
@@ -120,25 +141,39 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
       }
 
       override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+        log("playWhenReady=$playWhenReady reason=${playWhenReadyReasonName(reason)}")
         persistPlaybackState(exoPlayer)
         publishStatus()
       }
 
       override fun onPlaybackSuppressionReasonChanged(reason: Int) {
+        log("suppression=${suppressionName(reason)} (transient audio focus loss if TRANSIENT_AUDIO_FOCUS_LOSS)")
         publishStatus()
       }
 
       override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
         lastErrorMessage = error.message ?: error.errorCodeName
+        log("ERROR ${error.errorCodeName} (${error.errorCode}): ${error.message} cause=${error.cause?.javaClass?.simpleName}")
         persistPlaybackState(exoPlayer)
         publishStatus(lastErrorMessage)
         scheduleErrorRecovery(exoPlayer, error)
       }
     })
 
-    mediaLibrarySession = MediaLibrarySession.Builder(this, exoPlayer, LibraryCallback())
+    val session = MediaLibrarySession.Builder(this, exoPlayer, LibraryCallback())
       .setId(SESSION_ID)
       .build()
+    mediaLibrarySession = session
+    // The app drives this service with startService() intents, not a MediaController, so
+    // onGetSession() is never called for in-app playback. Without addSession() Media3 never
+    // manages this session: no media notification and no startForeground(), so the service
+    // stays a background service and OxygenOS/doze freezes or kills it with the screen off.
+    addSession(session)
+    setListener(object : Listener {
+      override fun onForegroundServiceStartNotAllowedException() {
+        log("ERROR foreground service start not allowed (app in background)")
+      }
+    })
     restorePreviousItem(exoPlayer)
     ContextCompat.registerReceiver(
       this,
@@ -155,9 +190,16 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     when (intent?.action) {
       ACTION_LOAD -> loadAndPlay(intent)
-      ACTION_PLAY -> player?.let(::resumePlayback)
-      ACTION_PAUSE -> player?.pause()
+      ACTION_PLAY -> {
+        log("command: play (from app)")
+        player?.let(::resumePlayback)
+      }
+      ACTION_PAUSE -> {
+        log("command: pause (from app)")
+        player?.pause()
+      }
       ACTION_SEEK -> {
+        log("command: seek ${intent.getLongExtra(EXTRA_POSITION_MS, 0L)}")
         val position = intent.getLongExtra(EXTRA_POSITION_MS, 0L).coerceAtLeast(0L)
         player?.let { p -> p.seekTo(clampToDuration(p, position)) }
         preferences.edit().putLong(KEY_POSITION_MS, position).apply()
@@ -174,12 +216,20 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
   }
 
   override fun onTaskRemoved(rootIntent: Intent?) {
-    // Keep the MediaLibraryService alive while playback is active; release it when paused.
-    if (player?.isPlaying != true) stopSelf()
-    super.onTaskRemoved(rootIntent)
+    // Keep the service alive while the user wants playback (including while buffering
+    // through a stall); release it when paused.
+    val wantsPlayback = player?.playWhenReady == true
+    log("task removed (app swiped away); wantsPlayback=$wantsPlayback")
+    if (!wantsPlayback) pauseAllPlayersAndStopSelf()
+  }
+
+  override fun onTrimMemory(level: Int) {
+    super.onTrimMemory(level)
+    if (level >= TRIM_MEMORY_RUNNING_LOW) log("trimMemory level=$level")
   }
 
   override fun onDestroy() {
+    log("service destroyed; playWhenReady=${player?.playWhenReady} state=${player?.playbackState?.let(::stateName)}")
     handler.removeCallbacks(monitor)
     try {
       unregisterReceiver(catalogUpdateReceiver)
@@ -209,6 +259,7 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
       return
     }
     val guid = episode.optString("guid")
+    log("load ${episode.optString("title").take(60)} local=${episode.optString("localFilePath").let { it.isNotBlank() && it != "null" }}")
     val localPath = episode.optString("localFilePath")
     val audioUrl = if (localPath.isNotBlank() && localPath != "null") localPath else episode.optString("enclosureUrl")
     if (audioUrl.isBlank() || audioUrl == "null") {
@@ -231,6 +282,7 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
       .putBoolean(KEY_IS_PLAYING, true)
       .apply()
     errorRetryCount = 0
+    firstErrorAt = 0L
     lastErrorMessage = null
     handler.removeCallbacks(errorRecovery)
     player?.apply {
@@ -313,6 +365,7 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
       val end = segment.optLong("end_ms", -1L)
       if (start >= 0L && end > start && position >= start && position < end) {
         val target = clampToDuration(exoPlayer, end + AUTO_SKIP_OFFSET_MS)
+        log("auto-skip ad ${start}-${end} -> $target")
         exoPlayer.seekTo(target)
         preferences.edit().putLong(KEY_POSITION_MS, target).apply()
         break
@@ -404,22 +457,68 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
   private val errorRecovery = Runnable {
     val exoPlayer = player ?: return@Runnable
     if (exoPlayer.playbackState != Player.STATE_IDLE || exoPlayer.playerError == null) return@Runnable
+    if (!exoPlayer.playWhenReady) {
+      log("retry skipped: user paused")
+      return@Runnable
+    }
+    log("retry #$errorRetryCount at pos=${exoPlayer.currentPosition}")
     exoPlayer.seekTo(exoPlayer.currentPosition.coerceAtLeast(0L))
     exoPlayer.prepare()
     exoPlayer.play()
     publishStatus()
   }
 
-  /** Network stalls surface as IO errors that leave ExoPlayer idle; retry a few times. */
+  /**
+   * Network stalls surface as IO errors that leave ExoPlayer idle. While the user still
+   * wants playback, keep retrying with exponential backoff (2s, 4s, 8s ... capped at 2 min)
+   * for up to 30 minutes — with the screen off the network can take a long time to wake.
+   */
   private fun scheduleErrorRecovery(
     exoPlayer: ExoPlayer,
     error: androidx.media3.common.PlaybackException
   ) {
     val isIo = error.errorCode in 2000..2999
-    if (!isIo || errorRetryCount >= MAX_ERROR_RETRIES || exoPlayer.mediaItemCount == 0) return
+    if (!isIo || exoPlayer.mediaItemCount == 0 || !exoPlayer.playWhenReady) {
+      log("no retry: io=$isIo playWhenReady=${exoPlayer.playWhenReady}")
+      return
+    }
+    val now = System.currentTimeMillis()
+    if (firstErrorAt == 0L) firstErrorAt = now
+    if (now - firstErrorAt > ERROR_RETRY_WINDOW_MS) {
+      log("giving up retries after ${(now - firstErrorAt) / 1000}s")
+      return
+    }
+    val delay = (ERROR_RETRY_BASE_DELAY_MS shl errorRetryCount.coerceAtMost(6))
+      .coerceAtMost(ERROR_RETRY_MAX_DELAY_MS)
     errorRetryCount += 1
+    log("scheduling retry #$errorRetryCount in ${delay}ms")
     handler.removeCallbacks(errorRecovery)
-    handler.postDelayed(errorRecovery, ERROR_RETRY_BASE_DELAY_MS * errorRetryCount)
+    handler.postDelayed(errorRecovery, delay)
+  }
+
+  private fun stateName(state: Int) = when (state) {
+    Player.STATE_IDLE -> "IDLE"
+    Player.STATE_BUFFERING -> "BUFFERING"
+    Player.STATE_READY -> "READY"
+    Player.STATE_ENDED -> "ENDED"
+    else -> state.toString()
+  }
+
+  private fun playWhenReadyReasonName(reason: Int) = when (reason) {
+    Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST -> "USER_REQUEST"
+    Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS -> "AUDIO_FOCUS_LOSS"
+    Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY -> "AUDIO_BECOMING_NOISY (headphones/BT disconnected)"
+    Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE -> "REMOTE"
+    Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM -> "END_OF_MEDIA_ITEM"
+    Player.PLAY_WHEN_READY_CHANGE_REASON_SUPPRESSED_TOO_LONG -> "SUPPRESSED_TOO_LONG"
+    else -> reason.toString()
+  }
+
+  private fun suppressionName(reason: Int) = when (reason) {
+    Player.PLAYBACK_SUPPRESSION_REASON_NONE -> "NONE"
+    Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS -> "TRANSIENT_AUDIO_FOCUS_LOSS"
+    Player.PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_OUTPUT -> "UNSUITABLE_AUDIO_OUTPUT"
+    else -> reason.toString()
   }
 
   private fun findEpisodeJson(guid: String): String? {
@@ -641,7 +740,11 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     private const val MONITOR_INTERVAL_MS = 500L
     private const val POSITION_SAVE_INTERVAL_MS = 5_000L
     private const val AUTO_SKIP_OFFSET_MS = 100L
-    private const val MAX_ERROR_RETRIES = 3
     private const val ERROR_RETRY_BASE_DELAY_MS = 2_000L
+    private const val ERROR_RETRY_MAX_DELAY_MS = 120_000L
+    private const val ERROR_RETRY_WINDOW_MS = 30 * 60_000L
+    private const val LOAD_RETRY_COUNT = 12
+    private const val MIN_BUFFER_MS = 120_000
+    private const val MAX_BUFFER_MS = 300_000
   }
 }

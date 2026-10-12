@@ -29,6 +29,12 @@ declare class PodcastAutoNativeModule extends NativeModule<AndroidAutoEvents> {
   setAdDetectionEnabled: (enabled: boolean) => void;
   setSkipSegments: (segmentsJson: string, episodeGuid: string | null) => void;
   getStatus: () => AndroidAutoStatus;
+  getEventLog?: () => string;
+  clearEventLog?: () => void;
+  logEvent?: (message: string) => void;
+  isIgnoringBatteryOptimizations?: () => boolean;
+  requestIgnoreBatteryOptimizations?: () => void;
+  openAppDetailsSettings?: () => void;
 }
 
 let nativeModule: PodcastAutoNativeModule | null | undefined;
@@ -109,6 +115,43 @@ export function configureAndroidAutoSkip(options: {
   if (options.segments != null) {
     native.setSkipSegments(JSON.stringify(options.segments), options.episodeGuid ?? null);
   }
+}
+
+/** Persistent native playback event log (last ~200 events), or null on non-Android. */
+export function getPlaybackEventLog(): string | null {
+  const native = getNativeModule();
+  return native?.getEventLog ? native.getEventLog() : null;
+}
+
+export function clearPlaybackEventLog(): void {
+  getNativeModule()?.clearEventLog?.();
+}
+
+export function logPlaybackEvent(message: string): void {
+  try {
+    getNativeModule()?.logEvent?.(message);
+  } catch {
+    /* diagnostics only */
+  }
+}
+
+/** null when unknown (not Android / old native build). */
+export function isIgnoringBatteryOptimizations(): boolean | null {
+  const native = getNativeModule();
+  if (!native?.isIgnoringBatteryOptimizations) return null;
+  try {
+    return native.isIgnoringBatteryOptimizations();
+  } catch {
+    return null;
+  }
+}
+
+export function requestIgnoreBatteryOptimizations(): void {
+  getNativeModule()?.requestIgnoreBatteryOptimizations?.();
+}
+
+export function openAppDetailsSettings(): void {
+  getNativeModule()?.openAppDetailsSettings?.();
 }
 
 export function getAndroidAutoStatus(): AndroidAutoStatus | null {

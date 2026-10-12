@@ -973,7 +973,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
             startPositionMs: playback.positionMs,
             localFilePath: localPath,
           });
-          if (!playback.isPlaying) await player.pause();
+          if (!playback.isPlaying) await player.pause('prepare: restore paused state');
         }
 
         console.log('[playback] requestAnalyze: download complete, uploading to API');
