@@ -11,7 +11,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Link } from 'expo-router';
+import { Link, useRouter } from 'expo-router';
+import { cleanFeedUrlInput, subscribeByFeedUrl } from '@/src/import/importOpml';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   fetchTopPodcasts,
@@ -40,6 +41,13 @@ export default function SearchScreen() {
   const [chartItems, setChartItems] = useState<PodcastSearchResult[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState<string | null>(null);
+
+  const router = useRouter();
+  const [rssOpen, setRssOpen] = useState(false);
+  const [rssUrl, setRssUrl] = useState('');
+  const [rssBusy, setRssBusy] = useState(false);
+  const [rssError, setRssError] = useState<string | null>(null);
+  const [rssNote, setRssNote] = useState<string | null>(null);
 
   const showDiscover = !query.trim();
 
@@ -111,6 +119,86 @@ export default function SearchScreen() {
     await syncAndroidAutoCatalog();
     await refreshSubs();
   };
+
+  const onAddRss = async () => {
+    if (rssBusy) return;
+    setRssError(null);
+    setRssNote(null);
+    if (!cleanFeedUrlInput(rssUrl)) {
+      setRssError('Enter a valid feed URL, e.g. https://example.com/feed.xml');
+      return;
+    }
+    setRssBusy(true);
+    try {
+      const res = await subscribeByFeedUrl(rssUrl);
+      await refreshSubs();
+      setRssNote(
+        res.status === 'already'
+          ? `Already subscribed to ${res.title}.`
+          : `Subscribed to ${res.title}.`,
+      );
+      setRssUrl('');
+      router.push({ pathname: '/podcast/[id]', params: { id: String(res.collectionId) } });
+    } catch (e) {
+      setRssError(e instanceof Error ? e.message : 'Could not add that feed.');
+    } finally {
+      setRssBusy(false);
+    }
+  };
+
+  const rssSection = (
+    <View style={styles.rssBox}>
+      <Pressable
+        onPress={() => {
+          setRssOpen((v) => !v);
+          setRssError(null);
+          setRssNote(null);
+        }}
+        accessibilityRole="button"
+        accessibilityLabel="Add by RSS URL">
+        <Text style={styles.rssToggle}>{rssOpen ? '− Add by RSS URL' : '+ Add by RSS URL'}</Text>
+      </Pressable>
+      {rssOpen && (
+        <>
+          <View style={[styles.searchRow, { marginTop: 8, marginBottom: 0 }]}>
+            <TextInput
+              style={styles.input}
+              placeholder="https://example.com/feed.xml"
+              placeholderTextColor={theme.textMuted}
+              value={rssUrl}
+              onChangeText={(t) => {
+                setRssUrl(t);
+                setRssError(null);
+              }}
+              onSubmitEditing={() => void onAddRss()}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              returnKeyType="go"
+              editable={!rssBusy}
+            />
+            <Pressable
+              style={[styles.btn, (!rssUrl.trim() || rssBusy) && styles.btnDisabled]}
+              onPress={() => void onAddRss()}
+              disabled={!rssUrl.trim() || rssBusy}>
+              {rssBusy ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.btnText}>Add</Text>
+              )}
+            </Pressable>
+          </View>
+          {!!rssError && <Text style={[styles.error, { textAlign: 'left' }]}>{rssError}</Text>}
+          {!!rssNote && <Text style={styles.rssNote}>{rssNote}</Text>}
+          {!rssError && !rssNote && (
+            <Text style={styles.rssHint}>
+              Paste a podcast feed link. To import many shows, use Settings → Import OPML.
+            </Text>
+          )}
+        </>
+      )}
+    </View>
+  );
 
   const renderSearchItem = ({ item }: { item: PodcastSearchResult }) => {
     const isSub = subscribedIds.has(item.collectionId);
@@ -255,6 +343,7 @@ export default function SearchScreen() {
           <Text style={styles.btnText}>Search</Text>
         </Pressable>
       </View>
+      {rssSection}
 
       {showDiscover ? (
         <FlatList
@@ -342,6 +431,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   btnDisabled: { opacity: 0.4 },
+  rssBox: { marginBottom: 6 },
+  rssToggle: { color: theme.accentSoft, fontSize: 13, fontWeight: '700', paddingVertical: 4 },
+  rssHint: { color: theme.textMuted, fontSize: 12, marginTop: 6 },
+  rssNote: { color: theme.textSecondary, fontSize: 13, marginTop: 6 },
   btnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
   discoverHeading: {
     color: theme.text,
