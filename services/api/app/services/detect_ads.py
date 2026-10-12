@@ -489,7 +489,7 @@ async def _label_openrouter(
     duration_ms: int | None = None,
     context_block: str | None = None,
 ) -> list[AdSegment]:
-    """Cheap OpenRouter chat model (default google/gemini-2.5-flash)."""
+    """Cheap OpenRouter chat model for ad labeling."""
     from openai import OpenAI
 
     api_key = settings.openrouter_api_key or settings.llm_api_key
@@ -506,7 +506,6 @@ async def _label_openrouter(
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": _user_content(chunk, context_block)},
             ],
-            temperature=0.1,
             response_format={"type": "json_object"},
         )
         content = completion.choices[0].message.content or "{}"
@@ -532,7 +531,6 @@ async def _label_groq_llm(
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": _user_content(chunk, context_block)},
             ],
-            temperature=0.1,
             response_format={"type": "json_object"},
         )
         content = completion.choices[0].message.content or "{}"

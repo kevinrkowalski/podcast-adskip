@@ -254,6 +254,41 @@ def test_merge_uses_eight_second_gap_boundary():
     ]
 
 
+def test_merge_bridges_long_music_gaps_but_not_spoken_gaps():
+    from app.models.schemas import AdSegment
+    from app.services.detect_ads import _merge
+
+    segments = [
+        AdSegment(start_ms=100_000, end_ms=115_000, type="midroll", confidence=0.9),
+        AdSegment(start_ms=130_000, end_ms=145_000, type="sponsor", confidence=0.95),
+    ]
+    music_gap = {
+        "segments": [
+            {"start": 100, "end": 115, "text": "Let's take a break."},
+            {"start": 115, "end": 130, "text": "[Music]"},
+            {"start": 130, "end": 145, "text": "Brought to you by Acme."},
+        ]
+    }
+    spoken_gap = {
+        "segments": [
+            {"start": 100, "end": 115, "text": "Let's take a break."},
+            {"start": 115, "end": 130, "text": "We'll be right back after this."},
+            {"start": 130, "end": 145, "text": "Brought to you by Acme."},
+        ]
+    }
+
+    merged_music = _merge(segments, transcript=music_gap)
+    kept_separate = _merge(segments, transcript=spoken_gap)
+
+    assert [(segment.start_ms, segment.end_ms) for segment in merged_music] == [
+        (100_000, 145_000)
+    ]
+    assert [(segment.start_ms, segment.end_ms) for segment in kept_separate] == [
+        (100_000, 115_000),
+        (130_000, 145_000),
+    ]
+
+
 def test_low_confidence_segments_are_dropped_before_merge():
     from app.models.schemas import AdSegment
     from app.services.detect_ads import _validated_segments
