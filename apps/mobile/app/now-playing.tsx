@@ -17,6 +17,7 @@ import { SymbolView } from 'expo-symbols';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePlayback } from '@/src/store/PlaybackContext';
 import { showQueueActions } from '@/src/queue/queueActions';
+import { ReportSkipSheet } from '@/components/ReportSkipSheet';
 import { useUpNextCount } from '@/src/queue/queueStore';
 import { formatMs, segmentTypeLabel } from '@/src/player/skipLogic';
 import { Scrubber } from '@/components/Scrubber';
@@ -145,6 +146,7 @@ export default function PlayerScreen() {
   const [scrubPreview, setScrubPreview] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<PlayerTab>('playing');
   const [skipSheetVisible, setSkipSheetVisible] = useState(false);
+  const [reportVisible, setReportVisible] = useState(false);
 
   const segs = skipMap?.segments ?? [];
   const displayPos = scrubPreview != null ? scrubPreview : positionMs;
@@ -285,6 +287,8 @@ export default function PlayerScreen() {
     showQueueActions(episode, {
       isCurrent: !opened,
       onOpenQueue: () => router.push('/queue' as Href),
+      onSetPlayed: (ep, v) => void playback.setEpisodePlayed(ep, v),
+      onReportSkip: opened ? undefined : () => setReportVisible(true),
     });
   };
 
@@ -643,9 +647,26 @@ export default function PlayerScreen() {
                 );
               })}
             </ScrollView>
+            <Pressable
+              style={styles.reportBtn}
+              onPress={() => {
+                setSkipSheetVisible(false);
+                setReportVisible(true);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Report bad skip">
+              <Text style={styles.reportText}>Report bad skip</Text>
+            </Pressable>
           </Pressable>
         </Pressable>
       </Modal>
+      <ReportSkipSheet
+        visible={reportVisible}
+        onClose={() => setReportVisible(false)}
+        episode={opened ? null : playback.episode}
+        positionMs={playback.positionMs}
+        skipMap={playback.skipMap}
+      />
     </View>
   );
 }
@@ -933,6 +954,13 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     lineHeight: 17,
   },
+  reportBtn: {
+    alignSelf: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    marginTop: 4,
+  },
+  reportText: { color: theme.accentWarn, fontSize: 13, fontWeight: '600' },
   sheetBackdrop: {
     flex: 1,
     justifyContent: 'flex-end',

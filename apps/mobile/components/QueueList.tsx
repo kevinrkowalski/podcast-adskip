@@ -3,6 +3,11 @@ import type { ReactElement } from 'react';
 import { SymbolView } from 'expo-symbols';
 import { clearQueue, moveQueueItem, removeFromQueue, useQueue } from '@/src/queue/queueStore';
 import { isPlayingAtTop } from '@/src/queue/queueLogic';
+import { useCallback } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { isPlayed, usePlayedVersion } from '@/src/played/playedStore';
+import { usePositions } from '@/src/played/usePositions';
+import { EpisodeProgress } from '@/components/EpisodeProgress';
 import { usePlayback } from '@/src/store/PlaybackContext';
 import type { Episode } from '@/src/types';
 import { theme } from '@/constants/Colors';
@@ -35,6 +40,13 @@ export function QueueList({
   // header, and list only what comes after it.
   const offset = isPlayingAtTop(queue, current?.guid) ? 1 : 0;
   const upNext = offset ? queue.slice(1) : queue;
+  usePlayedVersion();
+  const { positions, refresh } = usePositions(upNext.map((e) => e.guid));
+  useFocusEffect(
+    useCallback(() => {
+      void refresh();
+    }, [refresh]),
+  );
 
   const onOpen = (ep: Episode) => {
     openEpisode(ep);
@@ -69,7 +81,9 @@ export function QueueList({
         }
         renderItem={({ item, index }) => (
           <View style={styles.row}>
-            <Pressable style={styles.rowMain} onPress={() => onOpen(item)}>
+            <Pressable
+              style={[styles.rowMain, isPlayed(item.guid) && { opacity: 0.55 }]}
+              onPress={() => onOpen(item)}>
               {item.artworkUrl ? (
                 <Image source={{ uri: item.artworkUrl }} style={styles.art} />
               ) : (
@@ -80,8 +94,14 @@ export function QueueList({
                   {item.title}
                 </Text>
                 <Text style={styles.meta} numberOfLines={1}>
-                  {[item.podcastTitle, item.duration].filter(Boolean).join(' · ')}
+                  {[isPlayed(item.guid) ? '✓ Played' : null, item.podcastTitle, item.duration]
+                    .filter(Boolean)
+                    .join(' · ')}
                 </Text>
+                <EpisodeProgress
+                  positionMs={positions[item.guid]?.positionMs}
+                  durationMs={positions[item.guid]?.durationMs ?? item.durationMs}
+                />
               </View>
             </Pressable>
             <View style={styles.actions}>

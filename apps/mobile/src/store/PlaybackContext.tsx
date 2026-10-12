@@ -43,6 +43,9 @@ import {
   popNext,
 } from '@/src/queue/queueStore';
 import { startAutoQueueRefresh } from '@/src/queue/autoQueueRefresh';
+import { syncBackgroundRefreshRegistration } from '@/src/queue/backgroundRefresh';
+import { hydratePlayed, isNearEnd, isPlayed, setPlayed } from '@/src/played/playedStore';
+import { startFeedbackOutbox } from '@/src/api/feedback';
 import { filterSkippableSegments, normalizeSegment } from '@/src/player/skipLogic';
 
 type Ctx = {
@@ -82,6 +85,8 @@ type Ctx = {
   setPodcastSkipSetting: (target: AdDetectionTarget, settings: Partial<PodcastSkipSettings>) => Promise<void>;
   requestAnalyze: (force?: boolean) => Promise<void>;
   clearCachedPlaybackData: () => boolean;
+  /** Mark played (resets resume position) or unplayed (clears played + position). */
+  setEpisodePlayed: (ep: Episode, played: boolean) => Promise<void>;
 };
 
 export type OpenedEpisode = {
@@ -212,6 +217,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       setPlaybackRateState(st.playbackRate);
       if (previousGuid && nextGuid && previousGuid !== nextGuid) {
         externalEpisodeChangeRef.current?.(st.episode!);
+      }
+
+      // Auto-mark played near the end (finish is handled by subscribeEnded too).
+      if (st.episode?.guid && isNearEnd(st.positionMs, st.durationMs) && !isPlayed(st.episode.guid)) {
+        void setPlayed(st.episode.guid, true);
       }
 
       // Interval persist while playing.
@@ -846,13 +856,21 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   // (expo-audio didJustFinish, native service STATE_ENDED, or stub clock).
   useEffect(() => {
     void hydrateQueue();
-    return startAutoQueueRefresh();
+    void hydratePlayed();
+    void syncBackgroundRefreshRegistration();
+    const stopFeedback = startFeedbackOutbox();
+    const stopRefresh = startAutoQueueRefresh();
+    return () => {
+      stopFeedback();
+      stopRefresh();
+    };
   }, []);
 
   useEffect(() => {
     return player.subscribeEnded((finished) => {
       const current = episodeRef.current;
       if (!finished?.guid || (current && current.guid !== finished.guid)) return;
+      void setPlayed(finished.guid, true);
       void (async () => {
         const next = await popNext(finished.guid);
         if (!next || episodeRef.current?.guid !== finished.guid) return;
@@ -868,6 +886,19 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       })();
     });
   }, [playEpisode, updateOpened]);
+
+  const setEpisodePlayed = useCallback(async (ep: Episode, value: boolean) => {
+    await setPlayed(ep.guid, value);
+    const isCurrent = episodeRef.current?.guid === ep.guid;
+    if (value) {
+      // Played: next open starts from the beginning; stop re-saving the old spot.
+      if (isCurrent) clearedPositionGuid.current = ep.guid;
+      await clearPlaybackPosition(ep.guid);
+    } else if (!isCurrent) {
+      // Unplayed: fresh start. (The loaded episode keeps its live position.)
+      await clearPlaybackPosition(ep.guid);
+    }
+  }, []);
 
   const togglePlay = useCallback(async () => {
     if (isPlayingRef.current) {
@@ -1307,6 +1338,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       setPodcastSkipSetting,
       requestAnalyze,
       clearCachedPlaybackData,
+      setEpisodePlayed,
     }),
     [
       episode,
@@ -1337,6 +1369,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       setPodcastSkipSetting,
       requestAnalyze,
       clearCachedPlaybackData,
+      setEpisodePlayed,
     ],
   );
 

@@ -6,7 +6,10 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import 'react-native-reanimated';
 
+// Defines the background feed-refresh task at module scope (needed for headless runs).
+import '@/src/queue/backgroundRefresh';
 import { PlaybackProvider } from '@/src/store/PlaybackContext';
+import { OverlayHost } from '@/components/OverlayHost';
 import { hydrateApiBaseUrl, hydrateAppKey } from '@/src/api/backend';
 import { pruneExpiredAudioCache } from '@/src/api/audioUpload';
 import { theme } from '@/constants/Colors';
@@ -88,6 +91,7 @@ function RootLayoutNav() {
             <Stack.Screen name="settings" options={{ title: 'Settings' }} />
             <Stack.Screen name="queue" options={{ title: 'Up Next' }} />
           </Stack>
+          <OverlayHost />
         </PlaybackProvider>
       </ThemeProvider>
     </SafeAreaProvider>

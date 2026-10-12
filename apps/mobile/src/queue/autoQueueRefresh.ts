@@ -1,44 +1,74 @@
 import { AppState } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fetchAndParseRss } from '@/src/api/rss';
 import { getSubscriptions } from '@/src/db/storage';
 import { autoQueueShowKey, getAutoQueueShowKeys, processFeedForAutoQueue } from './queueStore';
 
 const MIN_INTERVAL_MS = 30 * 60_000;
 const ITEMS = 20;
+const LAST_REFRESH_KEY = '@podcast-adskip/autoQueueLastRefresh';
 let lastRunAt = 0;
-let running: Promise<void> | null = null;
+let running: Promise<RefreshResult> | null = null;
+
+export type RefreshResult = {
+  at: number;
+  source: 'foreground' | 'background';
+  shows: number;
+  added: number;
+  failed: number;
+};
+
+export async function getLastAutoQueueRefresh(): Promise<RefreshResult | null> {
+  try {
+    const raw = await AsyncStorage.getItem(LAST_REFRESH_KEY);
+    return raw ? (JSON.parse(raw) as RefreshResult) : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Refresh only subscriptions with "Auto-add new episodes" on, so new releases
- * land in Up Next without opening each show. Throttled; network failures are ignored.
+ * land in Up Next without opening each show. Never plays or analyzes anything.
+ * Throttled in the foreground; network failures are counted, not thrown.
  */
-export function refreshAutoQueueFeeds(force = false): Promise<void> {
+export function refreshAutoQueueFeeds(
+  force = false,
+  source: RefreshResult['source'] = 'foreground',
+): Promise<RefreshResult | null> {
   if (running) return running;
-  if (!force && Date.now() - lastRunAt < MIN_INTERVAL_MS) return Promise.resolve();
+  if (!force && Date.now() - lastRunAt < MIN_INTERVAL_MS) return Promise.resolve(null);
   lastRunAt = Date.now();
-  running = (async () => {
+  running = (async (): Promise<RefreshResult> => {
+    const result: RefreshResult = { at: Date.now(), source, shows: 0, added: 0, failed: 0 };
     try {
       const keys = new Set(await getAutoQueueShowKeys());
-      if (!keys.size) return;
-      const subs = (await getSubscriptions()).filter((s) => {
-        const key = autoQueueShowKey({ collectionId: s.collectionId, feedUrl: s.feedUrl });
-        return key != null && keys.has(key);
-      });
-      for (const sub of subs) {
-        try {
-          const parsed = await fetchAndParseRss(
-            sub.feedUrl,
-            { collectionId: sub.collectionId, podcastTitle: sub.collectionName, artworkUrl: sub.artworkUrl },
-            { maxItems: ITEMS, forceRefresh: true },
-          );
-          await processFeedForAutoQueue(
-            { collectionId: sub.collectionId, feedUrl: sub.feedUrl },
-            parsed.episodes,
-          );
-        } catch (e) {
-          console.warn('[queue] auto-add refresh failed for', sub.feedUrl, e);
+      if (keys.size) {
+        const subs = (await getSubscriptions()).filter((s) => {
+          const key = autoQueueShowKey({ collectionId: s.collectionId, feedUrl: s.feedUrl });
+          return key != null && keys.has(key);
+        });
+        for (const sub of subs) {
+          result.shows += 1;
+          try {
+            const parsed = await fetchAndParseRss(
+              sub.feedUrl,
+              { collectionId: sub.collectionId, podcastTitle: sub.collectionName, artworkUrl: sub.artworkUrl },
+              { maxItems: ITEMS, forceRefresh: true },
+            );
+            result.added += await processFeedForAutoQueue(
+              { collectionId: sub.collectionId, feedUrl: sub.feedUrl },
+              parsed.episodes,
+            );
+          } catch (e) {
+            result.failed += 1;
+            console.warn('[queue] auto-add refresh failed for', sub.feedUrl, e);
+          }
         }
       }
+      result.at = Date.now();
+      await AsyncStorage.setItem(LAST_REFRESH_KEY, JSON.stringify(result)).catch(() => {});
+      return result;
     } finally {
       running = null;
     }

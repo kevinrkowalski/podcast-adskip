@@ -42,6 +42,12 @@ import {
 import { clearAudioCache } from '@/src/api/audioUpload';
 import { clearCachedRssXml } from '@/src/api/rss';
 import { usePlayback } from '@/src/store/PlaybackContext';
+import {
+  getLastAutoQueueRefresh,
+  refreshAutoQueueFeeds,
+  type RefreshResult,
+} from '@/src/queue/autoQueueRefresh';
+import { isBackgroundRefreshEnabled, setBackgroundRefreshEnabled } from '@/src/queue/backgroundRefresh';
 import { theme } from '@/constants/Colors';
 import { displayFontFamily } from '@/constants/Typography';
 
@@ -270,6 +276,8 @@ export default function SettingsScreen() {
             />
           </View>
 
+          <BackgroundRefreshSettings />
+
           <Text style={[styles.section, { marginTop: 28 }]}>Storage</Text>
           <Pressable style={styles.btnDanger} onPress={onClearCache}>
             <Text style={styles.btnText}>Clear on-device cache & downloads</Text>
@@ -299,6 +307,62 @@ export default function SettingsScreen() {
         </ScrollView>
       )}
     </View>
+  );
+}
+
+function BackgroundRefreshSettings() {
+  const [enabled, setEnabled] = useState(true);
+  const [last, setLast] = useState<RefreshResult | null>(null);
+
+  const reload = useCallback(async () => {
+    setEnabled(await isBackgroundRefreshEnabled());
+    setLast(await getLastAutoQueueRefresh());
+  }, []);
+
+  useEffect(() => {
+    void reload();
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st === 'active') void reload();
+    });
+    return () => sub.remove();
+  }, [reload]);
+
+  const onToggle = async (v: boolean) => {
+    setEnabled(v);
+    await setBackgroundRefreshEnabled(v);
+  };
+
+  const lastText = last
+    ? `${new Date(last.at).toLocaleString()} (${last.source}) · ${last.shows} show${last.shows === 1 ? '' : 's'}, +${last.added} to Up Next${last.failed ? `, ${last.failed} failed` : ''}`
+    : 'Never';
+
+  return (
+    <>
+      <Text style={[styles.section, { marginTop: 28 }]}>Background refresh</Text>
+      <View style={styles.switchRow}>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.switchLabel}>Background refresh</Text>
+          <Text style={styles.hint}>
+            Checks feeds of shows with "Auto-add new episodes" about hourly while the app is closed and adds new releases to Up Next. Android decides the exact timing; it never plays or analyzes anything.
+          </Text>
+        </View>
+        <Switch
+          value={enabled}
+          onValueChange={(v) => void onToggle(v)}
+          trackColor={{ false: theme.border, true: theme.accentSoft }}
+          thumbColor={enabled ? theme.accent : '#ccc'}
+        />
+      </View>
+      <Text style={styles.hint}>Last refreshed: {lastText}</Text>
+      <Pressable
+        style={styles.btnSecondary}
+        onPress={async () => {
+          await refreshAutoQueueFeeds(true);
+          await reload();
+        }}>
+        <Text style={styles.btnSecondaryText}>Refresh now</Text>
+      </Pressable>
+    </>
   );
 }
 
