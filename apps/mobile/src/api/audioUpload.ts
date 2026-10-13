@@ -17,6 +17,12 @@ import {
   saveAudioCacheMetadata,
   type AudioCacheMetadata,
 } from '@/src/db/storage';
+import { resolveAudioUrl } from '@/src/api/backend';
+
+export function isRedirectError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /follow-up requests|too many redirects|redirect/i.test(msg);
+}
 
 const AUDIO_CACHE_DIR = `${FileSystem.cacheDirectory}podcast-audio/`;
 const AUDIO_CACHE_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
@@ -132,26 +138,39 @@ export async function downloadAudioForAnalysis(
 
   console.log('[audio-download] Downloading audio for analysis:', audioUrl);
 
-  const downloadResumable = FileSystem.createDownloadResumable(
-    audioUrl,
-    localPath,
-    {
-      // Match playback UA so Simplecast/Podtrac DAI variants align with the player.
-      headers: {
-        'User-Agent': 'PodcastAdSkip/1.0 (Linux; Android) expo-audio',
+  const startDownload = (url: string) =>
+    FileSystem.createDownloadResumable(
+      url,
+      localPath,
+      {
+        // Match playback UA so Simplecast/Podtrac DAI variants align with the player.
+        headers: {
+          'User-Agent': 'PodcastAdSkip/1.0 (Linux; Android) expo-audio',
+        },
       },
-    },
-    (progress) => {
-      if (onProgress) {
-        onProgress({
-          totalBytesWritten: progress.totalBytesWritten,
-          totalBytesExpectedToWrite: progress.totalBytesExpectedToWrite,
-        });
-      }
-    },
-  );
+      (progress) => {
+        if (onProgress) {
+          onProgress({
+            totalBytesWritten: progress.totalBytesWritten,
+            totalBytesExpectedToWrite: progress.totalBytesExpectedToWrite,
+          });
+        }
+      },
+    ).downloadAsync();
 
-  const result = await downloadResumable.downloadAsync();
+  let result: Awaited<ReturnType<typeof startDownload>>;
+  try {
+    result = await startDownload(audioUrl);
+  } catch (error) {
+    if (!isRedirectError(error)) throw error;
+    // Tracking chains (podtrac -> pscrb.fm IPv4/IPv6 bounce -> simplecast) can loop on
+    // some phone networks. Let the server follow the chain, then fetch the final URL.
+    console.warn('[audio-download] Redirect failure, resolving via API:', error);
+    await FileSystem.deleteAsync(localPath, { idempotent: true }).catch(() => {});
+    const finalUrl = await resolveAudioUrl(audioUrl);
+    console.log('[audio-download] Resolved audio URL:', finalUrl);
+    result = await startDownload(finalUrl);
+  }
   if (!result) {
     throw new Error('Download failed');
   }
