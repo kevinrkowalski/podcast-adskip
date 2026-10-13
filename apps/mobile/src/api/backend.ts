@@ -125,3 +125,22 @@ export async function analyzeEpisode(input: {
   if (!res.ok) throw new Error(`analyze failed: ${res.status}`);
   return res.json();
 }
+
+/** Ask the API to follow a tracking-redirect chain and return the final media URL. */
+export async function resolveAudioUrl(url: string): Promise<string> {
+  const res = await fetch(`${resolveBaseUrl()}/v1/resolve-audio-url`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ url }),
+  });
+  if (!res.ok) {
+    let detail = '';
+    try {
+      detail = (await res.json())?.detail ?? '';
+    } catch {}
+    throw new Error(`Could not resolve audio link${detail ? `: ${detail}` : ` (${res.status})`}`);
+  }
+  const data = await res.json();
+  if (typeof data?.url !== 'string' || !data.url) throw new Error('Could not resolve audio link');
+  return data.url;
+}
