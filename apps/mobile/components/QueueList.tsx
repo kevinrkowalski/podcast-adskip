@@ -16,7 +16,7 @@ import { displayFontFamily } from '@/constants/Typography';
 /** Confirm, then empty the queue. */
 export function confirmClearQueue(count: number) {
   if (!count) return;
-  Alert.alert('Clear Up Next?', `Remove all ${count} episodes from the queue.`, [
+  Alert.alert('Clear queue?', `Remove all ${count} episodes from the queue.`, [
     { text: 'Cancel', style: 'cancel' },
     { text: 'Clear', style: 'destructive', onPress: () => void clearQueue() },
   ]);
@@ -73,9 +73,9 @@ export function QueueList({
         }
         ListEmptyComponent={
           <View style={styles.empty}>
-            <Text style={styles.emptyTitle}>Nothing in Up Next</Text>
+            <Text style={styles.emptyTitle}>Queue is empty</Text>
             <Text style={styles.emptySub}>
-              Use “Play next” or “Add to Up Next” from an episode’s ⋯ menu or the player.
+              Use “Play next” or “Add to queue” from an episode’s ⋯ menu or the player.
             </Text>
           </View>
         }
@@ -119,7 +119,7 @@ export function QueueList({
               />
               <IconBtn
                 icon={{ ios: 'xmark', android: 'close', web: 'close' }}
-                label="Remove from Up Next"
+                label="Remove from queue"
                 onPress={() => void removeFromQueue(item.guid)}
               />
             </View>

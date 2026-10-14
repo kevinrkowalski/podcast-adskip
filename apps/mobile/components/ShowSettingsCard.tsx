@@ -59,7 +59,7 @@ export function ShowSettingsCard(props: Props) {
           <Text style={styles.section}>PLAYBACK & QUEUE</Text>
           <Row
             label="Auto-add new episodes"
-            hint="New releases go to the end of Up Next"
+            hint="New releases go to the end of the queue"
             value={autoQueue}
             onChange={props.onAutoQueueChange}
             last

@@ -29,7 +29,7 @@ if (!TaskManager.isTaskDefined(BACKGROUND_REFRESH_TASK)) {
       if (!(await isBackgroundRefreshEnabled())) return BackgroundTask.BackgroundTaskResult.Success;
       const r = await refreshAutoQueueFeeds(true, 'background');
       const msg = r
-        ? `bg-refresh: ${r.shows} show(s), +${r.added} to Up Next${r.failed ? `, ${r.failed} failed` : ''}`
+        ? `bg-refresh: ${r.shows} show(s), +${r.added} to queue${r.failed ? `, ${r.failed} failed` : ''}`
         : 'bg-refresh: skipped (already running)';
       logPlaybackEvent(msg);
       console.log('[bg-refresh]', msg);

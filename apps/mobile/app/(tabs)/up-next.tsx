@@ -16,7 +16,7 @@ export default function UpNextTab() {
       <View style={styles.headingRow}>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={styles.eyebrow}>QUEUE</Text>
-          <Text style={styles.heading}>Up Next</Text>
+          <Text style={styles.heading}>Queue</Text>
           <Text style={styles.subheading}>
             {count === 0 ? 'Nothing queued' : `${count} episode${count === 1 ? '' : 's'}`}
           </Text>
@@ -26,7 +26,7 @@ export default function UpNextTab() {
             onPress={() => confirmClearQueue(count)}
             hitSlop={10}
             style={styles.clearBtn}
-            accessibilityLabel="Clear Up Next">
+            accessibilityLabel="Clear queue">
             <Text style={styles.clear}>Clear</Text>
           </Pressable>
         )}

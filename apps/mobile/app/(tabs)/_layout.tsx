@@ -83,7 +83,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="up-next"
         options={{
-          title: 'Up Next',
+          title: 'Queue',
           tabBarBadge: queueCount > 0 ? (queueCount > 99 ? '99+' : queueCount) : undefined,
           tabBarBadgeStyle: { backgroundColor: theme.accent, color: '#fff', fontSize: 10 },
           tabBarIcon: ({ color }) => (

@@ -12,10 +12,10 @@ export default function QueueScreen() {
     <>
       <Stack.Screen
         options={{
-          title: 'Up Next',
+          title: 'Queue',
           headerRight: () =>
             count ? (
-              <Pressable onPress={() => confirmClearQueue(count)} hitSlop={10} accessibilityLabel="Clear Up Next">
+              <Pressable onPress={() => confirmClearQueue(count)} hitSlop={10} accessibilityLabel="Clear queue">
                 <Text style={styles.clear}>Clear</Text>
               </Pressable>
             ) : null,

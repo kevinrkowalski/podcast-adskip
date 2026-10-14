@@ -64,4 +64,11 @@ r = q.detectNewEpisodes(r.state, [n2, n1, old1]);
 assert.equal(ids(r.toAdd), 'n1,n2', 'new episodes added oldest first');
 r = q.detectNewEpisodes(r.state, [n2, n1, old1]);
 assert.equal(r.toAdd.length, 0, 'not re-added on next refresh');
+// Played episodes leave the queue; the playing one stays pinned until it changes.
+const playedSet = new Set(['a', 'c']);
+const isP = (g) => playedSet.has(g);
+assert.equal(ids(q.dropPlayed([a, b, c], isP, 'a')), 'a,b', 'played removed except playing item');
+assert.equal(ids(q.dropPlayed([a, b, c], isP, null)), 'b', 'all played removed when nothing playing');
+const clean = [b];
+assert.equal(q.dropPlayed(clean, isP, null), clean, 'no change returns same array');
 console.log('queue logic tests OK');

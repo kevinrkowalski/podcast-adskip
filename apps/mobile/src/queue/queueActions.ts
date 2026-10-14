@@ -21,13 +21,13 @@ export function showQueueActions(
   const actions: SheetAction[] = [];
   if (opts?.onOpenQueue) {
     actions.push({
-      label: `Open Up Next (${upNextCount(getQueue(), getCurrentQueueGuid())})`,
+      label: `Open queue (${upNextCount(getQueue(), getCurrentQueueGuid())})`,
       onPress: opts.onOpenQueue,
     });
   }
   if (!opts?.isCurrent) {
     actions.push({ label: 'Play next', onPress: () => void playNext(ep) });
-    if (!queued) actions.push({ label: 'Add to Up Next', onPress: () => void addToQueue(ep) });
+    if (!queued) actions.push({ label: 'Add to queue', onPress: () => void addToQueue(ep) });
   }
   if (opts?.onSetPlayed) {
     const played = isPlayed(ep.guid);
@@ -38,10 +38,10 @@ export function showQueueActions(
   }
   if (opts?.onReportSkip) actions.push({ label: 'Report bad skip', onPress: opts.onReportSkip });
   if (queued && !opts?.isCurrent) {
-    actions.push({ label: 'Remove from Up Next', destructive: true, onPress: () => void removeFromQueue(ep.guid) });
+    actions.push({ label: 'Remove from queue', destructive: true, onPress: () => void removeFromQueue(ep.guid) });
   }
   const status = [
-    opts?.isCurrent ? 'Now playing' : queued ? 'In Up Next' : null,
+    opts?.isCurrent ? 'Now playing' : queued ? 'In queue' : null,
     isPlayed(ep.guid) ? 'Played' : null,
   ]
     .filter(Boolean)
