@@ -62,7 +62,12 @@ function mergeEpisodes(primary: Episode[], secondary: Episode[]): Episode[] {
 }
 
 export default function PodcastDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, feedUrl: feedParam, title: titleParam, artwork: artworkParam } = useLocalSearchParams<{
+    id: string;
+    feedUrl?: string;
+    title?: string;
+    artwork?: string;
+  }>();
   const router = useRouter();
   const { episode: currentEpisode, openEpisode, setEpisodePlayed, setPodcastAdDetection, setPodcastSkipSetting } = usePlayback();
   const [show, setShow] = useState<PodcastSearchResult | null>(null);
@@ -133,6 +138,29 @@ export default function PodcastDetailScreen() {
             artworkUrl100: stored.artworkUrl,
           };
         }
+      }
+      if (!podcast?.feedUrl && typeof feedParam === 'string' && feedParam) {
+        // Opened from the player for a show that isn't subscribed / isn't in Apple
+        // Podcasts: build the show from the episode's own feed URL.
+        const want = feedParam.trim().toLowerCase();
+        const stored = (await getSubscriptions()).find((s) => s.feedUrl.trim().toLowerCase() === want);
+        podcast = stored
+          ? {
+              collectionId: stored.collectionId,
+              collectionName: stored.collectionName,
+              artistName: stored.artistName,
+              feedUrl: stored.feedUrl,
+              artworkUrl600: stored.artworkUrl,
+              artworkUrl100: stored.artworkUrl,
+            }
+          : {
+              collectionId,
+              collectionName: (typeof titleParam === 'string' && titleParam) || 'Podcast',
+              artistName: '',
+              feedUrl: feedParam,
+              artworkUrl600: typeof artworkParam === 'string' ? artworkParam : undefined,
+              artworkUrl100: typeof artworkParam === 'string' ? artworkParam : undefined,
+            };
       }
       if (!podcast?.feedUrl) throw new Error('Podcast or feedUrl not found');
       setShow(podcast);
@@ -213,7 +241,7 @@ export default function PodcastDetailScreen() {
       setError(e instanceof Error ? e.message : 'Failed to load');
       setLoading(false);
     }
-  }, [id, refreshPositions]);
+  }, [id, feedParam, titleParam, artworkParam, refreshPositions]);
 
   useEffect(() => {
     load();
