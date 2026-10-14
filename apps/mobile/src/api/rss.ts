@@ -25,12 +25,45 @@ function decodeXmlEntities(value: string): string {
 }
 
 function textBetween(xml: string, tag: string): string | undefined {
-  const cdata = new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>`, 'i');
+  const cdata = new RegExp(`<${tag}[^>]*>\\s*<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>\\s*<\\/${tag}>`, 'i');
   const mC = xml.match(cdata);
   if (mC) return decodeXmlEntities(mC[1].trim());
   const plain = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
   const m = xml.match(plain);
   return m ? decodeXmlEntities(m[1].replace(/<[^>]+>/g, '').trim()) : undefined;
+}
+
+/** Raw inner text (CDATA unwrapped, entities decoded) with HTML kept for show notes. */
+function rawBetween(xml: string, tag: string): string | undefined {
+  const m = xml.match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+  if (!m) return undefined;
+  let inner = m[1].trim();
+  const c = inner.match(/^<!\[CDATA\[([\s\S]*?)\]\]>$/);
+  if (c) return c[1].trim();
+  inner = decodeXmlEntities(inner);
+  // Double-escaped HTML (&amp;lt;p&amp;gt;) decodes to entities again.
+  if (/&lt;\w/.test(inner)) inner = decodeXmlEntities(inner);
+  return inner.trim();
+}
+
+function visibleLength(html: string): number {
+  return html.replace(/<[^>]+>/g, '').replace(/&nbsp;|\s+/g, ' ').trim().length;
+}
+
+/** Richest episode notes: content:encoded > description > itunes:summary > itunes:subtitle. */
+export function pickEpisodeNotes(item: string): string | undefined {
+  let best: string | undefined;
+  let bestLen = 0;
+  for (const tag of ['content:encoded', 'description', 'itunes:summary', 'itunes:subtitle']) {
+    const v = rawBetween(item, tag);
+    const len = v ? visibleLength(v) : 0;
+    // Earlier tags win unless a later one has clearly more text (truncated descriptions).
+    if (len > 0 && (bestLen === 0 || len > bestLen * 1.5)) {
+      best = v;
+      bestLen = len;
+    }
+  }
+  return best;
 }
 
 function attr(tag: string, name: string): string | undefined {
@@ -138,7 +171,7 @@ export function parseRssXml(
       durationMs: parseDurationMs(duration),
       enclosureUrl,
       enclosureType,
-      description: textBetween(item, 'description'),
+      description: pickEpisodeNotes(item),
       podcastDescription: description,
       artworkUrl:
         attr(item.match(/<itunes:image[^>]*>/i)?.[0] ?? '', 'href') || imageUrl || meta?.artworkUrl,

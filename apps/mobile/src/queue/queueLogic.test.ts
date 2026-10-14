@@ -54,6 +54,13 @@ test('queue logic', () => {
   assert.equal(t.next!.guid, 'c', 'skips entries without audio');
   assert.equal(ids(t.rest), 'c,n', 'playable next moves to index 0');
   assert.equal(q.takeNext([]).next, null);
+  // Finished episode not in the queue (played from a show page): next queue item, never the show's next episode.
+  t = q.takeNext([b, c], 'a');
+  assert.equal(t.next!.guid, 'b', 'plays the queue head, not a sibling episode');
+  t = q.takeNext([], 'a');
+  assert.equal(t.next, null, 'empty queue: stop');
+  t = q.takeNext([ep('a2', undefined, { feedUrl: 'f' })], 'a');
+  assert.equal(t.next!.guid, 'a2', 'same-show item only if it is actually queued');
   assert.equal(ids(q.normalizeQueue([a, a, null, { title: 'x' }, b] as any)), 'a,b');
   assert.deepEqual(q.normalizeQueue('junk' as any), []);
   

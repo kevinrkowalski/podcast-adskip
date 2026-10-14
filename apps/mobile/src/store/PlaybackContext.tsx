@@ -555,16 +555,10 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     }
   }, [abortLoadKeepCache, applySkipFilter, canUseAdDetection, clearAdDetection, getMatchingLocalSkipMap]);
 
-  useEffect(() => {
-    externalEpisodeChangeRef.current = (target) => {
-      setSkipMap(null);
-      skipMapRef.current = null;
-      setAnalyzeStatus(null);
-      setAnalyzeError(null);
-      setAudioMismatchWarning(null);
-      setUploadProgress(null);
-      skipLoadGen.current += 1;
-      if (!target.description?.trim() && target.feedUrl) {
+  // Queue items and Android Auto picks carry no show notes (kept small in storage);
+  // fill them in from the cached/fetched feed once the episode is loaded.
+  const restoreShowNotesRef = useRef((target: Episode) => {
+  if (!target.description?.trim() && target.feedUrl) {
         const feedMeta = {
           collectionId: target.collectionId,
           podcastTitle: target.podcastTitle,
@@ -588,10 +582,22 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
               applyNotes(match?.description);
             })
             .catch((error) => {
-              console.warn('[playback] Could not restore show notes for Android Auto episode:', error);
+              console.warn('[playback] Could not restore show notes:', error);
             });
         }
       }
+  });
+
+  useEffect(() => {
+    externalEpisodeChangeRef.current = (target) => {
+      setSkipMap(null);
+      skipMapRef.current = null;
+      setAnalyzeStatus(null);
+      setAnalyzeError(null);
+      setAudioMismatchWarning(null);
+      setUploadProgress(null);
+      skipLoadGen.current += 1;
+      restoreShowNotesRef.current(target);
       void (async () => {
         try {
           const globallyEnabled = await getAutoSkipEnabled();
@@ -648,6 +654,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       const prevDur = durationRef.current;
 
       setEpisode(ep);
+      restoreShowNotesRef.current(ep);
       episodeRef.current = ep;
       // Starting an episode puts it at index 0 of Up Next (no-op if already there).
       void markPlaying(ep);
