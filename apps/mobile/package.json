@@ -29,9 +29,11 @@
     "react-native-worklets": "0.10.1"
   },
   "devDependencies": {
-    "@types/jest": "^30.0.0",
+    "@types/jest": "^29.5.14",
     "@types/react": "~19.2.2",
-    "typescript": "~6.0.3"
+    "typescript": "~6.0.3",
+    "jest": "~29.7.0",
+    "jest-expo": "~57.0.6"
   },
   "scripts": {
     "start": "expo start",
@@ -41,12 +43,30 @@
     "typecheck": "tsc --noEmit",
     "skip-smoke": "node src/player/skipLogic.test.mjs",
     "lint": "expo lint",
-    "queue-test": "tsc src/queue/queueLogic.ts --outDir .test-build --module commonjs --target es2020 --skipLibCheck --ignoreConfig && node src/queue/queueLogic.test.cjs"
+    "test": "jest"
   },
   "private": true,
   "expo": {
     "autolinking": {
       "nativeModulesDir": "./modules"
     }
+  },
+  "jest": {
+    "preset": "jest-expo",
+    "testMatch": [
+      "**/*.test.ts",
+      "**/*.test.tsx"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/android/",
+      "/.test-build/"
+    ],
+    "setupFiles": [
+      "./jest.setup.js"
+    ],
+    "transformIgnorePatterns": [
+      "node_modules/(?!((jest-)?react-native|@react-native(-community)?|@react-native-async-storage|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|react-native-svg))"
+    ]
   }
 }
