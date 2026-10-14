@@ -505,14 +505,14 @@ export default function PlayerScreen() {
                 style={styles.actionItem}
                 onPress={onMorePress}
                 hitSlop={6}
-                accessibilityLabel="Up Next and queue actions">
+                accessibilityLabel="Queue actions">
                 <SymbolView
                   name={{ ios: 'list.bullet', android: 'queue_music', web: 'queue_music' }}
                   tintColor={theme.textSecondary}
                   size={22}
                 />
                 <Text style={styles.actionCaption}>
-                  {queueLength > 0 ? `Up Next ${queueLength}` : 'Up Next'}
+                  {queueLength > 0 ? `Queue ${queueLength}` : 'Queue'}
                 </Text>
               </Pressable>
             </View>

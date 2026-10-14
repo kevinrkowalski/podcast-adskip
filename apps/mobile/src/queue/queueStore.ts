@@ -4,10 +4,12 @@
  */
 import { useSyncExternalStore } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { hydratePlayed, isPlayed, subscribePlayed } from '@/src/played/playedStore';
 import type { Episode } from '@/src/types';
 import {
   addOnPlay,
   addToQueue as addPure,
+  dropPlayed,
   detectNewEpisodes,
   enableAutoQueueState,
   moveInQueue,
@@ -35,7 +37,9 @@ function slim(ep: Episode): Episode {
   return rest;
 }
 
-function setQueue(next: Episode[]) {
+function setQueue(input: Episode[]) {
+  // Played episodes never stay queued (except the one still playing at index 0).
+  const next = dropPlayed(input, isPlayed, currentGuid);
   if (next === queue) return;
   queue = next;
   listeners.forEach((l) => l());
@@ -55,6 +59,13 @@ export function hydrateQueue(): Promise<void> {
         let merged = stored;
         for (const ep of queue) merged = addPure(merged, ep);
         queue = merged;
+        // One-time cleanup: drop episodes already marked played.
+        await hydratePlayed();
+        const cleaned = dropPlayed(queue, isPlayed, currentGuid);
+        if (cleaned !== queue) {
+          queue = cleaned;
+          void AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(queue)).catch(() => {});
+        }
       } catch (e) {
         console.warn('[queue] hydrate failed:', e);
       } finally {
@@ -85,7 +96,15 @@ export function setCurrentQueueGuid(guid: string | null) {
   if (guid === currentGuid) return;
   currentGuid = guid;
   listeners.forEach((l) => l());
+  // The previous episode may have been marked played while it was playing.
+  if (hydrated) setQueue(queue);
 }
+
+// Marking an episode played (auto or manual) removes it from the queue live.
+// Unmarking never re-adds.
+subscribePlayed(() => {
+  if (hydrated) setQueue(queue);
+});
 
 export function getCurrentQueueGuid(): string | null {
   return currentGuid;

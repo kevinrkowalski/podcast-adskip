@@ -333,7 +333,7 @@ function BackgroundRefreshSettings() {
   };
 
   const lastText = last
-    ? `${new Date(last.at).toLocaleString()} (${last.source}) · ${last.shows} show${last.shows === 1 ? '' : 's'}, +${last.added} to Up Next${last.failed ? `, ${last.failed} failed` : ''}`
+    ? `${new Date(last.at).toLocaleString()} (${last.source}) · ${last.shows} show${last.shows === 1 ? '' : 's'}, +${last.added} to the queue${last.failed ? `, ${last.failed} failed` : ''}`
     : 'Never';
 
   return (
@@ -343,7 +343,7 @@ function BackgroundRefreshSettings() {
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={styles.switchLabel}>Background refresh</Text>
           <Text style={styles.hint}>
-            Checks feeds of shows with "Auto-add new episodes" about hourly while the app is closed and adds new releases to Up Next. Android decides the exact timing; it never plays or analyzes anything.
+            Checks feeds of shows with "Auto-add new episodes" about hourly while the app is closed and adds new releases to the queue. Android decides the exact timing; it never plays or analyzes anything.
           </Text>
         </View>
         <Switch

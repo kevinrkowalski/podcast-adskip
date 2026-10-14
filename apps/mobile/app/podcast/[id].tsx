@@ -437,7 +437,7 @@ export default function PodcastDetailScreen() {
                   {item.duration ? ` · ${item.duration}` : ''}
                   {!item.enclosureUrl ? ' · no audio' : ''}
                   {played ? ' · ✓ Played' : ''}
-                  {queuedGuids.has(item.guid) && item.guid !== currentEpisode?.guid ? ' · Up Next' : ''}
+                  {queuedGuids.has(item.guid) && item.guid !== currentEpisode?.guid ? ' · Queued' : ''}
                   {showResume
                     ? ` · Resume ${formatMs(pos.positionMs)}${pct != null ? ` (${pct}%)` : ''}`
                     : ''}

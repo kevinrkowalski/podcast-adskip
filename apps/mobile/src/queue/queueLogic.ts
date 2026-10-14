@@ -93,6 +93,19 @@ export function takeNext(
   return { next, rest: [next, ...rest.filter((_, i) => i !== idx)] };
 }
 
+/**
+ * Drop played episodes. The playing episode (index 0) is kept until playback
+ * moves on, so auto-advance still finds what's next and audio isn't cut.
+ */
+export function dropPlayed(
+  queue: Episode[],
+  isPlayed: (guid: string) => boolean,
+  playingGuid?: string | null,
+): Episode[] {
+  const next = queue.filter((e) => e.guid === playingGuid || !isPlayed(e.guid));
+  return next.length === queue.length ? queue : next;
+}
+
 /** Drop duplicate guids (keeps first) and malformed entries from persisted data. */
 export function normalizeQueue(raw: unknown): Episode[] {
   if (!Array.isArray(raw)) return [];

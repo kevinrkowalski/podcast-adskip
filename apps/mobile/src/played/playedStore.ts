@@ -78,6 +78,11 @@ function subscribe(l: () => void) {
   };
 }
 
+/** Listen for any played-state change (non-React). */
+export function subscribePlayed(l: () => void): () => void {
+  return subscribe(l);
+}
+
 /** Re-renders on any played-state change; use isPlayed(guid) in render. */
 export function usePlayedVersion(): number {
   return useSyncExternalStore(subscribe, () => version, () => version);
