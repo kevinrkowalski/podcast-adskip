@@ -266,8 +266,7 @@ export default function PlayerScreen() {
   const toggleAutoSkip = () => {
     // A disabled podcast cannot be toggled from the player, but turning the
     // global switch back on should be possible even after it cleared detection.
-    if (autoSkip && !adDetectionEnabled) return;
-    if (!autoSkip) {
+    if (!autoSkip || !adDetectionEnabled) {
       // setAutoSkip(true) restores from cache / GET; analyzes only if missing/error.
       void setAutoSkip(true);
       return;
@@ -289,7 +288,7 @@ export default function PlayerScreen() {
   };
 
   const onSheetAutoSkipChange = (enabled: boolean) => {
-    if (enabled === autoSkip) return;
+    if (enabled === !!(autoSkip && adDetectionEnabled)) return;
     // Keep the sheet open while toggling — closing it on turn-off made rapid
     // toggles feel broken, and a load race could wipe segments before reopen.
     if (enabled) {
@@ -624,7 +623,6 @@ export default function PlayerScreen() {
               <Switch
                 value={!!(autoSkip && adDetectionEnabled)}
                 onValueChange={onSheetAutoSkipChange}
-                disabled={autoSkip && !adDetectionEnabled}
                 trackColor={{ false: theme.border, true: theme.accent }}
                 thumbColor={theme.text}
                 ios_backgroundColor={theme.border}
