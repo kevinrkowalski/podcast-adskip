@@ -9,6 +9,7 @@ import React, {
 } from 'react';
 import type { AdSegment, Episode, SkipMap } from '@/src/types';
 import * as player from '@/src/player/trackPlayer';
+import { resolveAdDetectionEnabled } from '../player/autoSkipGate';
 import { syncAndroidAutoCatalog } from '@/src/player/androidAutoCatalog';
 import { getSkipMap, hydrateApiBaseUrl, hydrateAppKey } from '@/src/api/backend';
 import { fetchAndParseRss, parseMoreFromCachedXml } from '@/src/api/rss';
@@ -338,6 +339,13 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const loadSkipMap = useCallback(async (ep: Episode, enabled: boolean): Promise<SkipMap | null> => {
     const gen = skipLoadGen.current;
     const stillCurrent = () => gen === skipLoadGen.current;
+    // Global auto-skip is on (callers check) and this episode has a ready map:
+    // auto-skip it even if the show's auto-detection is off.
+    const enableForPreparedMap = () => {
+      if (!player.getAutoSkip()) return;
+      setAdDetectionEnabledState(true);
+      player.setAdDetectionEnabled(true);
+    };
 
     const restoreExistingMap = async (settings: PodcastSkipSettings): Promise<SkipMap | null> => {
       // The global setting is the API kill-switch; per-show OFF only prevents auto-analysis.
@@ -360,6 +368,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         skipMapRef.current = remote;
         setAnalyzeStatus(remote.status);
         if (remote.status === 'ready') {
+          enableForPreparedMap();
           try {
             await cacheSkipMap(ep.guid, remote, ep.enclosureUrl);
           } catch (cacheErr) {
@@ -404,6 +413,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       if (!stillCurrent()) return null;
       
       if (local?.status === 'ready') {
+        enableForPreparedMap();
         setSkipMap(local);
         skipMapRef.current = local;
         const filtered = applySkipFilter(local.segments, settings);
@@ -439,6 +449,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       if (!stillCurrent()) return null;
       
       if (local?.status === 'ready') {
+        enableForPreparedMap();
         setSkipMap(local);
         skipMapRef.current = local;
         const filtered = applySkipFilter(local.segments, settings);
@@ -477,6 +488,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       }
       // Per-show raced off mid-load: keep any ready local map for the sheet.
       if (local?.status === 'ready') {
+        enableForPreparedMap();
         setSkipMap(local);
         skipMapRef.current = local;
         const filtered = applySkipFilter(local.segments, settings);
@@ -954,12 +966,26 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         feedUrl: current.feedUrl,
       });
       if (gen !== skipLoadGen.current) return;
-      setAdDetectionEnabledState(podcastEnabled);
-      player.setAdDetectionEnabled(podcastEnabled);
-      if (!podcastEnabled) {
-        clearAdDetection();
+      // A manually prepared episode keeps detection on even when the show's
+      // auto-detection is off (was: cleared here, so the switch stuck off).
+      const memReady =
+        skipMapRef.current?.status === 'ready' &&
+        skipMapRef.current?.episode_guid === current.guid;
+      const localReady = memReady ? null : await getMatchingLocalSkipMap(current);
+      if (gen !== skipLoadGen.current) return;
+      const effective = resolveAdDetectionEnabled({
+        globalAutoSkip: true,
+        podcastEnabled,
+        hasReadyMapForEpisode: memReady || localReady?.status === 'ready',
+      });
+      setAdDetectionEnabledState(effective);
+      player.setAdDetectionEnabled(effective);
+      if (!effective) {
+        // No prepared map: try restoring one from the server without analyzing.
+        await loadSkipMap(current, false);
         return;
       }
+      if (!memReady && localReady) skipMapRef.current = localReady;
 
       // Fast path: restore from in-memory ready map (toggle-off must not destroy it).
       // Avoids a network race that used to clearAdDetection() when toggling off mid-load.
@@ -1011,7 +1037,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         }
       }
     }
-  }, [canUseAdDetection, clearAdDetection, loadSkipMap]);
+  }, [canUseAdDetection, clearAdDetection, loadSkipMap, getMatchingLocalSkipMap]);
 
   const setPodcastAdDetection = useCallback(
     async (target: AdDetectionTarget, enabled: boolean) => {
