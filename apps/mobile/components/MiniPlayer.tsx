@@ -1,7 +1,6 @@
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 import { useRootNavigationState, useRouter, useSegments, type Href } from 'expo-router';
-import { openShowForEpisode } from '@/src/navigation/openShow';
 import { usePlayback } from '@/src/store/PlaybackContext';
 import { theme } from '@/constants/Colors';
 
@@ -53,18 +52,8 @@ export function MiniPlayer() {
             <Text style={styles.title} numberOfLines={1}>
               {episode.title}
             </Text>
-            <Text
-              style={styles.show}
-              numberOfLines={1}
-              suppressHighlighting
-              accessibilityRole="link"
-              onPress={() => {
-                if (!navigationReady) return;
-                void openShowForEpisode(router, episode).catch((e) =>
-                  console.warn('[mini-player] open show failed:', e),
-                );
-              }}>
-              {episode.podcastTitle ?? 'Podcast'} ›
+            <Text style={styles.show} numberOfLines={1}>
+              {episode.podcastTitle ?? 'Podcast'}
             </Text>
           </View>
         </Pressable>
