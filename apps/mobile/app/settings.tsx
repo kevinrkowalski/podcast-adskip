@@ -343,7 +343,7 @@ function BackgroundRefreshSettings() {
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={styles.switchLabel}>Background refresh</Text>
           <Text style={styles.hint}>
-            Checks feeds of shows with "Auto-add new episodes" about hourly while the app is closed and adds new releases to the queue. Android decides the exact timing; it never plays or analyzes anything.
+            Checks feeds of shows with "Auto-add new episodes" about every 8 hours while the app is closed (and whenever you open the app) and adds new releases to the queue. Android decides the exact timing; it never plays or analyzes anything.
           </Text>
         </View>
         <Switch
