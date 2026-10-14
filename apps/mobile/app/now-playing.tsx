@@ -366,7 +366,7 @@ export default function PlayerScreen() {
               accessibilityLabel={`Open ${episode.podcastTitle ?? 'show'} episodes`}
               style={({ pressed }) => [styles.showLink, pressed && styles.showLinkPressed]}>
               <Text style={[styles.show, styles.showLinkText]} numberOfLines={1}>
-                {episode.podcastTitle ?? 'Podcast'} ›
+                {episode.podcastTitle ?? 'Podcast'}
               </Text>
             </Pressable>
 
@@ -542,7 +542,7 @@ export default function PlayerScreen() {
               accessibilityRole="link"
               accessibilityLabel={`Open ${episode.podcastTitle ?? 'show'} episodes`}
               style={({ pressed }) => [styles.showLinkLeft, pressed && styles.showLinkPressed]}>
-              <Text style={[styles.detailsShow, styles.showLinkText]}>{episode.podcastTitle ?? 'Podcast'} ›</Text>
+              <Text style={[styles.detailsShow, styles.showLinkText]}>{episode.podcastTitle ?? 'Podcast'}</Text>
             </Pressable>
             <View style={styles.detailsDivider} />
             <Text style={styles.detailsHeading}>Show notes</Text>
