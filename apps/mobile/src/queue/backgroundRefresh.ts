@@ -13,7 +13,9 @@ import { refreshAutoQueueFeeds } from './autoQueueRefresh';
 export const BACKGROUND_REFRESH_TASK = 'podcast-adskip-feed-refresh';
 const ENABLED_KEY = '@podcast-adskip/backgroundRefresh';
 /** WorkManager treats this as a minimum; the OS picks the real time. */
-const MIN_INTERVAL_MINUTES = 60;
+const MIN_INTERVAL_MINUTES = 8 * 60; // every ~8 hours (feeds also refresh on app open)
+/** Interval the job was last registered with, so a changed interval re-registers. */
+const INTERVAL_KEY = '@podcast-adskip/backgroundRefreshInterval';
 
 export async function isBackgroundRefreshEnabled(): Promise<boolean> {
   try {
@@ -45,7 +47,16 @@ if (!TaskManager.isTaskDefined(BACKGROUND_REFRESH_TASK)) {
 export async function syncBackgroundRefreshRegistration(): Promise<void> {
   try {
     const enabled = await isBackgroundRefreshEnabled();
-    const registered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_REFRESH_TASK);
+    let registered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_REFRESH_TASK);
+    if (enabled && registered) {
+      const stored = await AsyncStorage.getItem(INTERVAL_KEY);
+      if (stored !== String(MIN_INTERVAL_MINUTES)) {
+        // Registered by an older build with a different interval: re-register.
+        await BackgroundTask.unregisterTaskAsync(BACKGROUND_REFRESH_TASK);
+        registered = false;
+        logPlaybackEvent(`bg-refresh: interval changed (${stored ?? 'unknown'} -> ${MIN_INTERVAL_MINUTES} min)`);
+      }
+    }
     if (enabled && !registered) {
       const status = await BackgroundTask.getStatusAsync();
       if (status !== BackgroundTask.BackgroundTaskStatus.Available) {
@@ -55,9 +66,11 @@ export async function syncBackgroundRefreshRegistration(): Promise<void> {
       await BackgroundTask.registerTaskAsync(BACKGROUND_REFRESH_TASK, {
         minimumInterval: MIN_INTERVAL_MINUTES,
       });
+      await AsyncStorage.setItem(INTERVAL_KEY, String(MIN_INTERVAL_MINUTES));
       logPlaybackEvent(`bg-refresh: scheduled (min ${MIN_INTERVAL_MINUTES} min)`);
     } else if (!enabled && registered) {
       await BackgroundTask.unregisterTaskAsync(BACKGROUND_REFRESH_TASK);
+      await AsyncStorage.removeItem(INTERVAL_KEY);
       logPlaybackEvent('bg-refresh: unscheduled');
     }
   } catch (e) {
