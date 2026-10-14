@@ -286,16 +286,9 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     lastErrorMessage = null
     handler.removeCallbacks(errorRecovery)
     player?.apply {
-      val queue = guid.takeIf { it.isNotBlank() }?.let(::queueForEpisode)
-      if (queue != null) {
-        val (items, selectedIndex) = queue
-        val playbackItems = items.toMutableList()
-        playbackItems[selectedIndex] = item
-        setMediaItems(playbackItems, selectedIndex, startPosition)
-      } else {
-        setMediaItem(item)
-        seekTo(startPosition)
-      }
+      // Single item only: the JS queue decides what plays next. Loading the whole show
+      // here made ExoPlayer auto-advance to the show's next episode instead of the queue.
+      setMediaItem(item, startPosition)
       prepare()
       play()
     }
@@ -315,16 +308,7 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     val uri = if (audioUrl.startsWith("/") && !audioUrl.startsWith("//")) Uri.fromFile(java.io.File(audioUrl)) else Uri.parse(audioUrl)
     activeEpisodeJson = serialized
     val item = createEpisodeItem(episode, uri)
-    val queue = episode.optString("guid").takeIf { it.isNotBlank() }?.let(::queueForEpisode)
-    if (queue != null) {
-      val (items, selectedIndex) = queue
-      val restoredItems = items.toMutableList()
-      restoredItems[selectedIndex] = item
-      exoPlayer.setMediaItems(restoredItems, selectedIndex, preferences.getLong(KEY_POSITION_MS, 0L).coerceAtLeast(0L))
-    } else {
-      exoPlayer.setMediaItem(item)
-      exoPlayer.seekTo(preferences.getLong(KEY_POSITION_MS, 0L).coerceAtLeast(0L))
-    }
+    exoPlayer.setMediaItem(item, preferences.getLong(KEY_POSITION_MS, 0L).coerceAtLeast(0L))
     exoPlayer.prepare()
   }
 
@@ -552,22 +536,16 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
       startIndex: Int,
       startPositionMs: Long
     ): ListenableFuture<MediaItemsWithStartPosition> {
+      // Android Auto: play just the picked episode (no show playlist, so no native
+      // auto-advance into the show's next episode; the app's queue handles "next").
       val requested = mediaItems.getOrNull(startIndex.takeIf { it >= 0 } ?: 0)
-      val queue = requested?.mediaId?.let(::queueForEpisode)
-      if (queue != null) {
-        val (items, selectedIndex) = queue
-        return Futures.immediateFuture(
-          MediaItemsWithStartPosition(ImmutableList.copyOf(items), selectedIndex, startPositionMs)
-        )
-      }
-
-      val resolvedItems = mediaItems.mapNotNull { requestedItem ->
+      val single = requested?.let { listOf(it) } ?: emptyList()
+      val resolvedItems = single.mapNotNull { requestedItem ->
         if (requestedItem.localConfiguration != null) requestedItem
         else episodeItemsForAllPodcasts().firstOrNull { it.mediaId == requestedItem.mediaId }
       }
       val resolvedStartIndex = when {
         resolvedItems.isEmpty() -> C.INDEX_UNSET
-        startIndex in resolvedItems.indices -> startIndex
         else -> 0
       }
       return Futures.immediateFuture(
@@ -674,22 +652,6 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
       val id = podcasts.optJSONObject(index)?.optLong("collectionId")?.toString() ?: return@flatMap emptyList()
       episodeItems(id)
     }
-  }
-
-  private fun queueForEpisode(guid: String): Pair<List<MediaItem>, Int>? {
-    val podcasts = readPodcasts()
-    for (podcastIndex in 0 until podcasts.length()) {
-      val podcast = podcasts.optJSONObject(podcastIndex) ?: continue
-      val episodes = podcast.optJSONArray("episodes") ?: continue
-      val isInPodcast = (0 until episodes.length()).any { index ->
-        episodes.optJSONObject(index)?.optString("guid") == guid
-      }
-      if (!isInPodcast) continue
-      val items = episodeItems(podcast.optLong("collectionId").toString())
-      val selectedIndex = items.indexOfFirst { it.mediaId == guid }
-      if (selectedIndex >= 0) return items to selectedIndex
-    }
-    return null
   }
 
   private fun findPodcast(collectionId: String): JSONObject? {
