@@ -14,7 +14,7 @@ export type OpmlImportResult = {
   artworkBackfilled: number;
 };
 
-function syntheticCollectionId(feedUrl: string, taken: Set<number>): number {
+export function syntheticCollectionId(feedUrl: string, taken: Set<number>): number {
   let hash = 2166136261;
   for (let i = 0; i < feedUrl.length; i++) {
     hash ^= feedUrl.charCodeAt(i);

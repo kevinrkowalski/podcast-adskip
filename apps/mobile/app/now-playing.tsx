@@ -12,7 +12,8 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useRouter, type Href } from 'expo-router';
+import { useNavigation, useRouter, type Href } from 'expo-router';
+import { openShowForEpisode } from '@/src/navigation/openShow';
 import { SymbolView } from 'expo-symbols';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePlayback } from '@/src/store/PlaybackContext';
@@ -104,6 +105,7 @@ function formatEtaSeconds(sec: number | null | undefined): string | null {
 export default function PlayerScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const navigation = useNavigation();
   const playback = usePlayback();
   const queueLength = useUpNextCount();
   const {
@@ -237,6 +239,13 @@ export default function PlayerScreen() {
     );
   }
 
+  const openShow = () => {
+    void openShowForEpisode(router, episode, {
+      fromPlayer: true,
+      navigation: navigation as never,
+    }).catch((e) => console.warn('[now-playing] open show failed:', e));
+  };
+
   const minimize = () => {
     if (router.canGoBack()) router.back();
     else router.replace('/(tabs)');
@@ -350,9 +359,16 @@ export default function PlayerScreen() {
             <Text style={styles.title} numberOfLines={2}>
               {episode.title}
             </Text>
-            <Text style={styles.show} numberOfLines={1}>
-              {episode.podcastTitle}
-            </Text>
+            <Pressable
+              onPress={openShow}
+              hitSlop={8}
+              accessibilityRole="link"
+              accessibilityLabel={`Open ${episode.podcastTitle ?? 'show'} episodes`}
+              style={({ pressed }) => [styles.showLink, pressed && styles.showLinkPressed]}>
+              <Text style={[styles.show, styles.showLinkText]} numberOfLines={1}>
+                {episode.podcastTitle ?? 'Podcast'} ›
+              </Text>
+            </Pressable>
 
             <View style={styles.scrubBlock}>
               <Scrubber
@@ -521,7 +537,13 @@ export default function PlayerScreen() {
           <View style={styles.detailsContent}>
             <Text style={styles.detailsEyebrow}>EPISODE DETAILS</Text>
             <Text style={styles.detailsTitle}>{episode.title}</Text>
-            <Text style={styles.detailsShow}>{episode.podcastTitle}</Text>
+            <Pressable
+              onPress={openShow}
+              accessibilityRole="link"
+              accessibilityLabel={`Open ${episode.podcastTitle ?? 'show'} episodes`}
+              style={({ pressed }) => [styles.showLinkLeft, pressed && styles.showLinkPressed]}>
+              <Text style={[styles.detailsShow, styles.showLinkText]}>{episode.podcastTitle ?? 'Podcast'} ›</Text>
+            </Pressable>
             <View style={styles.detailsDivider} />
             <Text style={styles.detailsHeading}>Show notes</Text>
             {showNotes ? (
@@ -672,6 +694,10 @@ export default function PlayerScreen() {
 }
 
 const styles = StyleSheet.create({
+  showLink: { alignSelf: 'center', borderRadius: 6, paddingHorizontal: 6 },
+  showLinkLeft: { alignSelf: 'flex-start', borderRadius: 6 },
+  showLinkPressed: { opacity: 0.55 },
+  showLinkText: { textDecorationLine: 'underline' },
   container: {
     flex: 1,
     backgroundColor: theme.background,
