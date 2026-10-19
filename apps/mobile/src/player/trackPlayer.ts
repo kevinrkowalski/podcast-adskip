@@ -12,6 +12,7 @@
 import { Platform } from 'react-native';
 import type { AdSegment, Episode } from '@/src/types';
 import { seekTargetIfInAd } from './skipLogic';
+import { localPathAfterStreamCache, type StreamCacheStatus } from './streamCache';
 import {
   type AndroidAutoStatus,
   configureAndroidAutoSkip,
@@ -146,6 +147,66 @@ let pendingLoadGuid: string | null = null;
  * times only match the analyzed download, so segments are never applied to a stream.
  */
 let loadedLocalFilePath: string | null = null;
+/**
+ * Play-while-downloading target for the loaded episode: the file the native service is
+ * saving the stream to. It becomes `loadedLocalFilePath` (so skips may apply) only once the
+ * service reports it complete and verified.
+ */
+let streamCacheTarget: { guid: string; path: string } | null = null;
+let streamCacheTargetSetAt = 0;
+/**
+ * The service reports the save in every status. If it stops (service restarted and
+ * restored the item as a plain stream), treat the save as lost after this grace period.
+ */
+const STREAM_CACHE_MISSING_GRACE_MS = 5000;
+type StreamCacheListener = (status: StreamCacheStatus) => void;
+const streamCacheListeners = new Set<StreamCacheListener>();
+
+/** Native play-while-downloading reports for the loaded episode (every ~500 ms). */
+export function subscribeStreamCache(listener: StreamCacheListener): () => void {
+  streamCacheListeners.add(listener);
+  return () => {
+    streamCacheListeners.delete(listener);
+  };
+}
+
+function applyStreamCacheStatus(
+  reported: StreamCacheStatus | null | undefined,
+  nativeGuid: string | null | undefined,
+) {
+  let cache = reported;
+  if (
+    !cache &&
+    streamCacheTarget &&
+    nativeGuid === streamCacheTarget.guid &&
+    !loadedLocalFilePath &&
+    Date.now() - streamCacheTargetSetAt > STREAM_CACHE_MISSING_GRACE_MS
+  ) {
+    cache = {
+      state: 'canceled',
+      guid: streamCacheTarget.guid,
+      bytes: 0,
+      total: 0,
+      error: 'the player restarted before the download finished',
+    };
+    streamCacheTarget = null;
+  }
+  if (!cache) return;
+  // Before listeners run, so anything they trigger already sees the local file.
+  loadedLocalFilePath = localPathAfterStreamCache(
+    loadedLocalFilePath,
+    streamCacheTarget,
+    cache,
+    status.episode?.guid,
+  );
+  streamCacheListeners.forEach((listener) => {
+    try {
+      listener(cache);
+    } catch (e) {
+      console.warn('[player] stream cache listener failed:', e);
+    }
+  });
+}
 let pendingLoadAt = 0;
 let audioModeReady = false;
 let player: ExpoAudioPlayer | null = null;
@@ -179,6 +240,7 @@ function applyAndroidAutoStatus(nativeStatus: AndroidAutoStatus, fallbackEpisode
     // Started natively (Android Auto pick, restore): the catalog says whether it's local.
     if (nativeEpisode.guid !== status.episode?.guid) {
       loadedLocalFilePath = localPathFromNativeEpisode(nativeEpisode);
+      if (streamCacheTarget?.guid !== nativeEpisode.guid) streamCacheTarget = null;
     }
     status.episode = mergeEpisodeMetadata(nativeEpisode, status.episode);
   } else if (nativeStatus.episodeJson && fallbackEpisode) {
@@ -201,6 +263,7 @@ function applyAndroidAutoStatus(nativeStatus: AndroidAutoStatus, fallbackEpisode
     playbackRate = nativeStatus.playbackRate;
     status.playbackRate = playbackRate;
   }
+  applyStreamCacheStatus(nativeStatus.streamCache, nativeEpisode?.guid);
   return true;
 }
 
@@ -502,6 +565,11 @@ export function getBackend(): Backend {
   return backend;
 }
 
+/** Android: playback can start while the episode downloads (the service saves the stream). */
+export function supportsPlayWhileDownloading(): boolean {
+  return Platform.OS === 'android' && isAndroidAutoPlaybackAvailable();
+}
+
 /** The loaded episode and the downloaded file it plays from (null when streaming). */
 export function getLoadedSource(): { episodeGuid: string | null; localFilePath: string | null } {
   return { episodeGuid: status.episode?.guid ?? null, localFilePath: loadedLocalFilePath };
@@ -512,6 +580,13 @@ export type LoadPlayOptions = {
   startPositionMs?: number;
   /** Use a local file path instead of streaming from remote URL. */
   localFilePath?: string;
+  /**
+   * Android only, without localFilePath: play the stream right away while the native
+   * service saves exactly those bytes here (the app's download path for the episode).
+   */
+  streamCachePath?: string;
+  /** Stream this URL instead of the enclosure (e.g. resolved past a redirect loop). */
+  streamUrl?: string;
 };
 
 export async function loadAndPlay(
@@ -532,6 +607,7 @@ export async function loadAndPlay(
   status.isPlaying = false;
   segments = [];
   loadedLocalFilePath = opts?.localFilePath || null;
+  streamCacheTarget = null;
   emit();
 
   const url = opts?.localFilePath || episode.enclosureUrl;
@@ -557,7 +633,15 @@ export async function loadAndPlay(
     androidStatusUnsubscribe = subscribeAndroidAutoStatus((nativeStatus) => {
       if (applyAndroidAutoStatus(nativeStatus, episode)) emit();
     });
-    loadAndroidAutoEpisode(episode, opts?.localFilePath, startMs);
+    streamCacheTarget =
+      !opts?.localFilePath && opts?.streamCachePath
+        ? { guid: episode.guid, path: opts.streamCachePath }
+        : null;
+    streamCacheTargetSetAt = Date.now();
+    loadAndroidAutoEpisode(episode, opts?.localFilePath, startMs, {
+      cachePath: streamCacheTarget?.path,
+      url: opts?.streamUrl,
+    });
     // Optimistic until the service's first heartbeat confirms or corrects it.
     lastNativeStatusAt = Date.now();
     status.isPlaying = true;
@@ -787,6 +871,7 @@ export async function teardown(): Promise<void> {
   releasePlayer();
   backend = 'stub';
   loadedLocalFilePath = null;
+  streamCacheTarget = null;
   status = {
     isPlaying: false,
     positionMs: 0,

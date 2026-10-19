@@ -11,7 +11,7 @@ import type { AdSegment, Episode, SkipMap } from '@/src/types';
 import * as player from '@/src/player/trackPlayer';
 import { resolveAdDetectionEnabled } from '../player/autoSkipGate';
 import { syncAndroidAutoCatalog } from '@/src/player/androidAutoCatalog';
-import { getSkipMap, hydrateApiBaseUrl, hydrateAppKey } from '@/src/api/backend';
+import { getSkipMap, hydrateApiBaseUrl, hydrateAppKey, resolveAudioUrl } from '@/src/api/backend';
 import { fetchAndParseRss, parseMoreFromCachedXml } from '@/src/api/rss';
 import {
   cacheSkipMap,
@@ -30,6 +30,13 @@ import {
 } from '@/src/db/storage';
 import { detectAudioMismatch, formatMismatchSummary } from '@/src/player/audioValidation';
 import {
+  abandonStreamCacheDownloads,
+  beginStreamCacheDownload,
+  completeStreamCacheDownload,
+  failStreamCacheDownload,
+  isAudioDownloadInFlight,
+  isRedirectError,
+  prepareStreamCachePath,
   downloadAudioForAnalysis,
   uploadAudioForAnalysis,
   getCachedAudioMd5,
@@ -55,15 +62,27 @@ import {
   serverHasAnalysis,
 } from '@/src/player/playbackSource';
 import { getQueue } from '@/src/queue/queueStore';
+import {
+  shouldPlayWhileDownloading,
+  streamCacheFailureMessage,
+  streamCacheOutcome,
+  streamCacheProgressPct,
+} from '@/src/player/streamCache';
 
 /**
- * Download-before-play state for the current episode. Episodes that use ad skipping
- * play from the downloaded (analyzed) file, never the stream (dynamically inserted ads
- * differ per fetch, so segment times wouldn't line up).
+ * Download state for the current episode when ad skipping applies but it had no
+ * downloaded copy. Skips only ever apply to the exact bytes that were analyzed
+ * (dynamically inserted ads differ per fetch, so a stream's times wouldn't line up).
+ *
+ * - 'caching': playing while the player saves those same bytes (Android); skips turn on
+ *   once the file is complete and its fingerprint has a matching analysis.
+ * - 'cache-error': that save failed; playback continues without skips.
+ * - 'downloading' / 'error': download-first fallback (no native player, or a regular
+ *   download of the episode was already running); nothing plays until it's ready.
  */
 export type PlaybackDownload = {
   guid: string;
-  state: 'downloading' | 'error';
+  state: 'downloading' | 'error' | 'caching' | 'cache-error';
   /** 0-100 while downloading, null when the size is unknown. */
   progressPct: number | null;
   message?: string;
@@ -72,6 +91,10 @@ export type PlaybackDownload = {
 export type PlayEpisodeOptions = {
   /** User chose "Play without ad skipping" after a failed download: stream, no skips. */
   allowStream?: boolean;
+  /** Start here instead of the saved position (e.g. where the native player already is). */
+  resumePositionMs?: number;
+  /** Stream/save this URL instead of the enclosure (resolved past a redirect loop). */
+  streamUrl?: string;
 };
 
 /** Don't hold up streaming an episode with detection off for longer than this. */
@@ -170,9 +193,13 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const isAwaitingDownload = useCallback(
     () =>
       playbackDownloadRef.current != null &&
+      (playbackDownloadRef.current.state === 'downloading' ||
+        playbackDownloadRef.current.state === 'error') &&
       playbackDownloadRef.current.guid === episodeRef.current?.guid,
     [],
   );
+  /** Plays retried with the API-resolved URL after a redirect loop (once per episode). */
+  const resolvedStreamRetryRef = useRef<string | null>(null);
   const [openedEpisode, setOpenedEpisode] = useState<OpenedEpisode | null>(null);
   const openedEpisodeRef = useRef<OpenedEpisode | null>(null);
   const episodeRef = useRef<Episode | null>(null);
@@ -206,7 +233,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const manualReanalysisGuidRef = useRef<string | null>(null);
   const analyzeFingerprintRef = useRef<{ episodeGuid: string; audioMd5: string } | null>(null);
   const requestAnalyzeForEpisodeRef = useRef<((target: Episode) => Promise<void>) | null>(null);
-  const playEpisodeRef = useRef<((target: Episode) => Promise<void>) | null>(null);
+  const playEpisodeRef = useRef<((target: Episode, opts?: PlayEpisodeOptions) => Promise<void>) | null>(null);
   const resolvePlaybackSourceRef = useRef<
     (ep: Episode, autoSkipOn: boolean, detectionEnabled: boolean) => Promise<{
       source: 'local' | 'download' | 'stream';
@@ -703,7 +730,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
             const { source } = await resolvePlaybackSourceRef.current(target, globallyEnabled, enabled);
             if (episodeRef.current?.guid !== target.guid) return;
             if (source === 'download' || source === 'local') {
-              await playEpisodeRef.current?.(target);
+              // Pick up where the native player already is (it started on its own).
+              const here = player.getStatus();
+              await playEpisodeRef.current?.(target, {
+                resumePositionMs: here.episode?.guid === target.guid ? here.positionMs : undefined,
+              });
               return;
             }
           }
@@ -838,6 +869,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       restoreShowNotesRef.current(ep);
       episodeRef.current = ep;
       setPlaybackDownload(null);
+      // The player stops saving any other episode once this one loads.
+      abandonStreamCacheDownloads(ep.guid);
       // Starting an episode puts it at index 0 of Up Next (no-op if already there).
       void markPlaying(ep);
       setSkipMap(null);
@@ -884,7 +917,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       setSkipSettingsState(settings);
 
       const saved = await getPlaybackPosition(ep.guid);
-      let startPositionMs = saved?.positionMs ?? 0;
+      let startPositionMs = opts?.resumePositionMs ?? saved?.positionMs ?? 0;
 
       // Ad segment times belong to the exact file that was analyzed. Play the downloaded
       // copy when there is one; when ad skipping applies and there isn't, download it
@@ -893,7 +926,34 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       const resolved = await resolvePlaybackSource(ep, autoSkipOn && !streamOnly, detectionEnabled);
       let localFilePath = resolved.localFilePath;
       if (!isThisPlay()) return;
-      if (resolved.source === 'download' && ep.enclosureUrl) {
+      // Play right away while the player saves exactly the bytes it plays; skips turn on
+      // once that file is complete and fingerprinted. Download-first is the fallback.
+      let streamCachePath: string | null = null;
+      let streamCacheDone: Promise<string> | null = null;
+      if (
+        ep.enclosureUrl &&
+        shouldPlayWhileDownloading({
+          needsDownload: resolved.source === 'download',
+          hasEnclosureUrl: !!ep.enclosureUrl,
+          nativeAvailable: player.supportsPlayWhileDownloading(),
+          regularDownloadInFlight: isAudioDownloadInFlight(ep.guid, ep.enclosureUrl),
+        })
+      ) {
+        try {
+          streamCachePath = await prepareStreamCachePath(ep.guid, ep.enclosureUrl);
+          streamCacheDone = beginStreamCacheDownload(ep.guid, ep.enclosureUrl);
+        } catch (err) {
+          console.warn('[playback] Could not set up play-while-downloading:', err);
+          streamCachePath = null;
+          streamCacheDone = null;
+        }
+        if (!isThisPlay()) return;
+        if (streamCachePath) {
+          setPlaybackDownload({ guid: ep.guid, state: 'caching', progressPct: 0 });
+          console.log('[playback] Playing while downloading (skips after download):', ep.guid);
+        }
+      }
+      if (resolved.source === 'download' && ep.enclosureUrl && !streamCachePath) {
         // Nothing plays until the download is ready (the previous episode stops now).
         if (player.getStatus().isPlaying) await player.pause('download before play');
         isPlayingRef.current = false;
@@ -940,7 +1000,12 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       }
 
       try {
-        await player.loadAndPlay(ep, { startPositionMs, localFilePath: localFilePath || undefined });
+        await player.loadAndPlay(ep, {
+          startPositionMs,
+          localFilePath: localFilePath || undefined,
+          streamCachePath: streamCachePath ?? undefined,
+          streamUrl: streamCachePath ? opts?.streamUrl : undefined,
+        });
         lastSavedAt.current = Date.now();
         lastSavedPos.current = startPositionMs;
       } catch (err) {
@@ -957,6 +1022,18 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       // This ensures UI navigation happens immediately while analysis proceeds in background.
       void (async () => {
         try {
+          if (streamCacheDone) {
+            // Skip times must match the bytes being played: wait until the player has saved
+            // the whole episode and it's fingerprinted, then look up / make its analysis.
+            try {
+              localFilePath = await streamCacheDone;
+            } catch (err) {
+              console.warn('[playback] Play-while-downloading did not complete:', err);
+              return;
+            }
+            if (!isThisPlay()) return;
+            console.log('[playback] Episode saved while playing; loading its skip map:', ep.guid);
+          }
           const loaded = await loadSkipMap(ep, detectionEnabled);
           // Never re-analyze / clobber when we already have a ready (or in-flight)
           // map from AsyncStorage or the backend — that was wiping segments after
@@ -1034,14 +1111,89 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     [applySkipFilter, canUseAdDetection, loadSkipMap, prefetchNextQueued, resolvePlaybackSource, setPlaybackDownload],
   );
 
-  playEpisodeRef.current = (target) => playEpisode(target);
+  playEpisodeRef.current = (target, opts) => playEpisode(target, opts);
   resolvePlaybackSourceRef.current = resolvePlaybackSource;
 
   const retryPlaybackDownload = useCallback(async () => {
     const current = episodeRef.current;
-    if (!current || playbackDownloadRef.current?.state !== 'error') return;
+    const state = playbackDownloadRef.current?.state;
+    if (!current || (state !== 'error' && state !== 'cache-error')) return;
+    if (state === 'cache-error') {
+      // Still playing without skips: start saving again from where we are.
+      const here = player.getStatus();
+      await playEpisode(current, {
+        resumePositionMs: here.episode?.guid === current.guid ? here.positionMs : undefined,
+      });
+      return;
+    }
     await playEpisode(current);
   }, [playEpisode]);
+
+  // Play-while-downloading progress, completion and failure (native reports ~every 500 ms).
+  useEffect(() => {
+    return player.subscribeStreamCache((cache) => {
+      const current = episodeRef.current;
+      if (!current?.enclosureUrl) return;
+      const audioUrl = current.enclosureUrl;
+      const outcome = streamCacheOutcome(cache, current.guid);
+      if (outcome === 'none') return;
+      const shown = playbackDownloadRef.current;
+      if (outcome === 'progress') {
+        if (shown?.guid !== current.guid || shown.state !== 'caching') return;
+        const pct = streamCacheProgressPct(cache);
+        if (pct !== shown.progressPct) {
+          setPlaybackDownload({ guid: current.guid, state: 'caching', progressPct: pct });
+        }
+        return;
+      }
+      if (outcome === 'ready') {
+        void completeStreamCacheDownload(current.guid, audioUrl, cache.md5!).then((handled) => {
+          if (!handled) return;
+          if (playbackDownloadRef.current?.guid === current.guid) setPlaybackDownload(null);
+          void syncAndroidAutoCatalog();
+        });
+        return;
+      }
+      // Failed: playback keeps going straight from the network, without skips.
+      if (!failStreamCacheDownload(current.guid, audioUrl, cache.error ?? 'Download failed')) return;
+      console.warn('[playback] Play-while-downloading failed:', cache.error);
+      if (
+        isRedirectError(cache.error ?? '') &&
+        cache.bytes === 0 &&
+        resolvedStreamRetryRef.current !== current.guid
+      ) {
+        // Tracking-redirect loop on this network: let the server follow the chain, then
+        // play/save the final URL (same fallback as regular downloads).
+        resolvedStreamRetryRef.current = current.guid;
+        void (async () => {
+          try {
+            const finalUrl = await resolveAudioUrl(audioUrl);
+            if (episodeRef.current?.guid !== current.guid) return;
+            const here = player.getStatus();
+            await playEpisodeRef.current?.(current, {
+              streamUrl: finalUrl,
+              resumePositionMs: here.episode?.guid === current.guid ? here.positionMs : undefined,
+            });
+          } catch (err) {
+            if (episodeRef.current?.guid !== current.guid) return;
+            setPlaybackDownload({
+              guid: current.guid,
+              state: 'cache-error',
+              progressPct: null,
+              message: streamCacheFailureMessage(err instanceof Error ? err.message : String(err)),
+            });
+          }
+        })();
+        return;
+      }
+      setPlaybackDownload({
+        guid: current.guid,
+        state: 'cache-error',
+        progressPct: null,
+        message: streamCacheFailureMessage(cache.error),
+      });
+    });
+  }, [setPlaybackDownload]);
 
   const streamWithoutSkipping = useCallback(async () => {
     const current = episodeRef.current;

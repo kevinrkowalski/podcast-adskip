@@ -15,6 +15,7 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.core.content.ContextCompat
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -56,6 +57,13 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
   private var internalSeekInProgress = false
   /** Segment (start to end) the user seeked into; not auto-skipped until playback leaves it. */
   private var suppressedSegment: Pair<Long, Long>? = null
+  /**
+   * Play-while-downloading session for the current item (see StreamCache.kt): the player
+   * reads the file this session is saving, so skips can apply once it's complete and
+   * fingerprinted. Null when the item plays a local file or a plain stream.
+   */
+  @Volatile private var streamSession: StreamCacheSession? = null
+  private lateinit var httpFactory: DefaultHttpDataSource.Factory
 
   private val catalogUpdateReceiver = object : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -88,13 +96,18 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
   override fun onCreate() {
     super.onCreate()
     log("service created")
-    val httpFactory = DefaultHttpDataSource.Factory()
+    httpFactory = DefaultHttpDataSource.Factory()
       .setUserAgent("PodcastAdSkip/1.0 (Linux; Android) Media3")
       // Podcast CDNs/trackers often redirect between http and https.
       .setAllowCrossProtocolRedirects(true)
       .setConnectTimeoutMs(20_000)
       .setReadTimeoutMs(30_000)
-    val dataSourceFactory = DefaultDataSource.Factory(this, httpFactory)
+    val upstreamFactory = DefaultDataSource.Factory(this, httpFactory)
+    // Items tagged with the stream-cache key read from the file being downloaded; all
+    // others (local files, plain streams) read as before.
+    val dataSourceFactory = DataSource.Factory {
+      StreamCacheRoutingDataSource(upstreamFactory.createDataSource(), httpFactory, ::sessionForCacheKey)
+    }
     val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
       // Retry individual chunk loads many times before surfacing a fatal error.
       .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(LOAD_RETRY_COUNT))
@@ -136,6 +149,10 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
 
       override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
         suppressedSegment = null
+        // Another episode took over (e.g. an Android Auto pick): stop saving the old one.
+        streamSession?.let { session ->
+          if (session.guid != mediaItem?.mediaId) dropStreamSession()
+        }
         val transitionedGuid = mediaItem?.mediaId
         val activeGuid = try {
           activeEpisodeJson?.let { JSONObject(it).optString("guid") }
@@ -260,6 +277,7 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
       // The service can be destroyed before a receiver is registered.
     }
     handler.removeCallbacksAndMessages(null)
+    dropStreamSession()
     player?.let(::persistPlaybackState)
     // The service is going away; make sure the UI does not keep showing "playing".
     preferences.edit().putBoolean(KEY_IS_PLAYING, false).apply()
@@ -283,13 +301,49 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     }
     val guid = episode.optString("guid")
     log("load ${episode.optString("title").take(60)} local=${episode.optString("localFilePath").let { it.isNotBlank() && it != "null" }}")
-    val playableUri = playableUri(episode)
+    val streamUrl = intent.getStringExtra(EXTRA_STREAM_URL)?.takeIf { it.isNotBlank() }
+    var playableUri = playableUri(episode, streamUrl)
     if (playableUri == null) {
       preferences.edit().putBoolean(KEY_IS_PLAYING, false).apply()
       publishStatus("Episode has no playable audio URL")
       return
     }
-    val item = createEpisodeItem(episode, playableUri)
+    var cacheKey: String? = null
+    val cachePath = intent.getStringExtra(EXTRA_STREAM_CACHE_PATH)?.let(::plainPath)
+    val isStream = playableUri.scheme == "http" || playableUri.scheme == "https"
+    if (cachePath != null && isStream) {
+      val existing = streamSession
+      when {
+        existing != null && existing.guid == guid && existing.targetPath == cachePath &&
+          existing.state == StreamCacheSession.State.DOWNLOADING -> {
+          // Same episode reloaded (retry, Android Auto pick handed over): keep its download.
+          cacheKey = StreamCacheRoutingDataSource.KEY_PREFIX + guid
+        }
+        existing != null && existing.guid == guid && existing.isVerified && existing.finalFile.isFile -> {
+          playableUri = Uri.fromFile(existing.finalFile)
+          episode.put("localFilePath", existing.finalFile.path)
+          dropStreamSession()
+        }
+        else -> {
+          dropStreamSession()
+          val session = StreamCacheSession(
+            guid = guid,
+            sourceUrl = playableUri.toString(),
+            targetPath = cachePath,
+            httpFactory = httpFactory,
+            onChange = { changed -> handler.post { onStreamSessionChanged(changed) } },
+            log = ::log
+          )
+          streamSession = session
+          session.start()
+          cacheKey = StreamCacheRoutingDataSource.KEY_PREFIX + guid
+          log("play while downloading -> ${File(cachePath).name}")
+        }
+      }
+    } else {
+      dropStreamSession()
+    }
+    val item = createEpisodeItem(episode, playableUri, cacheKey)
     activeEpisodeJson = episode.toString()
     val startPosition = intent.getLongExtra(EXTRA_POSITION_MS, 0L).coerceAtLeast(0L)
     preferences.edit()
@@ -329,7 +383,52 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
    * The downloaded (analyzed) file when it still exists, else the enclosure URL. Skip maps
    * are computed from the downloaded bytes, so it must win whenever it's available.
    */
-  private fun playableUri(episode: JSONObject): Uri? {
+  private fun plainPath(path: String): String? {
+    val trimmed = path.trim()
+    if (trimmed.isEmpty() || trimmed == "null") return null
+    return if (trimmed.startsWith("file://")) Uri.parse(trimmed).path else trimmed.takeIf { it.startsWith("/") }
+  }
+
+  /** Session whose file backs playback for this cache key (called on loader threads). */
+  private fun sessionForCacheKey(key: String?): StreamCacheSession? {
+    if (key == null || !key.startsWith(StreamCacheRoutingDataSource.KEY_PREFIX)) return null
+    return streamSession?.takeIf { StreamCacheRoutingDataSource.KEY_PREFIX + it.guid == key }
+  }
+
+  /** Stop (and discard the partial file of) the current play-while-downloading session. */
+  private fun dropStreamSession() {
+    val session = streamSession ?: return
+    streamSession = null
+    session.cancel()
+  }
+
+  private fun onStreamSessionChanged(session: StreamCacheSession) {
+    if (session !== streamSession) return
+    if (session.state == StreamCacheSession.State.COMPLETE) {
+      // From now on the episode has a downloaded copy: a restore/resume plays the file.
+      try {
+        val json = activeEpisodeJson?.let { JSONObject(it) }
+        if (json != null && json.optString("guid") == session.guid) {
+          json.put("localFilePath", session.finalFile.path)
+          activeEpisodeJson = json.toString()
+          preferences.edit().putString(KEY_CURRENT_EPISODE, activeEpisodeJson).apply()
+        }
+      } catch (_: Exception) {
+      }
+    }
+    publishStatus()
+  }
+
+  /** Playing through a complete, verified stream-cache session (same bytes as the file). */
+  private fun isPlayingVerifiedStreamCache(exoPlayer: ExoPlayer): Boolean {
+    val item = exoPlayer.currentMediaItem ?: return false
+    val session = streamSession ?: return false
+    return session.guid == item.mediaId &&
+      item.localConfiguration?.customCacheKey == StreamCacheRoutingDataSource.KEY_PREFIX + session.guid &&
+      session.isVerified
+  }
+
+  private fun playableUri(episode: JSONObject, streamUrl: String? = null): Uri? {
     val localPath = episode.optString("localFilePath").takeIf { it.isNotBlank() && it != "null" }
     if (localPath != null) {
       val file = if (localPath.startsWith("file://")) {
@@ -342,6 +441,7 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
       if (file != null && file.isFile) return Uri.fromFile(file)
       if (file == null) return Uri.parse(localPath)
     }
+    if (streamUrl != null) return Uri.parse(streamUrl)
     val url = episode.optString("enclosureUrl")
     return if (url.isBlank() || url == "null") null else Uri.parse(url)
   }
@@ -375,7 +475,7 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     }
   }
 
-  private fun createEpisodeItem(episode: JSONObject, uri: Uri): MediaItem {
+  private fun createEpisodeItem(episode: JSONObject, uri: Uri, cacheKey: String? = null): MediaItem {
     val title = episode.optString("title", "Podcast episode")
     val podcastTitle = episode.optString("podcastTitle", "Podcast")
     val artwork = episode.optString("artworkUrl")
@@ -392,6 +492,7 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     return MediaItem.Builder()
       .setMediaId(episode.optString("guid", uri.toString()))
       .setUri(uri)
+      .setCustomCacheKey(cacheKey)
       .setMediaMetadata(metadata)
       .build()
   }
@@ -407,10 +508,10 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     if (!preferences.getBoolean(KEY_AUTO_SKIP, true) ||
       !preferences.getBoolean(KEY_AD_DETECTION_ENABLED, true)) return
     // Segment times belong to the downloaded (analyzed) file. A stream can carry different
-    // dynamically inserted ads, so never skip on one. The app downloads episodes that use
-    // ad skipping before playing them; this only matters if a pruned/missing download made
-    // playableUri() fall back to the stream (e.g. restore or an Android Auto pick).
-    if (!isPlayingLocalFile(exoPlayer)) return
+    // dynamically inserted ads, so never skip on one. Play-while-downloading counts once
+    // its file is complete and every byte played came from it (the app then loads the map
+    // for that file's fingerprint).
+    if (!isPlayingLocalFile(exoPlayer) && !isPlayingVerifiedStreamCache(exoPlayer)) return
     val segments = currentSegments(exoPlayer) ?: return
     for (index in 0 until segments.length()) {
       val segment = segments.optJSONObject(index) ?: continue
@@ -472,6 +573,18 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
       )
       .putExtra(EXTRA_PLAYBACK_RATE, exoPlayer.playbackParameters.speed)
       .putExtra(EXTRA_ENDED, exoPlayer.playbackState == Player.STATE_ENDED)
+    streamSession?.takeIf { it.guid == item?.mediaId }?.let { session ->
+      intent.putExtra(EXTRA_STREAM_CACHE_STATE, session.state.name.lowercase())
+        .putExtra(EXTRA_STREAM_CACHE_BYTES, session.bytesWritten)
+        .putExtra(EXTRA_STREAM_CACHE_TOTAL, session.totalLength.coerceAtLeast(0L))
+        .putExtra(EXTRA_STREAM_CACHE_GUID, session.guid)
+        .putExtra(EXTRA_STREAM_CACHE_VERIFIED, session.isVerified)
+      session.md5?.let { intent.putExtra(EXTRA_STREAM_CACHE_MD5, it) }
+      session.error?.let { intent.putExtra(EXTRA_STREAM_CACHE_ERROR, it) }
+      if (session.playedUnverifiedBytes && session.error == null) {
+        intent.putExtra(EXTRA_STREAM_CACHE_ERROR, "Part of this play didn't come from the saved copy")
+      }
+    }
     val reportedError = error ?: lastErrorMessage?.takeIf { exoPlayer.playerError != null }
     if (reportedError != null) intent.putExtra(EXTRA_ERROR, reportedError)
     sendBroadcast(intent)
@@ -766,6 +879,17 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     const val EXTRA_IS_BUFFERING = "isBuffering"
     /** True once ExoPlayer reached the end of the current item (drives Up Next auto-advance). */
     const val EXTRA_ENDED = "ended"
+    /** Play-while-downloading: where to save the stream (the app's download path). */
+    const val EXTRA_STREAM_CACHE_PATH = "streamCachePath"
+    /** Optional URL to stream/download instead of the enclosure (redirect-loop fallback). */
+    const val EXTRA_STREAM_URL = "streamUrl"
+    const val EXTRA_STREAM_CACHE_STATE = "streamCacheState"
+    const val EXTRA_STREAM_CACHE_BYTES = "streamCacheBytes"
+    const val EXTRA_STREAM_CACHE_TOTAL = "streamCacheTotal"
+    const val EXTRA_STREAM_CACHE_GUID = "streamCacheGuid"
+    const val EXTRA_STREAM_CACHE_MD5 = "streamCacheMd5"
+    const val EXTRA_STREAM_CACHE_ERROR = "streamCacheError"
+    const val EXTRA_STREAM_CACHE_VERIFIED = "streamCacheVerified"
 
     const val KEY_CATALOG = "catalog"
     const val KEY_CURRENT_EPISODE = "currentEpisode"

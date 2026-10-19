@@ -133,7 +133,14 @@ test('native service auto-skips only the downloaded file', () => {
   const start = src.indexOf('private fun applyNativeAdSkip');
   expect(start).toBeGreaterThan(-1);
   const body = src.slice(start, src.indexOf('\n  private fun ', start + 10));
-  expect(body).toMatch(/if \(!isPlayingLocalFile\(exoPlayer\)\) return/);
+  // Local file, or a play-while-downloading save that is complete and verified (every byte
+  // played came from the saved file). Never a plain stream.
+  expect(body).toMatch(
+    /if \(!isPlayingLocalFile\(exoPlayer\) && !isPlayingVerifiedStreamCache\(exoPlayer\)\) return/,
+  );
   expect(body).toMatch(/currentSegments\(exoPlayer\)/);
   expect(src).toMatch(/isPlayingLocalFile\(exoPlayer: ExoPlayer\): Boolean =\s*\n\s*exoPlayer\.currentMediaItem\?\.localConfiguration\?\.uri\?\.scheme == "file"/);
+  const verified = src.slice(src.indexOf('private fun isPlayingVerifiedStreamCache'));
+  expect(verified).toMatch(/session\.isVerified/);
+  expect(verified).toMatch(/customCacheKey == StreamCacheRoutingDataSource\.KEY_PREFIX \+ session\.guid/);
 });

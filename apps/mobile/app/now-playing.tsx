@@ -21,6 +21,7 @@ import { showQueueActions } from '@/src/queue/queueActions';
 import { ReportSkipSheet } from '@/components/ReportSkipSheet';
 import { useUpNextCount } from '@/src/queue/queueStore';
 import { formatMs, segmentTypeLabel } from '@/src/player/skipLogic';
+import { streamCacheNotice } from '@/src/player/streamCache';
 import { Scrubber } from '@/components/Scrubber';
 import { theme } from '@/constants/Colors';
 import { displayFontFamily, monoFontFamily } from '@/constants/Typography';
@@ -500,6 +501,33 @@ export default function PlayerScreen() {
                     <View style={[styles.analyzeBarFill, styles.analyzeBarIndeterminate]} />
                   )}
                 </View>
+              </View>
+            ) : null}
+
+            {playbackDownload?.state === 'caching' ? (
+              // Playing while it downloads: skips turn on once the saved copy is complete.
+              <Text
+                style={styles.streamCacheNote}
+                numberOfLines={1}
+                accessibilityLabel={`Ad skip ready after download${
+                  playbackDownload.progressPct != null ? `, ${playbackDownload.progressPct} percent` : ''
+                }`}>
+                {streamCacheNotice(playbackDownload.progressPct)}
+              </Text>
+            ) : null}
+
+            {playbackDownload?.state === 'cache-error' ? (
+              <View style={styles.streamCacheErrorRow} accessibilityRole="alert">
+                <Text style={styles.streamCacheNote} numberOfLines={2}>
+                  {playbackDownload.message ?? 'Ad skipping is off for this play.'}
+                </Text>
+                <Pressable
+                  onPress={() => void playback.retryPlaybackDownload()}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry download for ad skipping">
+                  <Text style={styles.downloadErrorAction}>Retry</Text>
+                </Pressable>
               </View>
             ) : null}
 
@@ -1078,6 +1106,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 8,
+  },
+  streamCacheNote: {
+    flexShrink: 1,
+    color: theme.textSecondary,
+    fontSize: 12,
+    fontWeight: '500',
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  streamCacheErrorRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'center',
+    gap: 12,
+    paddingHorizontal: 8,
   },
   downloadErrorActions: {
     flexDirection: 'row',

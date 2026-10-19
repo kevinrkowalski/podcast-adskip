@@ -5,11 +5,13 @@ import type { SkipMap } from '@/src/types';
  *
  * Ad segment times only line up with the exact bytes that were analyzed. Podcast CDNs
  * insert ads dynamically, so a fresh stream can carry different ads at different times
- * than the downloaded copy. Whenever ad skipping can apply to an episode, it therefore
- * plays from the downloaded file (downloading it first if needed), never the stream.
+ * than the downloaded copy. Whenever ad skipping can apply to an episode, skips therefore
+ * only ever use the downloaded file's times, never a separately fetched stream.
  *
  * - 'local': a downloaded copy exists; play it.
- * - 'download': ad skipping applies but there's no copy yet; download, then play it.
+ * - 'download': ad skipping applies but there's no copy yet. On Android it plays right
+ *   away while the player saves exactly the bytes it plays (streamCache.ts); skips start
+ *   once that copy is complete and fingerprinted. Elsewhere: download, then play it.
  * - 'stream': ad skipping can't apply (Ad-skip off, or detection off for the show and
  *   nothing prepared); streaming is fine because nothing will be skipped.
  */
