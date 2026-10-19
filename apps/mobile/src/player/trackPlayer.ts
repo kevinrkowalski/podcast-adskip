@@ -139,8 +139,6 @@ let pendingSeekAt = 0;
  * it, so rewinding into an ad lets you hear it.
  */
 let suppressedSegment: AdSegment | null = null;
-/** True when the loaded item plays from the local (analyzed) file. */
-let sourceIsLocal = false;
 /** Guid being loaded; native status for other episodes is ignored until it's confirmed. */
 let pendingLoadGuid: string | null = null;
 let pendingLoadAt = 0;
@@ -419,10 +417,11 @@ function startTick() {
     ) {
       suppressedSegment = null;
     }
-    // Skip maps are computed from the downloaded file; never apply them to a stream.
-    // (The stub clock has no real audio, so it still exercises skip logic in dev.)
+    // Skip whether the episode plays from the downloaded file or streams. Requiring the
+    // local file silently disabled skipping for every streamed episode with a ready map
+    // (server map restored, cached download pruned or not yet made). Playing the
+    // downloaded copy when it exists is handled by the caller (localFilePath).
     if (
-      (sourceIsLocal || backend === 'stub') &&
       autoSkip &&
       adDetectionEnabled &&
       segments.length &&
@@ -502,7 +501,6 @@ export async function loadAndPlay(
   clearPendingSeek();
   endedReportedFor = null;
   suppressedSegment = null;
-  sourceIsLocal = opts?.localFilePath != null;
   pendingLoadGuid = null;
   const startMs =
     opts?.startPositionMs != null && opts.startPositionMs > 0
