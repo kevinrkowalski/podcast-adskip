@@ -143,6 +143,11 @@ export default function PlayerScreen() {
   const analyzeError = opened ? null : playback.analyzeError;
   const audioMismatchWarning = opened ? null : playback.audioMismatchWarning;
   const uploadProgress = opened ? null : playback.uploadProgress;
+  // Download-before-play (episodes that use ad skipping never stream).
+  const playbackDownload =
+    !opened && playback.playbackDownload?.guid === playback.episode?.guid
+      ? playback.playbackDownload
+      : null;
   // Guards Play / Prepare on an unstarted episode against double taps.
   const startingOpenedRef = useRef(false);
   const runOpenedStart = async (fn: () => Promise<void>) => {
@@ -431,16 +436,26 @@ export default function PlayerScreen() {
               <Pressable
                 onPress={togglePlay}
                 style={styles.playBtn}
-                accessibilityLabel={isPlaying ? 'Pause' : 'Play'}>
-                <SymbolView
-                  name={
-                    isPlaying
-                      ? { ios: 'pause.fill', android: 'pause', web: 'pause' }
-                      : { ios: 'play.fill', android: 'play_arrow', web: 'play_arrow' }
-                  }
-                  tintColor={theme.text}
-                  size={32}
-                />
+                accessibilityLabel={
+                  playbackDownload?.state === 'downloading'
+                    ? 'Downloading, plays when ready'
+                    : isPlaying
+                      ? 'Pause'
+                      : 'Play'
+                }>
+                {playbackDownload?.state === 'downloading' ? (
+                  <ActivityIndicator size="large" color={theme.text} />
+                ) : (
+                  <SymbolView
+                    name={
+                      isPlaying
+                        ? { ios: 'pause.fill', android: 'pause', web: 'pause' }
+                        : { ios: 'play.fill', android: 'play_arrow', web: 'play_arrow' }
+                    }
+                    tintColor={theme.text}
+                    size={32}
+                  />
+                )}
               </Pressable>
 
               <Pressable
@@ -458,7 +473,68 @@ export default function PlayerScreen() {
 
             <View style={styles.flexSpacer} />
 
-            {isAnalyzing ? (
+            {playbackDownload?.state === 'downloading' ? (
+              <View
+                style={styles.analyzeProgress}
+                accessibilityRole="progressbar"
+                accessibilityLabel={`Downloading episode${
+                  playbackDownload.progressPct != null ? `, ${playbackDownload.progressPct} percent` : ''
+                }`}>
+                <View style={styles.analyzeProgressRow}>
+                  <ActivityIndicator size="small" color={theme.accentSoft} />
+                  <Text style={styles.analyzeProgressText} numberOfLines={2}>
+                    Downloading…
+                    {playbackDownload.progressPct != null ? ` ${playbackDownload.progressPct}%` : ''}
+                    {' · plays when ready, so ad skips match this copy'}
+                  </Text>
+                </View>
+                <View style={styles.analyzeBarTrack}>
+                  {playbackDownload.progressPct != null ? (
+                    <View
+                      style={[
+                        styles.analyzeBarFill,
+                        { width: `${playbackDownload.progressPct}%` as unknown as number },
+                      ]}
+                    />
+                  ) : (
+                    <View style={[styles.analyzeBarFill, styles.analyzeBarIndeterminate]} />
+                  )}
+                </View>
+              </View>
+            ) : null}
+
+            {playbackDownload?.state === 'error' ? (
+              <View style={styles.mismatchWarning} accessibilityRole="alert">
+                <View style={styles.mismatchWarningRow}>
+                  <SymbolView
+                    name={{ ios: 'exclamationmark.triangle', android: 'warning', web: 'warning' }}
+                    tintColor={theme.accentWarn}
+                    size={16}
+                  />
+                  <Text style={styles.mismatchWarningText} numberOfLines={3}>
+                    {playbackDownload.message ?? "Couldn't download this episode for ad skipping."}
+                  </Text>
+                </View>
+                <View style={styles.downloadErrorActions}>
+                  <Pressable
+                    onPress={() => void playback.retryPlaybackDownload()}
+                    hitSlop={6}
+                    accessibilityRole="button"
+                    accessibilityLabel="Retry download">
+                    <Text style={styles.downloadErrorAction}>Retry</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => void playback.streamWithoutSkipping()}
+                    hitSlop={6}
+                    accessibilityRole="button"
+                    accessibilityLabel="Stream without ad skipping">
+                    <Text style={styles.downloadErrorAction}>Stream without ad skipping</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ) : null}
+
+            {isAnalyzing && !playbackDownload ? (
               <View
                 style={styles.analyzeProgress}
                 accessibilityRole="progressbar"
@@ -1002,6 +1078,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 8,
+  },
+  downloadErrorActions: {
+    flexDirection: 'row',
+    gap: 20,
+    marginTop: 8,
+    paddingLeft: 24,
+  },
+  downloadErrorAction: {
+    color: theme.accentWarn,
+    fontSize: 13,
+    fontWeight: '700',
   },
   mismatchWarningText: {
     flex: 1,

@@ -141,6 +141,11 @@ let pendingSeekAt = 0;
 let suppressedSegment: AdSegment | null = null;
 /** Guid being loaded; native status for other episodes is ignored until it's confirmed. */
 let pendingLoadGuid: string | null = null;
+/**
+ * Downloaded file the loaded episode plays from, or null when it streams. Ad segment
+ * times only match the analyzed download, so segments are never applied to a stream.
+ */
+let loadedLocalFilePath: string | null = null;
 let pendingLoadAt = 0;
 let audioModeReady = false;
 let player: ExpoAudioPlayer | null = null;
@@ -171,6 +176,10 @@ function applyAndroidAutoStatus(nativeStatus: AndroidAutoStatus, fallbackEpisode
   }
   lastNativeStatusAt = Date.now();
   if (nativeEpisode) {
+    // Started natively (Android Auto pick, restore): the catalog says whether it's local.
+    if (nativeEpisode.guid !== status.episode?.guid) {
+      loadedLocalFilePath = localPathFromNativeEpisode(nativeEpisode);
+    }
     status.episode = mergeEpisodeMetadata(nativeEpisode, status.episode);
   } else if (nativeStatus.episodeJson && fallbackEpisode) {
     status.episode = fallbackEpisode;
@@ -237,6 +246,11 @@ function reportEnded() {
 
 function emit() {
   listeners.forEach((l) => l({ ...status }));
+}
+
+function localPathFromNativeEpisode(episode: Episode): string | null {
+  const path = (episode as Episode & { localFilePath?: unknown }).localFilePath;
+  return typeof path === 'string' && path && path !== 'null' ? path : null;
 }
 
 function mergeEpisodeMetadata(incoming: Episode, previous: Episode | null): Episode {
@@ -417,11 +431,12 @@ function startTick() {
     ) {
       suppressedSegment = null;
     }
-    // Skip whether the episode plays from the downloaded file or streams. Requiring the
-    // local file silently disabled skipping for every streamed episode with a ready map
-    // (server map restored, cached download pruned or not yet made). Playing the
-    // downloaded copy when it exists is handled by the caller (localFilePath).
+    // Skip only while playing the downloaded file the segments were computed from. A
+    // stream can carry different dynamically inserted ads at different times. Episodes
+    // that use ad skipping are downloaded before playing (PlaybackContext), so this
+    // only blocks skips in the case where they'd be wrong. Stub has no audio at all.
     if (
+      (loadedLocalFilePath != null || backend === 'stub') &&
       autoSkip &&
       adDetectionEnabled &&
       segments.length &&
@@ -487,6 +502,11 @@ export function getBackend(): Backend {
   return backend;
 }
 
+/** The loaded episode and the downloaded file it plays from (null when streaming). */
+export function getLoadedSource(): { episodeGuid: string | null; localFilePath: string | null } {
+  return { episodeGuid: status.episode?.guid ?? null, localFilePath: loadedLocalFilePath };
+}
+
 export type LoadPlayOptions = {
   /** Resume from a previously persisted position (ms). */
   startPositionMs?: number;
@@ -511,6 +531,7 @@ export async function loadAndPlay(
   status.durationMs = episode.durationMs ?? 0;
   status.isPlaying = false;
   segments = [];
+  loadedLocalFilePath = opts?.localFilePath || null;
   emit();
 
   const url = opts?.localFilePath || episode.enclosureUrl;
@@ -736,10 +757,9 @@ export function initializePlayerBackend(): void {
   if (!nativeStatus) return;
   if (nativeStatus.episodeJson) {
     try {
-      status.episode = mergeEpisodeMetadata(
-        JSON.parse(nativeStatus.episodeJson) as Episode,
-        status.episode,
-      );
+      const restored = JSON.parse(nativeStatus.episodeJson) as Episode;
+      loadedLocalFilePath = localPathFromNativeEpisode(restored);
+      status.episode = mergeEpisodeMetadata(restored, status.episode);
     } catch {
       // Ignore stale/corrupt native metadata; the player can still be controlled.
     }
@@ -766,6 +786,7 @@ export async function teardown(): Promise<void> {
   stopTick();
   releasePlayer();
   backend = 'stub';
+  loadedLocalFilePath = null;
   status = {
     isPlaying: false,
     positionMs: 0,

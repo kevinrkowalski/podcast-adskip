@@ -106,6 +106,14 @@ def test_analyze_uploaded_audio_sync_and_skip_map_metadata():
             f"/v1/skip-map/uploaded-guid?audio_md5={hashlib.md5(b'other audio', usedforsecurity=False).hexdigest()}"
         )
         assert mismatch.json()["status"] == "missing"
+        assert mismatch.json()["analysis_for_other_audio"] is True
+        assert mismatch.json()["segments"] == []
+        # No fingerprint (e.g. app is streaming): never hand out segment times.
+        unidentified = client.get("/v1/skip-map/uploaded-guid").json()
+        assert unidentified["status"] == "missing"
+        assert unidentified["segments"] == []
+        assert unidentified["analysis_for_other_audio"] is True
+        assert client.get("/v1/skip-map/never-analyzed-guid").json()["analysis_for_other_audio"] is False
 
         stored = asyncio.run(get_skip_map("uploaded-guid"))
         assert stored is not None

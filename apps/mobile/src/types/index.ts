@@ -60,6 +60,11 @@ export interface SkipMap {
   analyzed_audio_duration_ms?: number | null;
   /** MD5 content fingerprint used to validate a skip map against cached audio. */
   audio_md5?: string | null;
+  /**
+   * Server: status is "missing" for the fingerprint we sent (or we sent none), but a
+   * ready map exists for different audio bytes (another download of this episode).
+   */
+  analysis_for_other_audio?: boolean;
 }
 
 export interface PodcastSearchResult {

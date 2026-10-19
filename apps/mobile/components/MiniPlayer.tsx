@@ -1,4 +1,4 @@
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SymbolView } from 'expo-symbols';
 import { useRootNavigationState, useRouter, useSegments, type Href } from 'expo-router';
 import { usePlayback } from '@/src/store/PlaybackContext';
@@ -17,6 +17,7 @@ export function MiniPlayer() {
     togglePlay,
     seek,
     restoreCurrentSkipMap,
+    playbackDownload,
   } = usePlayback();
   const router = useRouter();
   const rootNavigationState = useRootNavigationState();
@@ -28,6 +29,7 @@ export function MiniPlayer() {
   const onFullPlayer = segments.some((s) => s === 'now-playing');
   if (onFullPlayer) return null;
 
+  const download = playbackDownload?.guid === episode.guid ? playbackDownload : null;
   const progress = durationMs > 0 ? Math.min(1, positionMs / durationMs) : 0;
 
   return (
@@ -53,7 +55,11 @@ export function MiniPlayer() {
               {episode.title}
             </Text>
             <Text style={styles.show} numberOfLines={1}>
-              {episode.podcastTitle ?? 'Podcast'}
+              {download?.state === 'downloading'
+                ? `Downloading…${download.progressPct != null ? ` ${download.progressPct}%` : ''}`
+                : download?.state === 'error'
+                  ? 'Download failed · tap to see options'
+                  : (episode.podcastTitle ?? 'Podcast')}
             </Text>
           </View>
         </Pressable>
@@ -73,14 +79,20 @@ export function MiniPlayer() {
             }}
             hitSlop={10}
             style={styles.playBtn}
-            accessibilityLabel={isPlaying ? 'Pause' : 'Play'}>
-            <SymbolView
-              name={isPlaying
-                ? { ios: 'pause.fill', android: 'pause', web: 'pause' }
-                : { ios: 'play.fill', android: 'play_arrow', web: 'play_arrow' }}
-              tintColor={theme.text}
-              size={19}
-            />
+            accessibilityLabel={
+              download?.state === 'downloading' ? 'Downloading, plays when ready' : isPlaying ? 'Pause' : 'Play'
+            }>
+            {download?.state === 'downloading' ? (
+              <ActivityIndicator size="small" color={theme.text} />
+            ) : (
+              <SymbolView
+                name={isPlaying
+                  ? { ios: 'pause.fill', android: 'pause', web: 'pause' }
+                  : { ios: 'play.fill', android: 'play_arrow', web: 'play_arrow' }}
+                tintColor={theme.text}
+                size={19}
+              />
+            )}
           </Pressable>
           <Pressable
             onPress={() => {

@@ -69,6 +69,10 @@ class SkipMapResponse(AnalyzeProgressFields):
     analyzed_audio_size_bytes: int | None = Field(default=None, ge=0)
     analyzed_audio_duration_ms: int | None = Field(default=None, ge=0)
     audio_md5: str | None = None
+    # status "missing" but a ready map exists for different (or unidentified) audio
+    # bytes, e.g. another download with different dynamically inserted ads. The app
+    # downloads/re-analyzes its own copy instead of applying those segment times.
+    analysis_for_other_audio: bool = False
 
 
 class HealthResponse(BaseModel):
