@@ -1,6 +1,7 @@
 import { NativeModule, requireNativeModule } from 'expo';
 import { Platform } from 'react-native';
 import type { Episode, Subscription } from '@/src/types';
+import type { StreamCacheStatus } from './streamCache';
 
 export type AndroidAutoStatus = {
   episodeJson: string | null;
@@ -14,6 +15,8 @@ export type AndroidAutoStatus = {
   /** Last playback error message, if the player is in an error state. */
   error?: string | null;
   playbackRate: number;
+  /** Play-while-downloading progress for the current item, when it uses it. */
+  streamCache?: StreamCacheStatus | null;
 };
 
 type AndroidAutoEvents = {
@@ -22,7 +25,13 @@ type AndroidAutoEvents = {
 
 declare class PodcastAutoNativeModule extends NativeModule<AndroidAutoEvents> {
   setCatalog: (catalogJson: string) => void;
-  loadAndPlay: (episodeJson: string, localFilePath: string | null, startPositionMs: number) => void;
+  loadAndPlay: (
+    episodeJson: string,
+    localFilePath: string | null,
+    startPositionMs: number,
+    streamCachePath: string | null,
+    streamUrl: string | null,
+  ) => void;
   play: () => void;
   pause: () => void;
   seekTo: (positionMs: number) => void;
@@ -82,11 +91,15 @@ export function loadAndroidAutoEpisode(
   episode: Episode,
   localFilePath: string | undefined,
   startPositionMs: number,
+  stream?: { cachePath?: string; url?: string },
 ): void {
   getNativeModule()?.loadAndPlay(
     JSON.stringify(episode),
     localFilePath ?? null,
     Math.max(0, Math.floor(startPositionMs)),
+    // Play while downloading: the service saves the stream to this path as it plays.
+    localFilePath ? null : (stream?.cachePath ?? null),
+    stream?.url ?? null,
   );
 }
 

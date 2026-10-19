@@ -26,6 +26,8 @@ export function isRedirectError(error: unknown): boolean {
 
 const AUDIO_CACHE_DIR = `${FileSystem.cacheDirectory}podcast-audio/`;
 const AUDIO_CACHE_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+/** Leftover partial downloads (.part / .stream.part) are removed after this long. */
+const PARTIAL_DOWNLOAD_RETENTION_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Ensure audio cache directory exists.
@@ -141,6 +143,10 @@ export function downloadAudioForAnalysis(
   onProgress?: (progress: DownloadProgress) => void,
 ): Promise<string> {
   const key = getCachePath(episodeGuid, audioUrl);
+  // The player is already saving this episode as it plays: that copy (the bytes being
+  // heard) is the one to analyze, so wait for it instead of downloading another.
+  const streaming = streamCacheDownloads.get(key);
+  if (streaming) return streaming.promise;
   const existing = inFlightDownloads.get(key);
   if (existing) {
     if (onProgress) existing.listeners.add(onProgress);
@@ -161,6 +167,97 @@ export function downloadAudioForAnalysis(
   });
   inFlightDownloads.set(key, { promise, listeners });
   return promise;
+}
+
+/**
+ * Play-while-downloading saves, by cache path. The native playback service writes the
+ * file; these let Prepare and the skip-map flow wait for it like for a regular download.
+ */
+const streamCacheDownloads = new Map<
+  string,
+  { promise: Promise<string>; resolve: (path: string) => void; reject: (error: Error) => void; guid: string }
+>();
+
+/** The path the app keeps an episode's download at (where the player saves its stream). */
+export async function prepareStreamCachePath(episodeGuid: string, audioUrl: string): Promise<string> {
+  await ensureCacheDir();
+  return getCachePath(episodeGuid, audioUrl);
+}
+
+/**
+ * Register that the player is saving this episode while it plays. Resolves with the local
+ * path once the save completes (completeStreamCacheDownload), rejects if it fails. Calling
+ * it again while one is pending returns the same promise.
+ */
+export function beginStreamCacheDownload(episodeGuid: string, audioUrl: string): Promise<string> {
+  const key = getCachePath(episodeGuid, audioUrl);
+  const existing = streamCacheDownloads.get(key);
+  if (existing) return existing.promise;
+  let resolve!: (path: string) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<string>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  // Callers may not be waiting yet; a failure is reported in the player UI anyway.
+  promise.catch(() => {});
+  streamCacheDownloads.set(key, { promise, resolve, reject, guid: episodeGuid });
+  return promise;
+}
+
+/** True while the player is saving this episode as it plays. */
+export function isStreamCacheInFlight(episodeGuid: string, audioUrl: string): boolean {
+  return streamCacheDownloads.has(getCachePath(episodeGuid, audioUrl));
+}
+
+/**
+ * The player finished saving the episode (the native service renamed it into place):
+ * record its fingerprint and release everyone waiting. False if nothing was pending.
+ */
+export async function completeStreamCacheDownload(
+  episodeGuid: string,
+  audioUrl: string,
+  audioMd5: string,
+): Promise<boolean> {
+  const key = getCachePath(episodeGuid, audioUrl);
+  const entry = streamCacheDownloads.get(key);
+  if (!entry) return false;
+  streamCacheDownloads.delete(key);
+  try {
+    const info = await FileSystem.getInfoAsync(key);
+    if (!info.exists || info.isDirectory) throw new Error('Saved episode file is missing');
+    await rememberAudioCache(
+      getCacheFileName(episodeGuid, audioUrl),
+      episodeGuid,
+      audioUrl,
+      Date.now(),
+      audioMd5.toLowerCase(),
+    );
+  } catch (error) {
+    entry.reject(error instanceof Error ? error : new Error(String(error)));
+    return true;
+  }
+  entry.resolve(key);
+  return true;
+}
+
+/** The save failed (or was abandoned). False if nothing was pending. */
+export function failStreamCacheDownload(episodeGuid: string, audioUrl: string, message: string): boolean {
+  const key = getCachePath(episodeGuid, audioUrl);
+  const entry = streamCacheDownloads.get(key);
+  if (!entry) return false;
+  streamCacheDownloads.delete(key);
+  entry.reject(new Error(message));
+  return true;
+}
+
+/** Another episode started: the player stopped saving any other one. */
+export function abandonStreamCacheDownloads(exceptGuid?: string | null): void {
+  for (const [key, entry] of streamCacheDownloads) {
+    if (entry.guid === exceptGuid) continue;
+    streamCacheDownloads.delete(key);
+    entry.reject(new Error('Playback moved to another episode before the download finished'));
+  }
 }
 
 /** True while this episode's audio is being downloaded. */
@@ -553,6 +650,18 @@ export async function pruneExpiredAudioCache(now = Date.now()): Promise<number> 
       const filePath = `${AUDIO_CACHE_DIR}${fileName}`;
       const info = await FileSystem.getInfoAsync(filePath);
       if (!info.exists || info.isDirectory) continue;
+
+      if (fileName.endsWith('.part')) {
+        // Unfinished download (app killed mid-download). Leave the ones in progress alone.
+        const inProgress = inFlightDownloads.has(filePath.replace(/(\.stream)?\.part$/, '')) ||
+          streamCacheDownloads.has(filePath.replace(/(\.stream)?\.part$/, ''));
+        const modifiedAt = fileModificationTimeMs(info) ?? now;
+        if (!inProgress && now - modifiedAt >= PARTIAL_DOWNLOAD_RETENTION_MS) {
+          await FileSystem.deleteAsync(filePath, { idempotent: true });
+          removed += 1;
+        }
+        continue;
+      }
 
       let entry = metadataByFileName.get(fileName);
       const relatedMaps = mapsForAudioFiles(maps, new Set([fileName]));

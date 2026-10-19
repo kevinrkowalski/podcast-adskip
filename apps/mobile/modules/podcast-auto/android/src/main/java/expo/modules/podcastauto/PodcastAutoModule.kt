@@ -41,7 +41,18 @@ class PodcastAutoModule : Module() {
           "isBuffering" to intent.getBooleanExtra(PodcastAutoPlaybackService.EXTRA_IS_BUFFERING, false),
           "ended" to intent.getBooleanExtra(PodcastAutoPlaybackService.EXTRA_ENDED, false),
           "error" to intent.getStringExtra(PodcastAutoPlaybackService.EXTRA_ERROR),
-          "playbackRate" to intent.getFloatExtra(PodcastAutoPlaybackService.EXTRA_PLAYBACK_RATE, 1f).toDouble()
+          "playbackRate" to intent.getFloatExtra(PodcastAutoPlaybackService.EXTRA_PLAYBACK_RATE, 1f).toDouble(),
+          "streamCache" to intent.getStringExtra(PodcastAutoPlaybackService.EXTRA_STREAM_CACHE_STATE)?.let { state ->
+            bundleOf(
+              "state" to state,
+              "guid" to intent.getStringExtra(PodcastAutoPlaybackService.EXTRA_STREAM_CACHE_GUID),
+              "bytes" to intent.getLongExtra(PodcastAutoPlaybackService.EXTRA_STREAM_CACHE_BYTES, 0L).toDouble(),
+              "total" to intent.getLongExtra(PodcastAutoPlaybackService.EXTRA_STREAM_CACHE_TOTAL, 0L).toDouble(),
+              "md5" to intent.getStringExtra(PodcastAutoPlaybackService.EXTRA_STREAM_CACHE_MD5),
+              "error" to intent.getStringExtra(PodcastAutoPlaybackService.EXTRA_STREAM_CACHE_ERROR),
+              "verified" to intent.getBooleanExtra(PodcastAutoPlaybackService.EXTRA_STREAM_CACHE_VERIFIED, false)
+            )
+          }
         )
       )
     }
@@ -79,7 +90,8 @@ class PodcastAutoModule : Module() {
       )
     }
 
-    Function("loadAndPlay") { episodeJson: String, localFilePath: String?, startPositionMs: Double ->
+    Function("loadAndPlay") { episodeJson: String, localFilePath: String?, startPositionMs: Double,
+      streamCachePath: String?, streamUrl: String? ->
       val episode = org.json.JSONObject(episodeJson)
       if (!localFilePath.isNullOrBlank()) episode.put("localFilePath", localFilePath)
       preferences.edit()
@@ -90,6 +102,10 @@ class PodcastAutoModule : Module() {
       startCommand(PodcastAutoPlaybackService.ACTION_LOAD).apply {
         putExtra(PodcastAutoPlaybackService.EXTRA_EPISODE_JSON, episode.toString())
         putExtra(PodcastAutoPlaybackService.EXTRA_POSITION_MS, startPositionMs.toLong().coerceAtLeast(0L))
+        if (localFilePath.isNullOrBlank() && !streamCachePath.isNullOrBlank()) {
+          putExtra(PodcastAutoPlaybackService.EXTRA_STREAM_CACHE_PATH, streamCachePath)
+        }
+        if (!streamUrl.isNullOrBlank()) putExtra(PodcastAutoPlaybackService.EXTRA_STREAM_URL, streamUrl)
       }.also(::startService)
     }
 
