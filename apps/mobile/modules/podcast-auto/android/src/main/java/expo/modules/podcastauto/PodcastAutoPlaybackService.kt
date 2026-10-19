@@ -346,9 +346,6 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     return if (url.isBlank() || url == "null") null else Uri.parse(url)
   }
 
-  private fun isPlayingLocalFile(exoPlayer: ExoPlayer): Boolean =
-    exoPlayer.currentMediaItem?.localConfiguration?.uri?.scheme == "file"
-
   private fun currentSegments(exoPlayer: ExoPlayer): JSONArray? {
     val episodeGuid = exoPlayer.currentMediaItem?.mediaId ?: return null
     return try {
@@ -406,8 +403,8 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     }
     if (!preferences.getBoolean(KEY_AUTO_SKIP, true) ||
       !preferences.getBoolean(KEY_AD_DETECTION_ENABLED, true)) return
-    // Segments describe the downloaded file; a stream may have different (dynamic) ads.
-    if (!isPlayingLocalFile(exoPlayer)) return
+    // Skip on streams too. playableUri() already prefers the downloaded (analyzed) file;
+    // refusing to skip whenever it's missing broke auto-skip for every streamed episode.
     val segments = currentSegments(exoPlayer) ?: return
     for (index in 0 until segments.length()) {
       val segment = segments.optJSONObject(index) ?: continue
