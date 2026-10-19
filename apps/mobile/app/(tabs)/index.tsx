@@ -30,7 +30,9 @@ export default function LibraryScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      getSubscriptions().then(setSubs);
+      getSubscriptions()
+        .then(setSubs)
+        .catch((e) => console.warn('[library] Failed to load subscriptions:', e));
     }, []),
   );
 

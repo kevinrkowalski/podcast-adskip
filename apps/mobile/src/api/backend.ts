@@ -1,6 +1,7 @@
 import type { SkipMap } from '@/src/types';
 import Constants from 'expo-constants';
 import { DEFAULT_API_URL, getApiUrl, getAppKey } from '@/src/db/storage';
+import { fetchWithTimeout } from './http';
 
 /**
  * Backend base URL.
@@ -86,21 +87,26 @@ export function getApiBaseUrl(): string {
 }
 
 export async function healthCheck(): Promise<{ status: string; mock_mode: boolean }> {
-  const res = await fetch(`${resolveBaseUrl()}/v1/health`);
-  if (!res.ok) throw new Error(`Health check failed: ${res.status}`);
-  return res.json();
+  return fetchWithTimeout(`${resolveBaseUrl()}/v1/health`, undefined, 15_000, async (res) => {
+    if (!res.ok) throw new Error(`Health check failed: ${res.status}`);
+    return res.json();
+  });
 }
 
 export async function getSkipMap(episodeGuid: string, audioMd5?: string | null): Promise<SkipMap> {
   const query = audioMd5 ? `?audio_md5=${encodeURIComponent(audioMd5)}` : '';
-  const res = await fetch(`${resolveBaseUrl()}/v1/skip-map/${encodeURIComponent(episodeGuid)}${query}`, {
-    headers: headers(),
-  });
-  if (!res.ok) {
-    const detail = (await res.text()).trim().slice(0, 300);
-    throw new Error(`skip-map failed: ${res.status}${detail ? ` — ${detail}` : ''}`);
-  }
-  return res.json();
+  return fetchWithTimeout(
+    `${resolveBaseUrl()}/v1/skip-map/${encodeURIComponent(episodeGuid)}${query}`,
+    { headers: headers() },
+    undefined,
+    async (res) => {
+      if (!res.ok) {
+        const detail = (await res.text()).trim().slice(0, 300);
+        throw new Error(`skip-map failed: ${res.status}${detail ? ` — ${detail}` : ''}`);
+      }
+      return res.json();
+    },
+  );
 }
 
 export async function analyzeEpisode(input: {
@@ -116,31 +122,44 @@ export async function analyzeEpisode(input: {
   sync?: boolean;
 }): Promise<SkipMap> {
   const qs = input.sync ? '?sync=true' : '';
-  const { sync: _s, ...body } = input;
-  const res = await fetch(`${resolveBaseUrl()}/v1/analyze-episode${qs}`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`analyze failed: ${res.status}`);
-  return res.json();
+  const { sync: _s, ...rest } = input;
+  // Match the server's field limits (it rejects longer values with a 422).
+  const body = {
+    ...rest,
+    podcast_title: rest.podcast_title?.slice(0, 300),
+    podcast_description: rest.podcast_description?.slice(0, 5000),
+    episode_description: rest.episode_description?.slice(0, 5000),
+  };
+  // sync=true blocks for the whole analysis.
+  return fetchWithTimeout(
+    `${resolveBaseUrl()}/v1/analyze-episode${qs}`,
+    { method: 'POST', headers: headers(), body: JSON.stringify(body) },
+    input.sync ? 15 * 60_000 : undefined,
+    async (res) => {
+      if (!res.ok) throw new Error(`analyze failed: ${res.status}`);
+      return res.json();
+    },
+  );
 }
 
 /** Ask the API to follow a tracking-redirect chain and return the final media URL. */
 export async function resolveAudioUrl(url: string): Promise<string> {
-  const res = await fetch(`${resolveBaseUrl()}/v1/resolve-audio-url`, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({ url }),
-  });
-  if (!res.ok) {
-    let detail = '';
-    try {
-      detail = (await res.json())?.detail ?? '';
-    } catch {}
-    throw new Error(`Could not resolve audio link${detail ? `: ${detail}` : ` (${res.status})`}`);
-  }
-  const data = await res.json();
+  // The server follows up to 15 hops at 20s each.
+  const data = await fetchWithTimeout(
+    `${resolveBaseUrl()}/v1/resolve-audio-url`,
+    { method: 'POST', headers: headers(), body: JSON.stringify({ url }) },
+    90_000,
+    async (res) => {
+      if (!res.ok) {
+        let detail = '';
+        try {
+          detail = (await res.json())?.detail ?? '';
+        } catch {}
+        throw new Error(`Could not resolve audio link${detail ? `: ${detail}` : ` (${res.status})`}`);
+      }
+      return res.json();
+    },
+  );
   if (typeof data?.url !== 'string' || !data.url) throw new Error('Could not resolve audio link');
   return data.url;
 }

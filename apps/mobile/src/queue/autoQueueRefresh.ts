@@ -18,6 +18,11 @@ export type RefreshResult = {
   failed: number;
 };
 
+/** True while a refresh is in flight (a new call would join it). */
+export function isAutoQueueRefreshRunning(): boolean {
+  return running != null;
+}
+
 export async function getLastAutoQueueRefresh(): Promise<RefreshResult | null> {
   try {
     const raw = await AsyncStorage.getItem(LAST_REFRESH_KEY);
@@ -42,7 +47,14 @@ export function refreshAutoQueueFeeds(
   running = (async (): Promise<RefreshResult> => {
     const result: RefreshResult = { at: Date.now(), source, shows: 0, added: 0, failed: 0 };
     try {
-      const keys = new Set(await getAutoQueueShowKeys());
+      let keys: Set<string>;
+      try {
+        keys = new Set(await getAutoQueueShowKeys());
+      } catch (e) {
+        console.warn('[queue] could not read auto-add settings:', e);
+        result.failed += 1;
+        return result;
+      }
       if (keys.size) {
         const subs = (await getSubscriptions()).filter((s) => {
           const key = autoQueueShowKey({ collectionId: s.collectionId, feedUrl: s.feedUrl });
@@ -54,7 +66,8 @@ export function refreshAutoQueueFeeds(
             const parsed = await fetchAndParseRss(
               sub.feedUrl,
               { collectionId: sub.collectionId, podcastTitle: sub.collectionName, artworkUrl: sub.artworkUrl },
-              { maxItems: ITEMS, forceRefresh: true },
+              // newestFirst: oldest-first feeds would otherwise only ever show old items.
+              { maxItems: ITEMS, forceRefresh: true, newestFirst: true },
             );
             result.added += await processFeedForAutoQueue(
               { collectionId: sub.collectionId, feedUrl: sub.feedUrl },

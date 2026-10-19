@@ -54,6 +54,7 @@ async def _stage(
     title: str | None = None,
     duration_ms: int | None = None,
     reset_started: bool = False,
+    pending_audio_sha256: str | None = None,
 ) -> None:
     await set_status(
         episode_guid,
@@ -64,6 +65,7 @@ async def _stage(
         stage=stage,
         duration_ms=duration_ms,
         reset_started=reset_started,
+        pending_audio_sha256=pending_audio_sha256,
     )
 
 
@@ -244,6 +246,7 @@ async def run_analyze_from_file(
             title=title,
             duration_ms=duration_ms,
             reset_started=True,
+            pending_audio_sha256=audio_sha256,
         )
         audio_size_bytes = audio_path.stat().st_size
         if settings.has_real_stt:

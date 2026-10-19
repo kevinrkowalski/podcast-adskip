@@ -27,8 +27,11 @@ export function OverlayHost() {
         if (hideTimer.current) clearTimeout(hideTimer.current);
         Animated.timing(opacity, { toValue: 1, duration: 150, useNativeDriver: true }).start();
         hideTimer.current = setTimeout(() => {
-          Animated.timing(opacity, { toValue: 0, duration: 250, useNativeDriver: true }).start(() =>
-            setToast(null),
+          // A newer toast's fade-in interrupts this (finished=false); don't wipe it.
+          Animated.timing(opacity, { toValue: 0, duration: 250, useNativeDriver: true }).start(
+            ({ finished }) => {
+              if (finished) setToast(null);
+            },
           );
         }, 2600);
       }),

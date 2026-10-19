@@ -13,17 +13,16 @@ export type ParsedOpml = {
   duplicates: number;
 };
 
+/** String.fromCodePoint throws outside 0..0x10FFFF; one bad entity must not fail the import. */
+function safeCodePoint(code: number): string {
+  return Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
+}
+
 function decodeXml(value: string): string {
   return value
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => {
-      const code = parseInt(hex, 16);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : '';
-    })
-    .replace(/&#(\d+);/g, (_, num: string) => {
-      const code = parseInt(num, 10);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : '';
-    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => safeCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, num: string) => safeCodePoint(parseInt(num, 10)))
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
     .replace(/&lt;/g, '<')
@@ -46,7 +45,8 @@ export function normalizeFeedUrl(url: string): string {
     const parsed = new URL(trimmed);
     parsed.hash = '';
     const path = parsed.pathname.replace(/\/+$/, '');
-    return `${parsed.protocol.toLowerCase()}//${parsed.hostname.toLowerCase()}${path}${parsed.search}`;
+    // host keeps a non-default port (feeds on different ports are different feeds).
+    return `${parsed.protocol.toLowerCase()}//${parsed.host.toLowerCase()}${path}${parsed.search}`;
   } catch {
     return trimmed.toLowerCase().replace(/\/+$/, '');
   }
@@ -63,7 +63,9 @@ export function parseOpml(xml: string): ParsedOpml {
   const seen = new Set<string>();
   let missingFeedUrl = 0;
   let duplicates = 0;
-  const outlineRe = /<outline\b([^>]*?)\/?>/gi;
+  // Attribute values may legally contain ">" (e.g. text="News > Tech"): skip over quoted
+  // strings instead of stopping at the first ">".
+  const outlineRe = /<outline\b((?:[^>"']|"[^"]*"|'[^']*')*?)\/?>/gi;
   let match: RegExpExecArray | null;
   while ((match = outlineRe.exec(source))) {
     const attrs = match[1] ?? '';

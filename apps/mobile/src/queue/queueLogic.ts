@@ -11,9 +11,17 @@ export type AutoQueueState = {
   lastSeenPubMs: number;
   /** Recently seen guids (bounded) so re-dated/undated items are not re-added. */
   seenGuids: string[];
+  /** When auto-add was turned on; nothing published before it is ever added. */
+  enabledAtMs?: number;
 };
 
 export const MAX_SEEN_GUIDS = 300;
+/**
+ * Episodes often appear in a feed a while after their pubDate (CDN/feed lag), or a
+ * later-dated sibling is seen first. Unseen episodes dated up to this long before the
+ * newest one already seen still count as new.
+ */
+export const LATE_ARRIVAL_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function isQueued(queue: Episode[], guid: string): boolean {
   return queue.some((e) => e.guid === guid);
@@ -132,21 +140,30 @@ export function enableAutoQueueState(knownEpisodes: Episode[], nowMs: number): A
     enabled: true,
     lastSeenPubMs: Math.max(newest, nowMs),
     seenGuids: knownEpisodes.map((e) => e.guid).slice(0, MAX_SEEN_GUIDS),
+    enabledAtMs: nowMs,
   };
 }
 
 /**
  * Given a refreshed feed, return episodes to auto-append (oldest first) and the
- * updated state. Only episodes not seen before AND published after the last
- * check qualify, so the back catalog is never backfilled.
+ * updated state. An episode qualifies when it hasn't been seen before and:
+ * - it has no usable pubDate (undated feeds), or
+ * - it's dated after the newest already-seen episode minus a late-arrival grace
+ *   period, and not before auto-add was turned on.
+ * So the back catalog is never backfilled, but late-appearing episodes aren't missed.
  */
 export function detectNewEpisodes(
   state: AutoQueueState,
   feedEpisodes: Episode[],
 ): { toAdd: Episode[]; state: AutoQueueState } {
   const seen = new Set(state.seenGuids);
+  const floor = Math.max(state.lastSeenPubMs - LATE_ARRIVAL_GRACE_MS, state.enabledAtMs ?? 0);
   const toAdd = feedEpisodes
-    .filter((e) => !!e.guid && !seen.has(e.guid) && !!e.enclosureUrl && pubMs(e) > state.lastSeenPubMs)
+    .filter((e) => {
+      if (!e.guid || seen.has(e.guid) || !e.enclosureUrl) return false;
+      const t = pubMs(e);
+      return t === 0 || t > floor;
+    })
     .sort((a, b) => pubMs(a) - pubMs(b));
   const newest = feedEpisodes.reduce((m, e) => Math.max(m, pubMs(e)), state.lastSeenPubMs);
   const merged = [...feedEpisodes.map((e) => e.guid), ...state.seenGuids];

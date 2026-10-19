@@ -123,6 +123,16 @@ def split_audio_chunks(audio_path: Path, max_mb: int) -> list[tuple[Path, float]
 
     chunk_dur = duration / n
     out_dir = Path(tempfile.mkdtemp(prefix="adskip-chunks-"))
+    try:
+        return _write_chunks(audio_path, max_mb, n, chunk_dur, out_dir)
+    except BaseException:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise
+
+
+def _write_chunks(
+    audio_path: Path, max_mb: int, n: int, chunk_dur: float, out_dir: Path
+) -> list[tuple[Path, float]]:
     chunks: list[tuple[Path, float]] = []
     suffix = audio_path.suffix or ".mp3"
 
@@ -340,7 +350,7 @@ def _transcribe_file_sync(audio_path: Path, settings: Settings) -> dict[str, Any
 
 async def transcribe_audio(audio_path: Path, settings: Settings) -> dict[str, Any]:
     """Whisper verbose_json via OpenRouter (preferred) or legacy Groq; chunk if over max_audio_mb."""
-    chunks = split_audio_chunks(audio_path, settings.max_audio_mb)
+    chunks = await asyncio.to_thread(split_audio_chunks, audio_path, settings.max_audio_mb)
     owned_dirs: set[Path] = set()
     try:
         parts: list[tuple[dict[str, Any], float]] = []

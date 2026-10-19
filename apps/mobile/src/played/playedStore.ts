@@ -10,6 +10,11 @@ const PLAYED_KEY = '@podcast-adskip/played';
 const MAX_PLAYED = 3000;
 /** Auto-mark played when this close to the end. */
 export const PLAYED_NEAR_END_MS = 45_000;
+/**
+ * ...or this far through. Matches storage's NEAR_END_RATIO, where the resume position is
+ * cleared, so a long episode is never "unplayed with no resume point".
+ */
+export const PLAYED_RATIO = 0.95;
 
 type PlayedMap = Record<string, number>;
 
@@ -29,22 +34,35 @@ export function hydratePlayed(): Promise<void> {
   if (hydrated) return Promise.resolve();
   if (!hydrating) {
     hydrating = (async () => {
+      let raw: string | null;
       try {
-        const raw = await AsyncStorage.getItem(PLAYED_KEY);
-        const stored = raw ? (JSON.parse(raw) as PlayedMap) : {};
-        played = { ...(stored && typeof stored === 'object' ? stored : {}), ...played };
+        raw = await AsyncStorage.getItem(PLAYED_KEY);
       } catch (e) {
-        console.warn('[played] hydrate failed:', e);
-      } finally {
-        hydrated = true;
-        notify();
+        // Read failed (not "no data"): stay unhydrated so persist() can't overwrite the
+        // stored history with only this session's changes; retry on the next call.
+        console.warn('[played] hydrate failed; will retry:', e);
+        hydrating = null;
+        return;
       }
+      let stored: unknown = {};
+      try {
+        stored = raw ? JSON.parse(raw) : {};
+      } catch {
+        console.warn('[played] stored history is corrupt; starting empty');
+      }
+      const hadPending = Object.keys(played).length > 0;
+      played = { ...(stored && typeof stored === 'object' ? (stored as PlayedMap) : {}), ...played };
+      hydrated = true;
+      notify();
+      // Save changes made while the stored history couldn't be read.
+      if (hadPending) persist();
     })();
   }
   return hydrating;
 }
 
 function persist() {
+  if (!hydrated) return;
   const entries = Object.entries(played);
   if (entries.length > MAX_PLAYED) {
     entries.sort((a, b) => b[1] - a[1]);
@@ -90,5 +108,6 @@ export function usePlayedVersion(): number {
 
 /** Should an episode at this position count as played? */
 export function isNearEnd(positionMs: number, durationMs: number): boolean {
-  return durationMs > 60_000 && positionMs > 0 && durationMs - positionMs <= PLAYED_NEAR_END_MS;
+  if (!(durationMs > 60_000) || !(positionMs > 0)) return false;
+  return durationMs - positionMs <= PLAYED_NEAR_END_MS || positionMs / durationMs >= PLAYED_RATIO;
 }

@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, BackgroundTasks, Header, Request
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 
 from app.auth import check_app_key
 from app.db import get_skip_map, set_status
@@ -42,9 +42,12 @@ async def analyze_episode(
     sync: bool = False,
 ) -> AnalyzeEpisodeResponse:
     """Queue or sync-analyze an episode, validating cached audio after download."""
-    # Per-IP limit before auth so stolen-key / brute traffic cannot burn OpenRouter.
-    enforce_analyze_rate_limit(request)
-    check_app_key(x_app_key)
+    try:
+        check_app_key(x_app_key)
+    except HTTPException:
+        # Unauthenticated traffic always counts, so brute-forcing keys is throttled.
+        enforce_analyze_rate_limit(request)
+        raise
 
     existing = await get_skip_map(body.episode_guid)
     if existing and existing["status"] == "pending" and not body.force:
@@ -54,6 +57,9 @@ async def analyze_episode(
             message="Analysis already in progress",
             **_progress_kwargs(existing),
         )
+
+    # Only requests that actually start an analysis count against the limit.
+    enforce_analyze_rate_limit(request)
 
     await set_status(
         body.episode_guid,

@@ -30,6 +30,7 @@ import androidx.media3.session.MediaSession.MediaItemsWithStartPosition
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -38,6 +39,11 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
   private val preferences by lazy {
     getSharedPreferences(PREFERENCES_NAME, MODE_PRIVATE)
   }
+  private val catalogPreferences by lazy {
+    getSharedPreferences(CATALOG_PREFERENCES_NAME, MODE_PRIVATE)
+  }
+  /** Parsed catalog, reused until the app publishes a new one (it can be several MB). */
+  private var catalogCache: JSONArray? = null
   private val handler = Handler(Looper.getMainLooper())
   private var player: ExoPlayer? = null
   private var mediaLibrarySession: MediaLibrarySession? = null
@@ -46,9 +52,14 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
   private var errorRetryCount = 0
   private var firstErrorAt = 0L
   private var lastErrorMessage: String? = null
+  /** True while the service itself seeks (auto-skip, retry, replay), so it isn't treated as a user seek. */
+  private var internalSeekInProgress = false
+  /** Segment (start to end) the user seeked into; not auto-skipped until playback leaves it. */
+  private var suppressedSegment: Pair<Long, Long>? = null
 
   private val catalogUpdateReceiver = object : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+      catalogCache = null
       notifyCatalogChanged()
     }
   }
@@ -112,7 +123,19 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
         publishStatus()
       }
 
+      override fun onPositionDiscontinuity(
+        oldPosition: Player.PositionInfo,
+        newPosition: Player.PositionInfo,
+        reason: Int
+      ) {
+        if (reason != Player.DISCONTINUITY_REASON_SEEK || internalSeekInProgress) return
+        // A user seek (app, notification, Android Auto): landing inside a segment means
+        // they want to hear it, so don't skip it until playback leaves it.
+        suppressedSegment = segmentAt(exoPlayer, newPosition.positionMs)
+      }
+
       override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+        suppressedSegment = null
         val transitionedGuid = mediaItem?.mediaId
         val activeGuid = try {
           activeEpisodeJson?.let { JSONObject(it).optString("guid") }
@@ -260,18 +283,11 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     }
     val guid = episode.optString("guid")
     log("load ${episode.optString("title").take(60)} local=${episode.optString("localFilePath").let { it.isNotBlank() && it != "null" }}")
-    val localPath = episode.optString("localFilePath")
-    val audioUrl = if (localPath.isNotBlank() && localPath != "null") localPath else episode.optString("enclosureUrl")
-    if (audioUrl.isBlank() || audioUrl == "null") {
+    val playableUri = playableUri(episode)
+    if (playableUri == null) {
       preferences.edit().putBoolean(KEY_IS_PLAYING, false).apply()
       publishStatus("Episode has no playable audio URL")
       return
-    }
-
-    val playableUri = if (audioUrl.startsWith("/") && !audioUrl.startsWith("//")) {
-      Uri.fromFile(java.io.File(audioUrl))
-    } else {
-      Uri.parse(audioUrl)
     }
     val item = createEpisodeItem(episode, playableUri)
     activeEpisodeJson = episode.toString()
@@ -302,14 +318,64 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     } catch (_: Exception) {
       return
     }
-    val localPath = episode.optString("localFilePath")
-    val audioUrl = if (localPath.isNotBlank() && localPath != "null") localPath else episode.optString("enclosureUrl")
-    if (audioUrl.isBlank() || audioUrl == "null") return
-    val uri = if (audioUrl.startsWith("/") && !audioUrl.startsWith("//")) Uri.fromFile(java.io.File(audioUrl)) else Uri.parse(audioUrl)
+    val uri = playableUri(episode) ?: return
     activeEpisodeJson = serialized
     val item = createEpisodeItem(episode, uri)
     exoPlayer.setMediaItem(item, preferences.getLong(KEY_POSITION_MS, 0L).coerceAtLeast(0L))
     exoPlayer.prepare()
+  }
+
+  /**
+   * The downloaded (analyzed) file when it still exists, else the enclosure URL. Skip maps
+   * are computed from the downloaded bytes, so it must win whenever it's available.
+   */
+  private fun playableUri(episode: JSONObject): Uri? {
+    val localPath = episode.optString("localFilePath").takeIf { it.isNotBlank() && it != "null" }
+    if (localPath != null) {
+      val file = if (localPath.startsWith("file://")) {
+        Uri.parse(localPath).path?.let { File(it) }
+      } else if (localPath.startsWith("/") && !localPath.startsWith("//")) {
+        File(localPath)
+      } else {
+        null
+      }
+      if (file != null && file.isFile) return Uri.fromFile(file)
+      if (file == null) return Uri.parse(localPath)
+    }
+    val url = episode.optString("enclosureUrl")
+    return if (url.isBlank() || url == "null") null else Uri.parse(url)
+  }
+
+  private fun isPlayingLocalFile(exoPlayer: ExoPlayer): Boolean =
+    exoPlayer.currentMediaItem?.localConfiguration?.uri?.scheme == "file"
+
+  private fun currentSegments(exoPlayer: ExoPlayer): JSONArray? {
+    val episodeGuid = exoPlayer.currentMediaItem?.mediaId ?: return null
+    return try {
+      JSONArray(preferences.getString(KEY_SKIP_SEGMENTS_PREFIX + episodeGuid, "[]"))
+    } catch (_: Exception) {
+      null
+    }
+  }
+
+  private fun segmentAt(exoPlayer: ExoPlayer, position: Long): Pair<Long, Long>? {
+    val segments = currentSegments(exoPlayer) ?: return null
+    for (index in 0 until segments.length()) {
+      val segment = segments.optJSONObject(index) ?: continue
+      val start = segment.optLong("start_ms", -1L)
+      val end = segment.optLong("end_ms", -1L)
+      if (start >= 0L && end > start && position >= start && position < end) return start to end
+    }
+    return null
+  }
+
+  private fun internalSeek(exoPlayer: ExoPlayer, positionMs: Long) {
+    internalSeekInProgress = true
+    try {
+      exoPlayer.seekTo(positionMs)
+    } finally {
+      internalSeekInProgress = false
+    }
   }
 
   private fun createEpisodeItem(episode: JSONObject, uri: Uri): MediaItem {
@@ -334,23 +400,24 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
   }
 
   private fun applyNativeAdSkip(exoPlayer: ExoPlayer) {
+    val position = exoPlayer.currentPosition
+    suppressedSegment?.let { (start, end) ->
+      if (position < start || position >= end) suppressedSegment = null
+    }
     if (!preferences.getBoolean(KEY_AUTO_SKIP, true) ||
       !preferences.getBoolean(KEY_AD_DETECTION_ENABLED, true)) return
-    val position = exoPlayer.currentPosition
-    val episodeGuid = exoPlayer.currentMediaItem?.mediaId ?: return
-    val segments = try {
-      JSONArray(preferences.getString(KEY_SKIP_SEGMENTS_PREFIX + episodeGuid, "[]"))
-    } catch (_: Exception) {
-      return
-    }
+    // Segments describe the downloaded file; a stream may have different (dynamic) ads.
+    if (!isPlayingLocalFile(exoPlayer)) return
+    val segments = currentSegments(exoPlayer) ?: return
     for (index in 0 until segments.length()) {
       val segment = segments.optJSONObject(index) ?: continue
       val start = segment.optLong("start_ms", -1L)
       val end = segment.optLong("end_ms", -1L)
       if (start >= 0L && end > start && position >= start && position < end) {
+        if (suppressedSegment == (start to end)) continue
         val target = clampToDuration(exoPlayer, end + AUTO_SKIP_OFFSET_MS)
         log("auto-skip ad ${start}-${end} -> $target")
-        exoPlayer.seekTo(target)
+        internalSeek(exoPlayer, target)
         preferences.edit().putLong(KEY_POSITION_MS, target).apply()
         break
       }
@@ -433,7 +500,7 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
         if (exoPlayer.mediaItemCount == 0) restorePreviousItem(exoPlayer)
         else exoPlayer.prepare()
       }
-      Player.STATE_ENDED -> exoPlayer.seekTo(0L)
+      Player.STATE_ENDED -> internalSeek(exoPlayer, 0L)
     }
     exoPlayer.play()
     publishStatus()
@@ -447,7 +514,7 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
       return@Runnable
     }
     log("retry #$errorRetryCount at pos=${exoPlayer.currentPosition}")
-    exoPlayer.seekTo(exoPlayer.currentPosition.coerceAtLeast(0L))
+    internalSeek(exoPlayer, exoPlayer.currentPosition.coerceAtLeast(0L))
     exoPlayer.prepare()
     exoPlayer.play()
     publishStatus()
@@ -507,17 +574,15 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
   }
 
   private fun findEpisodeJson(guid: String): String? {
-    val podcasts = try {
-      JSONObject(preferences.getString(KEY_CATALOG, "{}") ?: "{}").optJSONArray("podcasts")
-    } catch (_: Exception) {
-      null
-    } ?: return null
+    val podcasts = readPodcasts()
     for (podcastIndex in 0 until podcasts.length()) {
       val podcast = podcasts.optJSONObject(podcastIndex) ?: continue
       val episodes = podcast.optJSONArray("episodes") ?: continue
       for (episodeIndex in 0 until episodes.length()) {
-        val episode = episodes.optJSONObject(episodeIndex) ?: continue
-        if (episode.optString("guid") == guid) {
+        val source = episodes.optJSONObject(episodeIndex) ?: continue
+        if (source.optString("guid") == guid) {
+          // Copy: the parsed catalog is cached and must not be modified.
+          val episode = JSONObject(source.toString())
           if (!episode.has("podcastTitle")) episode.put("podcastTitle", podcast.optString("title", "Podcast"))
           if (!episode.has("artworkUrl")) episode.put("artworkUrl", podcast.optString("artworkUrl"))
           if (!episode.has("collectionId")) episode.put("collectionId", podcast.optLong("collectionId"))
@@ -636,13 +701,13 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     val episodes = podcast.optJSONArray("episodes") ?: return emptyList()
     return (0 until episodes.length()).mapNotNull { index ->
       val episode = episodes.optJSONObject(index) ?: return@mapNotNull null
-      val url = episode.optString("enclosureUrl")
-      if (url.isBlank() || url == "null") return@mapNotNull null
       val enriched = JSONObject(episode.toString())
       if (!enriched.has("podcastTitle")) enriched.put("podcastTitle", podcast.optString("title", "Podcast"))
       if (!enriched.has("artworkUrl")) enriched.put("artworkUrl", podcast.optString("artworkUrl"))
       if (!enriched.has("collectionId")) enriched.put("collectionId", podcast.optLong("collectionId"))
-      createEpisodeItem(enriched, Uri.parse(url))
+      // Prefer the downloaded file (the app publishes localFilePath in the catalog).
+      val uri = playableUri(enriched) ?: return@mapNotNull null
+      createEpisodeItem(enriched, uri)
     }
   }
 
@@ -663,14 +728,24 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     return null
   }
 
-  private fun readPodcasts(): JSONArray = try {
-    JSONObject(preferences.getString(KEY_CATALOG, "{}") ?: "{}").optJSONArray("podcasts") ?: JSONArray()
-  } catch (_: Exception) {
-    JSONArray()
+  private fun readPodcasts(): JSONArray {
+    catalogCache?.let { return it }
+    // Older builds stored the catalog in the main prefs file.
+    val raw = catalogPreferences.getString(KEY_CATALOG, null)
+      ?: preferences.getString(KEY_CATALOG, null)
+      ?: "{}"
+    val parsed = try {
+      JSONObject(raw).optJSONArray("podcasts") ?: JSONArray()
+    } catch (_: Exception) {
+      JSONArray()
+    }
+    catalogCache = parsed
+    return parsed
   }
 
   companion object {
     const val PREFERENCES_NAME = "podcast_adskip_android_auto"
+    const val CATALOG_PREFERENCES_NAME = "podcast_adskip_android_auto_catalog"
     const val ACTION_STATUS = "expo.modules.podcastauto.PLAYBACK_STATUS"
     const val ACTION_CATALOG_UPDATED = "expo.modules.podcastauto.CATALOG_UPDATED"
     const val ACTION_LOAD = "expo.modules.podcastauto.LOAD"

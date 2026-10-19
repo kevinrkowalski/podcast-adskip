@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -178,6 +179,7 @@ def _with_sample_text(
     ]
 
 
+WINDOW_OVERLAP_S = 20.0
 SEGMENT_MERGE_GAP_MS = 8_000
 SPEECHLESS_GAP_MERGE_MAX_MS = 20_000
 BREAK_BLOCK_GAP_MAX_MS = 30_000
@@ -268,7 +270,10 @@ def _merge(
             and speechless
             and gap <= BREAK_BLOCK_GAP_MAX_MS
         )
-        if within_regular_window or bridge_speechless_gap or bridge_break_block:
+        # Never fold unclassified spans into ads (or vice versa): either the
+        # ads stop being skipped or the unknown span gets auto-skipped.
+        same_class = (last.type == "unknown") == (seg.type == "unknown")
+        if same_class and (within_regular_window or bridge_speechless_gap or bridge_break_block):
             strongest_type = last.type
             if seg.confidence > strongest_confidences[-1]:
                 strongest_type = seg.type
@@ -378,22 +383,33 @@ def _validated_segments(
     return _with_sample_text(_merge(validated, transcript=transcript), transcript)
 
 
-def _windows(transcript: dict[str, Any], window_s: float = 120.0) -> list[str]:
+def _windows(
+    transcript: dict[str, Any],
+    window_s: float = 120.0,
+    overlap_s: float = WINDOW_OVERLAP_S,
+) -> list[str]:
+    """Split the transcript into ~window_s chunks for the LLM.
+
+    Each new window repeats the lines that started in the last ``overlap_s`` of
+    the previous window so cues like "brought to you by" keep their context.
+    Duplicate detections overlap and are merged later by ``_merge``.
+    """
     lines: list[str] = []
     for seg in transcript.get("segments") or []:
         lines.append(f"[{seg.get('start', 0):.1f}-{seg.get('end', 0):.1f}] {seg.get('text', '').strip()}")
     chunks: list[str] = []
-    buf: list[str] = []
+    buf: list[tuple[float, str]] = []
     start = 0.0
     for seg in transcript.get("segments") or []:
         t = float(seg.get("start", 0))
+        line = f"[{seg.get('start', 0):.1f}-{seg.get('end', 0):.1f}] {seg.get('text', '').strip()}"
         if buf and t - start > window_s:
-            chunks.append("\n".join(buf))
-            buf = []
+            chunks.append("\n".join(text for _, text in buf))
+            buf = [(bt, text) for bt, text in buf if bt >= t - overlap_s]
             start = t
-        buf.append(f"[{seg.get('start', 0):.1f}-{seg.get('end', 0):.1f}] {seg.get('text', '').strip()}")
+        buf.append((t, line))
     if buf:
-        chunks.append("\n".join(buf))
+        chunks.append("\n".join(text for _, text in buf))
     return chunks or ["\n".join(lines)]
 
 
@@ -500,7 +516,8 @@ async def _label_openrouter(
     )
     all_segs: list[AdSegment] = []
     for chunk in _windows(transcript):
-        completion = client.chat.completions.create(
+        completion = await asyncio.to_thread(
+            client.chat.completions.create,
             model=settings.openrouter_llm_model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -525,7 +542,8 @@ async def _label_groq_llm(
     client = Groq(api_key=settings.llm_api_key or settings.groq_api_key)
     all_segs: list[AdSegment] = []
     for chunk in _windows(transcript):
-        completion = client.chat.completions.create(
+        completion = await asyncio.to_thread(
+            client.chat.completions.create,
             model=settings.groq_llm_model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -560,12 +578,9 @@ async def _label_gemini(
             resp = await client.post(url, params={"key": key}, json=body)
             resp.raise_for_status()
             data = resp.json()
-            text = (
-                data.get("candidates", [{}])[0]
-                .get("content", {})
-                .get("parts", [{}])[0]
-                .get("text", "{}")
-            )
+            candidates = data.get("candidates") or [{}]
+            parts = (candidates[0].get("content") or {}).get("parts") or [{}]
+            text = parts[0].get("text") or "{}"
             all_segs.extend(_parse_llm_json(text))
     return _finish_labeling(all_segs, transcript, duration_ms)
 

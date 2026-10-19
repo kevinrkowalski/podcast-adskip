@@ -44,20 +44,26 @@ export function Scrubber({
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
+        // Don't let a parent ScrollView steal an in-progress scrub.
+        onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (e) => {
+          // Unknown duration: every x maps to 0, which would wipe the resume point.
+          if (durationRef.current <= 0) return;
           const ms = msFromX(e.nativeEvent.locationX);
           setPreviewMs(ms);
           onScrubRef.current?.(ms);
         },
         onPanResponderMove: (e) => {
+          if (durationRef.current <= 0) return;
           const ms = msFromX(e.nativeEvent.locationX);
           setPreviewMs(ms);
           onScrubRef.current?.(ms);
         },
         onPanResponderRelease: (e) => {
-          const ms = msFromX(e.nativeEvent.locationX);
           setPreviewMs(null);
           onScrubRef.current?.(null);
+          if (durationRef.current <= 0) return;
+          const ms = msFromX(e.nativeEvent.locationX);
           onSeekRef.current(ms);
         },
         onPanResponderTerminate: () => {

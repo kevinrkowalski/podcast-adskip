@@ -115,9 +115,13 @@ Screens:
 2. **Library** — subscriptions → open show → RSS episodes  
 3. **Player** — play/pause/seek, **Auto-skip ads** toggle, **Prepare ad-skip** (calls API)
 
-### Playback: expo-audio
+### Playback
 
-`src/player/trackPlayer.ts` is the app's playback facade and uses **`expo-audio`** for native playback, seeking, background audio, and lock-screen controls. If the native audio module is unavailable, it falls back to a stub clock for UI and skip-map development; that fallback does not play audio. The app does not use RNTP or a headless playback service.
+`src/player/trackPlayer.ts` is the app's playback facade. On Android it drives the local **`podcast-auto`** native module (`modules/podcast-auto`): a Media3 `MediaLibraryService` that plays one episode at a time, applies auto-skip natively (so it keeps working with the screen off), and serves the Android Auto browse tree. The JS queue decides what plays next.
+
+When that module isn't in the build (or on other platforms), it falls back to **`expo-audio`**, and without native audio to a stub clock for UI and skip-map development (no sound).
+
+Skip maps are computed from the file the app downloaded for analysis, so auto-skip only applies while playing that local file; downloaded episodes always play from it (also when picked in Android Auto). Streaming an episode that hasn't been prepared plays without skips.
 
 For native Android playback, build and run the app with its native configuration:
 

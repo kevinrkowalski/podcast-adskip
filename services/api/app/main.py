@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.db import init_db
+from app.db import fail_interrupted_analyses, init_db
 from app.db.sqlite import delete_expired_skip_maps
 from app.routes import analyze, feedback, health, resolve, skip_map, upload
 
@@ -30,6 +30,11 @@ async def _cleanup_expired_skip_maps_periodically() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await init_db()
+    # Single-process server: no background task survives a restart, so any
+    # row still pending now can never finish.
+    interrupted = await fail_interrupted_analyses()
+    if interrupted:
+        logger.warning("Marked %d interrupted pending analyses as error", interrupted)
     try:
         deleted = await delete_expired_skip_maps(settings.skip_map_retention_days)
         if deleted:

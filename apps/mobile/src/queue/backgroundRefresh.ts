@@ -8,7 +8,7 @@ import * as BackgroundTask from 'expo-background-task';
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { logPlaybackEvent } from '@/src/player/androidAuto';
-import { refreshAutoQueueFeeds } from './autoQueueRefresh';
+import { isAutoQueueRefreshRunning, refreshAutoQueueFeeds } from './autoQueueRefresh';
 
 export const BACKGROUND_REFRESH_TASK = 'podcast-adskip-feed-refresh';
 const ENABLED_KEY = '@podcast-adskip/backgroundRefresh';
@@ -29,10 +29,15 @@ if (!TaskManager.isTaskDefined(BACKGROUND_REFRESH_TASK)) {
   TaskManager.defineTask(BACKGROUND_REFRESH_TASK, async () => {
     try {
       if (!(await isBackgroundRefreshEnabled())) return BackgroundTask.BackgroundTaskResult.Success;
+      // force=true never skips; if a refresh is already running we join it.
+      const joined = isAutoQueueRefreshRunning();
       const r = await refreshAutoQueueFeeds(true, 'background');
-      const msg = r
-        ? `bg-refresh: ${r.shows} show(s), +${r.added} to queue${r.failed ? `, ${r.failed} failed` : ''}`
-        : 'bg-refresh: skipped (already running)';
+      const summary = r
+        ? `${r.shows} show(s), +${r.added} to queue${r.failed ? `, ${r.failed} failed` : ''}`
+        : 'no result';
+      const msg = joined
+        ? `bg-refresh: joined running ${r?.source ?? ''} refresh: ${summary}`
+        : `bg-refresh: ${summary}`;
       logPlaybackEvent(msg);
       console.log('[bg-refresh]', msg);
       return BackgroundTask.BackgroundTaskResult.Success;

@@ -678,16 +678,17 @@ def test_pending_skip_map_includes_progress_fields():
         )
         return await get_skip_map("progress-guid")
 
-    row = asyncio.run(_seed())
-    assert row is not None
-    assert row["status"] == "pending"
-    assert row["stage"] == "transcribing"
-    assert row["stage_label"] == "Transcribing"
-    assert row["progress_pct"] is not None
-    assert 0 <= row["progress_pct"] < 100
-    assert row["eta_seconds"] is not None and row["eta_seconds"] > 0
-
+    # Seed after startup: lifespan marks rows left pending by a previous process as error.
     with TestClient(app) as client:
+        row = asyncio.run(_seed())
+        assert row is not None
+        assert row["status"] == "pending"
+        assert row["stage"] == "transcribing"
+        assert row["stage_label"] == "Transcribing"
+        assert row["progress_pct"] is not None
+        assert 0 <= row["progress_pct"] < 100
+        assert row["eta_seconds"] is not None and row["eta_seconds"] > 0
+
         r = client.get("/v1/skip-map/progress-guid")
         assert r.status_code == 200
         body = r.json()

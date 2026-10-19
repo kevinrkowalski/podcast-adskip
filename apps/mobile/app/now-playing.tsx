@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -110,6 +110,9 @@ function formatEtaSeconds(sec: number | null | undefined): string | null {
   return mins === 1 ? '~1 min left' : `~${mins} min left`;
 }
 
+// Module-level so remounting the player doesn't re-alert the same error.
+let lastAlertedAnalyzeErrorKey: string | null = null;
+
 export default function PlayerScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -140,15 +143,33 @@ export default function PlayerScreen() {
   const analyzeError = opened ? null : playback.analyzeError;
   const audioMismatchWarning = opened ? null : playback.audioMismatchWarning;
   const uploadProgress = opened ? null : playback.uploadProgress;
-  const togglePlay = opened ? playback.startOpenedEpisode : playback.togglePlay;
+  // Guards Play / Prepare on an unstarted episode against double taps.
+  const startingOpenedRef = useRef(false);
+  const runOpenedStart = async (fn: () => Promise<void>) => {
+    if (startingOpenedRef.current) return;
+    startingOpenedRef.current = true;
+    try {
+      await fn();
+    } finally {
+      startingOpenedRef.current = false;
+    }
+  };
+  const togglePlay = opened
+    ? () => runOpenedStart(() => playback.startOpenedEpisode())
+    : playback.togglePlay;
   const seek = opened ? playback.seekOpenedEpisode : playback.seek;
   const requestAnalyze = opened
-    ? async (force?: boolean) => {
-        // Manual Prepare on an unstarted episode: switch to it, then prepare.
-        await playback.startOpenedEpisode();
-        await playback.requestAnalyze(force);
-      }
+    ? (force?: boolean) =>
+        runOpenedStart(async () => {
+          // Manual Prepare on an unstarted episode: switch to it, then prepare.
+          await playback.startOpenedEpisode();
+          await playback.requestAnalyze(force);
+        })
     : playback.requestAnalyze;
+  // An opened (unstarted) episode may be from a different show than the one
+  // playing, so the live per-show adDetectionEnabled doesn't apply to it.
+  const showAdDetectionEnabled = opened ? true : adDetectionEnabled;
+  const autoSkipActive = autoSkip && showAdDetectionEnabled;
 
   // Leaving the player drops an unstarted episode so the mini-player / next
   // open reflect the live one.
@@ -164,11 +185,14 @@ export default function PlayerScreen() {
   const showNotes = useMemo(() => formatShowNotes(episode?.description), [episode?.description]);
   const showNotesParts = useMemo(() => parseShowNotesParts(showNotes), [showNotes]);
 
+  const episodeGuid = episode?.guid;
   useEffect(() => {
-    if (analyzeError) {
-      Alert.alert('Analysis failed', analyzeError);
-    }
-  }, [analyzeError]);
+    if (!analyzeError) return;
+    const key = `${episodeGuid ?? ''}:${analyzeError}`;
+    if (key === lastAlertedAnalyzeErrorKey) return;
+    lastAlertedAnalyzeErrorKey = key;
+    Alert.alert('Analysis failed', analyzeError);
+  }, [analyzeError, episodeGuid]);
 
   const seekToTimestamp = (ms: number) => {
     const max = durationMs > 0 ? durationMs : ms;
@@ -229,12 +253,12 @@ export default function PlayerScreen() {
     
     // Show state when not analyzing
     if (!autoSkip) return 'Manual';
-    if (!adDetectionEnabled) {
+    if (!showAdDetectionEnabled) {
       // Per-show OFF but global ON: Prepare is still available
       return 'Prep';
     }
     return 'Prep';
-  }, [adDetectionEnabled, autoSkip, analyzeStatus, analyzeError, segs.length, isAnalyzing, analyzeEtaLabel]);
+  }, [showAdDetectionEnabled, autoSkip, analyzeStatus, analyzeError, segs.length, isAnalyzing, analyzeEtaLabel]);
 
   if (!episode) {
     return (
@@ -264,14 +288,14 @@ export default function PlayerScreen() {
   const hasCachedSegments = segs.length > 0;
 
   const toggleAutoSkip = () => {
-    // A disabled podcast cannot be toggled from the player, but turning the
-    // global switch back on should be possible even after it cleared detection.
-    if (!autoSkip || !adDetectionEnabled) {
-      // setAutoSkip(true) restores from cache / GET; analyzes only if missing/error.
-      void setAutoSkip(true);
+    // Toggle the global switch only; per-show detection is managed on the show
+    // page. Keying off adDetectionEnabled here made turning auto-skip off a no-op.
+    if (autoSkip) {
+      void setAutoSkip(false);
       return;
     }
-    void setAutoSkip(false);
+    // setAutoSkip(true) restores from cache / GET; analyzes only if missing/error.
+    void setAutoSkip(true);
   };
 
   const onAdSkipPress = () => {
@@ -288,7 +312,7 @@ export default function PlayerScreen() {
   };
 
   const onSheetAutoSkipChange = (enabled: boolean) => {
-    if (enabled === !!(autoSkip && adDetectionEnabled)) return;
+    if (enabled === !!autoSkipActive) return;
     // Keep the sheet open while toggling — closing it on turn-off made rapid
     // toggles feel broken, and a load race could wipe segments before reopen.
     if (enabled) {
@@ -498,7 +522,7 @@ export default function PlayerScreen() {
                 <Text
                   style={[
                     styles.actionValue,
-                    autoSkip && adDetectionEnabled && styles.actionValueActive,
+                    autoSkipActive && styles.actionValueActive,
                   ]}>
                   {adSkipHint}
                 </Text>
@@ -615,13 +639,13 @@ export default function PlayerScreen() {
               <View style={styles.sheetAutoCopy}>
                 <Text style={styles.sheetAutoLabel}>Auto-skip</Text>
                 <Text style={styles.sheetAutoHint}>
-                  {autoSkip && adDetectionEnabled
+                  {autoSkipActive
                     ? 'Jump past ads automatically'
                     : 'Tap a segment below to jump'}
                 </Text>
               </View>
               <Switch
-                value={!!(autoSkip && adDetectionEnabled)}
+                value={!!autoSkipActive}
                 onValueChange={onSheetAutoSkipChange}
                 trackColor={{ false: theme.border, true: theme.accent }}
                 thumbColor={theme.text}

@@ -43,27 +43,49 @@ function setQueue(input: Episode[]) {
   if (next === queue) return;
   queue = next;
   listeners.forEach((l) => l());
+  // Until the stored queue has been read, writing would overwrite it with a partial
+  // list; in-memory changes are merged in when hydration succeeds.
+  if (!hydrated) return;
   void AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(queue)).catch((e) =>
     console.warn('[queue] persist failed:', e),
   );
+}
+
+function parseStoredQueue(raw: string | null): Episode[] {
+  if (!raw) return [];
+  try {
+    return normalizeQueue(JSON.parse(raw));
+  } catch {
+    console.warn('[queue] stored queue is corrupt; starting empty');
+    return [];
+  }
 }
 
 export function hydrateQueue(): Promise<void> {
   if (hydrated) return Promise.resolve();
   if (!hydrating) {
     hydrating = (async () => {
+      let raw: string | null;
       try {
-        const raw = await AsyncStorage.getItem(QUEUE_KEY);
-        const stored = raw ? normalizeQueue(JSON.parse(raw)) : [];
+        raw = await AsyncStorage.getItem(QUEUE_KEY);
+      } catch (e) {
+        // Read failed (not "no data"): stay unhydrated so nothing overwrites the stored
+        // queue, and retry on the next call.
+        console.warn('[queue] hydrate failed; will retry:', e);
+        hydrating = null;
+        return;
+      }
+      try {
+        const stored = parseStoredQueue(raw);
         // Keep anything queued before hydration finished, after the stored items.
         let merged = stored;
         for (const ep of queue) merged = addPure(merged, ep);
         queue = merged;
         // One-time cleanup: drop episodes already marked played.
         await hydratePlayed();
-        const cleaned = dropPlayed(queue, isPlayed, currentGuid);
-        if (cleaned !== queue) {
-          queue = cleaned;
+        queue = dropPlayed(queue, isPlayed, currentGuid);
+        // Persist if cleanup or items added before hydration changed anything.
+        if (queue.length !== stored.length || queue.some((e, i) => e.guid !== stored[i]?.guid)) {
           void AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(queue)).catch(() => {});
         }
       } catch (e) {
@@ -172,14 +194,29 @@ function showKey(target: ShowTarget): string | null {
   return feed ? `feed:${feed}` : null;
 }
 
+/**
+ * Throws when storage can't be read, so callers that write the whole blob back never
+ * replace every show's settings with an empty object. Corrupt JSON reads as empty.
+ */
 async function readAutoQueue(): Promise<AutoQueueAll> {
+  const raw = await AsyncStorage.getItem(AUTO_QUEUE_KEY);
+  if (!raw) return {};
   try {
-    const raw = await AsyncStorage.getItem(AUTO_QUEUE_KEY);
-    const parsed = raw ? JSON.parse(raw) : {};
+    const parsed = JSON.parse(raw);
     return parsed && typeof parsed === 'object' ? (parsed as AutoQueueAll) : {};
   } catch {
+    console.warn('[queue] auto-add settings are corrupt; starting empty');
     return {};
   }
+}
+
+let autoQueueChain: Promise<unknown> = Promise.resolve();
+
+/** Run read-modify-write operations on the auto-add blob one at a time. */
+function serializeAutoQueue<T>(task: () => Promise<T>): Promise<T> {
+  const run = autoQueueChain.then(task, task);
+  autoQueueChain = run.catch(() => undefined);
+  return run;
 }
 
 async function writeAutoQueue(all: AutoQueueAll) {
@@ -190,7 +227,12 @@ async function writeAutoQueue(all: AutoQueueAll) {
 export async function isAutoQueueEnabled(target: ShowTarget): Promise<boolean> {
   const key = showKey(target);
   if (!key) return false;
-  return (await readAutoQueue())[key]?.enabled === true;
+  try {
+    return (await readAutoQueue())[key]?.enabled === true;
+  } catch (e) {
+    console.warn('[queue] could not read auto-add settings:', e);
+    return false;
+  }
 }
 
 /** Turning on records the currently known episodes as seen (no backfill). */
@@ -201,21 +243,23 @@ export async function setAutoQueueEnabled(
 ): Promise<void> {
   const key = showKey(target);
   if (!key) return;
-  const all = await readAutoQueue();
-  if (enabled) {
-    all[key] = enableAutoQueueState(knownEpisodes, Date.now());
-  } else if (all[key]) {
-    all[key] = { ...all[key], enabled: false };
-  }
-  await writeAutoQueue(all);
+  // Serialized with feed processing, which would otherwise write back a stale copy
+  // (silently undoing this toggle).
+  await serializeAutoQueue(async () => {
+    const all = await readAutoQueue();
+    if (enabled) {
+      all[key] = enableAutoQueueState(knownEpisodes, Date.now());
+    } else if (all[key]) {
+      all[key] = { ...all[key], enabled: false };
+    }
+    await writeAutoQueue(all);
+  });
 }
-
-let autoQueueChain: Promise<unknown> = Promise.resolve();
 
 /** Called after a feed refresh: append newly published episodes when enabled. Resolves to the number added. */
 export function processFeedForAutoQueue(target: ShowTarget, feedEpisodes: Episode[]): Promise<number> {
   // Serialize so concurrent refreshes don't double-add or lose seen state.
-  const run = autoQueueChain.then(async (): Promise<number> => {
+  return serializeAutoQueue(async (): Promise<number> => {
     const key = showKey(target);
     if (!key || !feedEpisodes.length) return 0;
     const all = await readAutoQueue();
@@ -236,8 +280,6 @@ export function processFeedForAutoQueue(target: ShowTarget, feedEpisodes: Episod
     console.warn('[queue] auto-add failed:', e);
     return 0;
   });
-  autoQueueChain = run;
-  return run;
 }
 
 /** Shows with auto-add on (for the periodic subscription refresh). */

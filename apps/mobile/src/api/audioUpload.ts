@@ -40,11 +40,30 @@ async function ensureCacheDir(): Promise<void> {
 /**
  * Get a stable cache path for an episode.
  */
+/** Filesystems cap names at 255 bytes; keep well under it. */
+const MAX_CACHE_BASENAME = 150;
+
+function fnv1aHex(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
 function getCacheFileName(episodeGuid: string, audioUrl: string): string {
-  const urlSuffix = audioUrl.split('?')[0].split('/').pop() || 'audio.mp3';
-  const extension = urlSuffix.includes('.') ? urlSuffix.split('.').pop() : 'mp3';
+  const urlSuffix = audioUrl.split('?')[0].split('#')[0].split('/').pop() || 'audio.mp3';
+  const rawExtension = urlSuffix.includes('.') ? urlSuffix.split('.').pop() ?? '' : '';
+  const extension = /^[a-zA-Z0-9]{1,5}$/.test(rawExtension) ? rawExtension : 'mp3';
   const sanitized = episodeGuid.replace(/[^a-zA-Z0-9-_.]/g, '_');
-  return `${sanitized}.${extension}`;
+  // Short names are unchanged (existing downloads keep matching); very long GUIDs
+  // (often URLs) are truncated with a hash so the download doesn't fail.
+  const base =
+    sanitized.length > MAX_CACHE_BASENAME
+      ? `${sanitized.slice(0, MAX_CACHE_BASENAME - 9)}-${fnv1aHex(episodeGuid)}`
+      : sanitized;
+  return `${base}.${extension}`;
 }
 
 function getCachePath(episodeGuid: string, audioUrl: string): string {
@@ -138,10 +157,15 @@ export async function downloadAudioForAnalysis(
 
   console.log('[audio-download] Downloading audio for analysis:', audioUrl);
 
+  // Download to a temp file and move it into place only once it's complete and the
+  // server returned success; otherwise an error page or a truncated file would be
+  // cached (and reused) as the episode's audio.
+  const partPath = `${localPath}.part`;
+  const discardPart = () => FileSystem.deleteAsync(partPath, { idempotent: true }).catch(() => {});
   const startDownload = (url: string) =>
     FileSystem.createDownloadResumable(
       url,
-      localPath,
+      partPath,
       {
         // Match playback UA so Simplecast/Podtrac DAI variants align with the player.
         headers: {
@@ -160,24 +184,34 @@ export async function downloadAudioForAnalysis(
 
   let result: Awaited<ReturnType<typeof startDownload>>;
   try {
-    result = await startDownload(audioUrl);
+    try {
+      result = await startDownload(audioUrl);
+    } catch (error) {
+      if (!isRedirectError(error)) throw error;
+      // Tracking chains (podtrac -> pscrb.fm IPv4/IPv6 bounce -> simplecast) can loop on
+      // some phone networks. Let the server follow the chain, then fetch the final URL.
+      console.warn('[audio-download] Redirect failure, resolving via API:', error);
+      await discardPart();
+      const finalUrl = await resolveAudioUrl(audioUrl);
+      console.log('[audio-download] Resolved audio URL:', finalUrl);
+      result = await startDownload(finalUrl);
+    }
+    if (!result) {
+      throw new Error('Download failed');
+    }
+    // downloadAsync resolves (and writes the body) for HTTP error responses too.
+    if (result.status < 200 || result.status >= 300) {
+      throw new Error(`Audio download failed: HTTP ${result.status}`);
+    }
+    await FileSystem.moveAsync({ from: partPath, to: localPath });
   } catch (error) {
-    if (!isRedirectError(error)) throw error;
-    // Tracking chains (podtrac -> pscrb.fm IPv4/IPv6 bounce -> simplecast) can loop on
-    // some phone networks. Let the server follow the chain, then fetch the final URL.
-    console.warn('[audio-download] Redirect failure, resolving via API:', error);
-    await FileSystem.deleteAsync(localPath, { idempotent: true }).catch(() => {});
-    const finalUrl = await resolveAudioUrl(audioUrl);
-    console.log('[audio-download] Resolved audio URL:', finalUrl);
-    result = await startDownload(finalUrl);
-  }
-  if (!result) {
-    throw new Error('Download failed');
+    await discardPart();
+    throw error;
   }
 
   let audioMd5: string | undefined;
   try {
-    audioMd5 = await calculateAudioMd5(result.uri);
+    audioMd5 = await calculateAudioMd5(localPath);
   } catch (error) {
     console.warn('[audio-cache] Could not fingerprint downloaded audio:', error);
   }
@@ -188,8 +222,8 @@ export async function downloadAudioForAnalysis(
     Date.now(),
     audioMd5,
   );
-  console.log('[audio-download] Downloaded to:', result.uri);
-  return result.uri;
+  console.log('[audio-download] Downloaded to:', localPath);
+  return localPath;
 }
 
 /**
@@ -265,8 +299,26 @@ export async function uploadAudioForAnalysis(
   if (Platform.OS !== 'web' && onProgress) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
+      // RN's HTTP client has no timeouts: abort if the upload makes no progress (and the
+      // server doesn't answer) for this long, instead of hanging Prepare forever.
+      const IDLE_TIMEOUT_MS = 120_000;
+      let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      let timedOut = false;
+      const resetIdle = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          timedOut = true;
+          xhr.abort();
+        }, IDLE_TIMEOUT_MS);
+      };
+      const stopIdle = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = null;
+      };
+      xhr.addEventListener('loadend', stopIdle);
       
       xhr.upload.addEventListener('progress', (e) => {
+        resetIdle();
         if (e.lengthComputable && onProgress) {
           onProgress({
             totalBytesSent: e.loaded,
@@ -297,7 +349,13 @@ export async function uploadAudioForAnalysis(
       });
 
       xhr.addEventListener('abort', () => {
-        reject(new Error('Upload was cancelled before the server responded.'));
+        reject(
+          new Error(
+            timedOut
+              ? `Upload stalled (no progress for ${IDLE_TIMEOUT_MS / 1000}s). Check the connection and try again.`
+              : 'Upload was cancelled before the server responded.',
+          ),
+        );
       });
 
       xhr.open('POST', uploadUrl);
@@ -307,6 +365,7 @@ export async function uploadAudioForAnalysis(
         xhr.setRequestHeader(key, value);
       });
 
+      resetIdle();
       xhr.send(formData as any);
     });
   }
@@ -383,6 +442,29 @@ export async function getCachedAudioPath(
     console.warn('[audio-cache] Failed to check cached audio:', err);
     return null;
   }
+}
+
+/**
+ * Local file paths for the episodes that have a downloaded copy, keyed by guid.
+ * Lists the cache directory once instead of stat-ing every episode.
+ */
+export async function getCachedAudioPaths(
+  episodes: { guid: string; enclosureUrl?: string }[],
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  try {
+    const info = await FileSystem.getInfoAsync(AUDIO_CACHE_DIR);
+    if (!info.exists) return out;
+    const files = new Set(await FileSystem.readDirectoryAsync(AUDIO_CACHE_DIR));
+    for (const ep of episodes) {
+      if (!ep.guid || !ep.enclosureUrl) continue;
+      const fileName = getCacheFileName(ep.guid, ep.enclosureUrl);
+      if (files.has(fileName)) out[ep.guid] = `${AUDIO_CACHE_DIR}${fileName}`;
+    }
+  } catch (error) {
+    console.warn('[audio-cache] Failed to list cached audio:', error);
+  }
+  return out;
 }
 
 /**

@@ -103,8 +103,11 @@ type ExpoAudioMod = {
 const SEEK_CATCHUP_MS = 1200;
 /** Drop pending seek pin after this long even if native never matches. */
 const SEEK_PIN_MAX_MS = 2500;
-/** Block auto-skip for this long after a manual seek (ms). */
-const MANUAL_SEEK_GRACE_MS = 3000;
+/**
+ * While loading a new item, ignore native status for a different episode for at most
+ * this long (late heartbeats from the previous item).
+ */
+const LOAD_STALE_STATUS_WINDOW_MS = 5000;
 /**
  * The Android playback service publishes status every 500 ms. If we hear nothing for
  * this long, assume the service died (or ignored a command) and fall back to the state
@@ -131,8 +134,16 @@ let seeking = false;
 /** Optimistic position after seek; overrides stale native reports until catch-up. */
 let pendingSeekMs: number | null = null;
 let pendingSeekAt = 0;
-/** Timestamp of last manual seek; blocks auto-skip for a grace period. */
-let lastManualSeekAt = 0;
+/**
+ * Segment the user manually seeked into. It is not auto-skipped until playback leaves
+ * it, so rewinding into an ad lets you hear it.
+ */
+let suppressedSegment: AdSegment | null = null;
+/** True when the loaded item plays from the local (analyzed) file. */
+let sourceIsLocal = false;
+/** Guid being loaded; native status for other episodes is ignored until it's confirmed. */
+let pendingLoadGuid: string | null = null;
+let pendingLoadAt = 0;
 let audioModeReady = false;
 let player: ExpoAudioPlayer | null = null;
 let statusSub: { remove: () => void } | null = null;
@@ -140,15 +151,31 @@ let androidStatusUnsubscribe: (() => void) | null = null;
 /** Last time the Android service sent a status (or we sent it a command). */
 let lastNativeStatusAt = 0;
 
-function applyAndroidAutoStatus(nativeStatus: AndroidAutoStatus, fallbackEpisode?: Episode) {
-  lastNativeStatusAt = Date.now();
+/** Returns false when the status was ignored as a stale report for the previous item. */
+function applyAndroidAutoStatus(nativeStatus: AndroidAutoStatus, fallbackEpisode?: Episode): boolean {
+  let nativeEpisode: Episode | null = null;
   if (nativeStatus.episodeJson) {
     try {
-      const nativeEpisode = JSON.parse(nativeStatus.episodeJson) as Episode;
-      status.episode = mergeEpisodeMetadata(nativeEpisode, status.episode);
+      nativeEpisode = JSON.parse(nativeStatus.episodeJson) as Episode;
     } catch {
-      if (fallbackEpisode) status.episode = fallbackEpisode;
+      nativeEpisode = null;
     }
+  }
+  if (pendingLoadGuid) {
+    const withinWindow = Date.now() - pendingLoadAt < LOAD_STALE_STATUS_WINDOW_MS;
+    if (nativeEpisode?.guid === pendingLoadGuid || !withinWindow) {
+      pendingLoadGuid = null;
+    } else {
+      // The service hasn't processed our load yet: don't let the previous item's
+      // heartbeat flip the episode/position back.
+      return false;
+    }
+  }
+  lastNativeStatusAt = Date.now();
+  if (nativeEpisode) {
+    status.episode = mergeEpisodeMetadata(nativeEpisode, status.episode);
+  } else if (nativeStatus.episodeJson && fallbackEpisode) {
+    status.episode = fallbackEpisode;
   }
   applyNativePosition(nativeStatus.positionMs);
   if (nativeStatus.durationMs > 0) status.durationMs = nativeStatus.durationMs;
@@ -167,6 +194,7 @@ function applyAndroidAutoStatus(nativeStatus: AndroidAutoStatus, fallbackEpisode
     playbackRate = nativeStatus.playbackRate;
     status.playbackRate = playbackRate;
   }
+  return true;
 }
 
 /** Correct the UI if the native service has gone silent while we think it's playing. */
@@ -385,16 +413,28 @@ function startTick() {
       return;
     }
 
-    if (autoSkip && adDetectionEnabled && segments.length && status.isPlaying && pendingSeekMs == null) {
-      // Skip auto-skip if we're within the grace period after a manual seek.
-      const timeSinceManualSeek = Date.now() - lastManualSeekAt;
-      if (timeSinceManualSeek < MANUAL_SEEK_GRACE_MS) {
-        // Let user stay at their manually chosen position for a few seconds.
-      } else {
-        const target = seekTargetIfInAd(status.positionMs, segments);
-        if (target != null) {
-          await seekTo(target, true);
-        }
+    if (
+      suppressedSegment &&
+      (status.positionMs < suppressedSegment.start_ms || status.positionMs >= suppressedSegment.end_ms)
+    ) {
+      suppressedSegment = null;
+    }
+    // Skip maps are computed from the downloaded file; never apply them to a stream.
+    // (The stub clock has no real audio, so it still exercises skip logic in dev.)
+    if (
+      (sourceIsLocal || backend === 'stub') &&
+      autoSkip &&
+      adDetectionEnabled &&
+      segments.length &&
+      status.isPlaying &&
+      pendingSeekMs == null
+    ) {
+      const active = suppressedSegment
+        ? segments.filter((s) => s !== suppressedSegment)
+        : segments;
+      const target = seekTargetIfInAd(status.positionMs, active);
+      if (target != null) {
+        await seekTo(target, true);
       }
     }
     emit();
@@ -430,9 +470,18 @@ export function setAdDetectionEnabled(enabled: boolean) {
   configureAndroidAutoSkip({ adDetectionEnabled: enabled });
 }
 
-export function setSkipSegments(segs: AdSegment[]) {
+/**
+ * Set the segments to auto-skip for `episodeGuid` (defaults to the loaded episode).
+ * Ignored when that episode isn't the one loaded, so a late result for another
+ * episode can never be applied to the current one.
+ */
+export function setSkipSegments(segs: AdSegment[], episodeGuid?: string | null) {
+  const loadedGuid = status.episode?.guid ?? null;
+  const guid = episodeGuid === undefined ? loadedGuid : episodeGuid;
+  if (!guid || guid !== loadedGuid) return;
   segments = segs ?? [];
-  configureAndroidAutoSkip({ segments, episodeGuid: status.episode?.guid ?? null });
+  suppressedSegment = null;
+  configureAndroidAutoSkip({ segments, episodeGuid: guid });
 }
 
 export function getBackend(): Backend {
@@ -452,6 +501,9 @@ export async function loadAndPlay(
 ): Promise<void> {
   clearPendingSeek();
   endedReportedFor = null;
+  suppressedSegment = null;
+  sourceIsLocal = opts?.localFilePath != null;
+  pendingLoadGuid = null;
   const startMs =
     opts?.startPositionMs != null && opts.startPositionMs > 0
       ? Math.floor(opts.startPositionMs)
@@ -478,9 +530,13 @@ export async function loadAndPlay(
   if (Platform.OS === 'android' && isAndroidAutoPlaybackAvailable()) {
     releasePlayer();
     backend = 'android-auto';
+    pendingLoadGuid = episode.guid;
+    pendingLoadAt = Date.now();
+    // Drop segments persisted for this guid in an earlier session; the current map is
+    // re-validated and re-sent once the skip map loads.
+    configureAndroidAutoSkip({ segments: [], episodeGuid: episode.guid });
     androidStatusUnsubscribe = subscribeAndroidAutoStatus((nativeStatus) => {
-      applyAndroidAutoStatus(nativeStatus, episode);
-      emit();
+      if (applyAndroidAutoStatus(nativeStatus, episode)) emit();
     });
     loadAndroidAutoEpisode(episode, opts?.localFilePath, startMs);
     // Optimistic until the service's first heartbeat confirms or corrects it.
@@ -545,8 +601,9 @@ export async function loadAndPlay(
       startTick();
       emit();
       if (startMs > 0) {
-        // Seek after play so native player has a chance to load the URI.
-        await seekTo(startMs);
+        // Seek after play so native player has a chance to load the URI. Not a user
+        // seek: a resume position inside an ad should still be skipped.
+        await seekTo(startMs, true);
       }
       return;
     } catch (e: any) {
@@ -613,9 +670,10 @@ export async function seekTo(positionMs: number, isAutoSkip = false): Promise<vo
   const capped =
     status.durationMs > 0 ? Math.min(target, status.durationMs) : target;
 
-  // Track manual seeks to prevent immediate auto-skip after user interaction.
+  // Manually seeking into a segment means the user wants to hear it.
   if (!isAutoSkip) {
-    lastManualSeekAt = Date.now();
+    suppressedSegment =
+      segments.find((s) => capped >= s.start_ms && capped < s.end_ms) ?? null;
   }
 
   seeking = true;
@@ -694,6 +752,7 @@ export function initializePlayerBackend(): void {
   status.playbackRate = nativeStatus.playbackRate;
   playbackRate = nativeStatus.playbackRate;
   backend = 'android-auto';
+  pendingLoadGuid = null;
   androidStatusUnsubscribe?.();
   androidStatusUnsubscribe = subscribeAndroidAutoStatus((nextStatus) => {
     applyAndroidAutoStatus(nextStatus);

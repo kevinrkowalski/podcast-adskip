@@ -137,8 +137,23 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const skipMapRef = useRef<SkipMap | null>(null);
   /** Bumped on auto-skip toggle to invalidate in-flight loadSkipMap work. */
   const skipLoadGen = useRef(0);
-  /** True while requestAnalyze (manual Prepare) is in flight; prevents loadSkipMap/clearAdDetection from clobbering. */
-  const manualPrepareInFlight = useRef(false);
+  /**
+   * Guid whose requestAnalyze (Prepare) is in flight; prevents loadSkipMap/clearAdDetection
+   * from clobbering that episode's progress. Other episodes are unaffected.
+   */
+  const manualPrepareGuidRef = useRef<string | null>(null);
+  const isPrepareInFlightForCurrent = useCallback(
+    () =>
+      manualPrepareGuidRef.current != null &&
+      manualPrepareGuidRef.current === episodeRef.current?.guid,
+    [],
+  );
+  /**
+   * Set while playEpisode switches to a new episode, until the player reports it. Player
+   * updates for the previous episode in that window must not be treated as an episode
+   * change (they would save its position under the new guid and flip the UI back).
+   */
+  const switchingToGuidRef = useRef<string | null>(null);
   const manualReanalysisGuidRef = useRef<string | null>(null);
   const analyzeFingerprintRef = useRef<{ episodeGuid: string; audioMd5: string } | null>(null);
   const requestAnalyzeForEpisodeRef = useRef<((target: Episode) => Promise<void>) | null>(null);
@@ -147,6 +162,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const persistPosition = useCallback(async (force = false) => {
     const ep = episodeRef.current;
     if (!ep?.guid || clearedPositionGuid.current === ep.guid) return;
+    // Mid-switch, positionRef still holds the previous episode's position.
+    if (switchingToGuidRef.current) return;
     const pos = positionRef.current;
     const dur = durationRef.current;
     const now = Date.now();
@@ -186,6 +203,12 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     player.initializePlayerBackend();
     void syncAndroidAutoCatalog();
     return player.subscribePlayer((st) => {
+      const switchingTo = switchingToGuidRef.current;
+      if (switchingTo) {
+        // Still reporting the previous episode: ignore until loadAndPlay takes over.
+        if (st.episode?.guid !== switchingTo) return;
+        switchingToGuidRef.current = null;
+      }
       const previousGuid = episodeRef.current?.guid;
       const previousPositionMs = positionRef.current;
       const previousDurationMs = durationRef.current;
@@ -240,7 +263,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   }, [persistPosition]);
 
   const clearCachedPlaybackData = useCallback((): boolean => {
-    if (manualPrepareInFlight.current) return false;
+    if (isPrepareInFlightForCurrent()) return false;
 
     skipLoadGen.current += 1;
     const guid = episodeRef.current?.guid;
@@ -255,11 +278,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     setUploadProgress(null);
     player.setSkipSegments([]);
     return true;
-  }, []);
+  }, [isPrepareInFlightForCurrent]);
 
   const clearAdDetection = useCallback((status = 'disabled') => {
     // Never clear while manual Prepare is running — Prepare must show progress and complete.
-    if (manualPrepareInFlight.current) {
+    if (isPrepareInFlightForCurrent()) {
       console.log('[playback] clearAdDetection blocked: manual prepare in flight');
       return;
     }
@@ -272,7 +295,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     setUploadProgress(null);
     player.setAdDetectionEnabled(false);
     player.setSkipSegments([]);
-  }, []);
+  }, [isPrepareInFlightForCurrent]);
 
   /** Global Settings kill-switch: Off means no ad-detection API calls at all. */
   const canCallAdDetectionApi = useCallback(async (): Promise<boolean> => {
@@ -327,14 +350,14 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
    */
   const abortLoadKeepCache = useCallback(() => {
     // Never clear while manual Prepare is running — Prepare must show progress and complete.
-    if (manualPrepareInFlight.current) {
+    if (isPrepareInFlightForCurrent()) {
       console.log('[playback] abortLoadKeepCache blocked: manual prepare in flight');
       return;
     }
     setAdDetectionEnabledState(false);
     player.setAdDetectionEnabled(false);
     // Leave skipMap / analyzeStatus / player segments intact.
-  }, []);
+  }, [isPrepareInFlightForCurrent]);
 
   const loadSkipMap = useCallback(async (ep: Episode, enabled: boolean): Promise<SkipMap | null> => {
     const gen = skipLoadGen.current;
@@ -351,7 +374,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       // The global setting is the API kill-switch; per-show OFF only prevents auto-analysis.
       // A manually prepared map should still be recoverable from the server after a cold start.
       if (!(await getAutoSkipEnabled())) {
-        player.setSkipSegments([]);
+        player.setSkipSegments([], ep.guid);
         return null;
       }
 
@@ -375,7 +398,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
             console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
           }
           if (!stillCurrent()) return null;
-          player.setSkipSegments(applySkipFilter(remote.segments, settings));
+          player.setSkipSegments(applySkipFilter(remote.segments, settings), ep.guid);
           const warnings = detectAudioMismatch(ep, remote);
           const summary = formatMismatchSummary(warnings);
           setAudioMismatchWarning(summary);
@@ -383,14 +406,14 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
             console.warn('[playback] Audio mismatch detected:', summary, warnings);
           }
         } else {
-          player.setSkipSegments([]);
+          player.setSkipSegments([], ep.guid);
         }
         return remote;
       } catch (error) {
         if (!stillCurrent()) return null;
         console.warn('[playback] Existing skip-map lookup failed:', error);
         setAnalyzeStatus('offline');
-        player.setSkipSegments([]);
+        player.setSkipSegments([], ep.guid);
         return null;
       }
     };
@@ -417,7 +440,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         setSkipMap(local);
         skipMapRef.current = local;
         const filtered = applySkipFilter(local.segments, settings);
-        player.setSkipSegments(filtered);
+        player.setSkipSegments(filtered, ep.guid);
         setAnalyzeStatus('ready');
         const warnings = detectAudioMismatch(ep, local);
         const summary = formatMismatchSummary(warnings);
@@ -453,7 +476,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         setSkipMap(local);
         skipMapRef.current = local;
         const filtered = applySkipFilter(local.segments, settings);
-        player.setSkipSegments(filtered);
+        player.setSkipSegments(filtered, ep.guid);
         setAnalyzeStatus('ready');
         const warnings = detectAudioMismatch(ep, local);
         const summary = formatMismatchSummary(warnings);
@@ -492,7 +515,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         setSkipMap(local);
         skipMapRef.current = local;
         const filtered = applySkipFilter(local.segments, settings);
-        player.setSkipSegments(filtered);
+        player.setSkipSegments(filtered, ep.guid);
         setAnalyzeStatus('ready');
         return local;
       }
@@ -505,7 +528,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       skipMapRef.current = local;
       // Apply skip filter before passing to player
       const filtered = applySkipFilter(local.segments, settings);
-      player.setSkipSegments(filtered);
+      player.setSkipSegments(filtered, ep.guid);
       setAnalyzeStatus('ready');
       const warnings = detectAudioMismatch(ep, local);
       const summary = formatMismatchSummary(warnings);
@@ -544,7 +567,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         if (!stillCurrent()) return null;
         // Apply skip filter before passing to player
         const filtered = applySkipFilter(remote.segments, settings);
-        player.setSkipSegments(filtered);
+        player.setSkipSegments(filtered, ep.guid);
         setAnalyzeStatus('ready');
         const warnings = detectAudioMismatch(ep, remote);
         const summary = formatMismatchSummary(warnings);
@@ -554,7 +577,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         }
       } else {
         setAnalyzeStatus(remote.status);
-        player.setSkipSegments([]);
+        player.setSkipSegments([], ep.guid);
         setAudioMismatchWarning(null);
       }
       return remote;
@@ -562,7 +585,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       if (!stillCurrent()) return null;
       console.warn('[playback] Skip-map restore from API failed:', error);
       setAnalyzeStatus('offline');
-      player.setSkipSegments([]);
+      player.setSkipSegments([], ep.guid);
       return null;
     }
   }, [abortLoadKeepCache, applySkipFilter, canUseAdDetection, clearAdDetection, getMatchingLocalSkipMap]);
@@ -665,6 +688,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       const prevPos = positionRef.current;
       const prevDur = durationRef.current;
 
+      // Until loadAndPlay reports `ep`, the player still describes `prev`.
+      if (prev?.guid !== ep.guid) switchingToGuidRef.current = ep.guid;
       setEpisode(ep);
       restoreShowNotesRef.current(ep);
       episodeRef.current = ep;
@@ -676,6 +701,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       setAnalyzeStatus(null);
       setAnalyzeError(null);
       setAudioMismatchWarning(null);
+      setUploadProgress(null);
       skipLoadGen.current += 1;
 
       // Persist the previous episode using the snapshot (ref already points at `ep`).
@@ -736,6 +762,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       } catch (err) {
         console.error('[playback] Failed to load and play episode:', err);
         // Continue with skip map loading even if player fails (stub mode may still work)
+      } finally {
+        if (switchingToGuidRef.current === ep.guid) switchingToGuidRef.current = null;
       }
       
       // Load skip map and auto-analyze in parallel without blocking return.
@@ -765,22 +793,25 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
                 ? await getCachedAudioMd5(ep.guid, ep.enclosureUrl)
                 : null;
               const existing = await getSkipMap(ep.guid, audioMd5);
+              const stillCurrent = () => episodeRef.current?.guid === ep.guid;
               if (existing.status === 'ready') {
                 try {
                   await cacheSkipMap(ep.guid, existing, ep.enclosureUrl);
                 } catch (cacheErr) {
                   console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
                 }
-                setSkipMap(existing);
-                skipMapRef.current = existing;
                 const filtered = applySkipFilter(existing.segments, await getPodcastSkipSettings({
                   collectionId: ep.collectionId,
                   feedUrl: ep.feedUrl,
                 }));
-                player.setSkipSegments(filtered);
+                if (!stillCurrent()) return;
+                setSkipMap(existing);
+                skipMapRef.current = existing;
+                player.setSkipSegments(filtered, ep.guid);
                 setAnalyzeStatus('ready');
                 return;
               }
+              if (!stillCurrent()) return;
               if (existing.status === 'pending' || existing.status === 'queued') {
                 setSkipMap(existing);
                 skipMapRef.current = existing;
@@ -1004,7 +1035,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         setSkipSettingsState(settings);
         setSkipMap(cached);
         const filtered = applySkipFilter(cached.segments ?? [], settings);
-        player.setSkipSegments(filtered);
+        player.setSkipSegments(filtered, current.guid);
         setAnalyzeStatus('ready');
         const warnings = detectAudioMismatch(current, cached);
         const summary = formatMismatchSummary(warnings);
@@ -1053,13 +1084,17 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       player.setAdDetectionEnabled(effective);
       if (!effective) clearAdDetection();
       else {
-        setSkipMap(null);
-        skipMapRef.current = null;
-        setAnalyzeStatus(null);
-        player.setSkipSegments([]);
+        // Restore the episode's map (local cache or server) instead of leaving it
+        // without skips for the rest of the episode.
+        skipLoadGen.current += 1;
+        try {
+          await loadSkipMap(current, true);
+        } catch (error) {
+          console.warn('[playback] Could not reload skip map after enabling detection:', error);
+        }
       }
     },
-    [clearAdDetection],
+    [clearAdDetection, loadSkipMap],
   );
 
   const setPodcastSkipSetting = useCallback(
@@ -1080,7 +1115,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       const cached = skipMapRef.current;
       if (cached && cached.status === 'ready') {
         const filtered = applySkipFilter(cached.segments, updated);
-        player.setSkipSegments(filtered);
+        player.setSkipSegments(filtered, current.guid);
       }
     },
     [applySkipFilter],
@@ -1091,9 +1126,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   // that flag only blocks auto-analyze on play (see playEpisode / setAutoSkip).
   // 
   // Uses client-side download + upload to ensure analyzed audio matches playback.
-  const requestAnalyze = useCallback(
-    async (force = false, requestedEpisode?: Episode) => {
-      const targetEpisode = requestedEpisode ?? episodeRef.current ?? episode;
+  const runAnalyze = useCallback(
+    async (force: boolean, targetEpisode: Episode | null) => {
       if (!targetEpisode?.enclosureUrl) {
         console.warn('[playback] requestAnalyze: no episode or enclosureUrl');
         return;
@@ -1102,32 +1136,35 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         console.log('[playback] requestAnalyze: automatic analysis blocked by Settings');
         return;
       }
-      
-      console.log(
-        '[playback] requestAnalyze: starting download/upload flow for',
-        targetEpisode.guid,
-        'force:',
-        force,
-      );
-      
-      // Set flag to prevent loadSkipMap / clearAdDetection from clobbering this manual prepare.
-      manualPrepareInFlight.current = true;
-      if (force) manualReanalysisGuidRef.current = targetEpisode.guid;
-      
-      // Immediately update UI state so user sees feedback
-      setAdDetectionEnabledState(true);
-      player.setAdDetectionEnabled(true);
-      setAnalyzeStatus('downloading');
-      setAnalyzeError(null);
-      setUploadProgress({ downloaded: 0, uploaded: 0, total: 100 });
-      setAudioMismatchWarning(null);
-      
+      const guid = targetEpisode.guid;
+      // The download/upload can take minutes; the user may switch episodes meanwhile.
+      // UI state and player segments only ever describe the current episode.
+      const isCurrent = () => episodeRef.current?.guid === guid;
+
+      console.log('[playback] requestAnalyze: starting download/upload flow for', guid, 'force:', force);
+
+      // Prevent loadSkipMap / clearAdDetection from clobbering this episode's Prepare.
+      manualPrepareGuidRef.current = guid;
+      if (force) manualReanalysisGuidRef.current = guid;
+
+      if (isCurrent()) {
+        // Immediately update UI state so user sees feedback
+        setAdDetectionEnabledState(true);
+        player.setAdDetectionEnabled(true);
+        setAnalyzeStatus('downloading');
+        setAnalyzeError(null);
+        setUploadProgress({ downloaded: 0, uploaded: 0, total: 100 });
+        setAudioMismatchWarning(null);
+      }
+
       try {
         // Re-check global setting after state updates
         if (!force && !(await canCallAdDetectionApi())) {
           console.log('[playback] requestAnalyze: automatic analysis disabled during setup');
-          setAnalyzeStatus('disabled');
-          setUploadProgress(null);
+          if (isCurrent()) {
+            setAnalyzeStatus('disabled');
+            setUploadProgress(null);
+          }
           return;
         }
 
@@ -1137,9 +1174,10 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         // Download audio locally
         console.log('[playback] requestAnalyze: downloading audio');
         const localPath = await downloadAudioForAnalysis(
-          targetEpisode.guid,
+          guid,
           targetEpisode.enclosureUrl,
           (progress: DownloadProgress) => {
+            if (!isCurrent()) return;
             const pct = progress.totalBytesExpectedToWrite > 0
               ? (progress.totalBytesWritten / progress.totalBytesExpectedToWrite) * 50 // 0-50% for download
               : 0;
@@ -1150,11 +1188,13 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
             });
           },
         );
-        
-        const localAudioMd5 = await getCachedAudioMd5(targetEpisode.guid, targetEpisode.enclosureUrl);
-        if (episodeRef.current?.guid === targetEpisode.guid) {
+        // Android Auto picks should play this download too.
+        void syncAndroidAutoCatalog();
+
+        const localAudioMd5 = await getCachedAudioMd5(guid, targetEpisode.enclosureUrl);
+        if (isCurrent()) {
           analyzeFingerprintRef.current = localAudioMd5
-            ? { episodeGuid: targetEpisode.guid, audioMd5: localAudioMd5 }
+            ? { episodeGuid: guid, audioMd5: localAudioMd5 }
             : null;
 
           // Play the same local bytes used for analysis rather than continuing a
@@ -1168,15 +1208,15 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         }
 
         console.log('[playback] requestAnalyze: download complete, uploading to API');
-        setAnalyzeStatus('uploading');
-        
+        if (isCurrent()) setAnalyzeStatus('uploading');
+
         // Upload to API for analysis
         const result = await uploadAudioForAnalysis(
           getApiBaseUrl(),
           getResolvedAppKey(),
           localPath,
           {
-            episodeGuid: targetEpisode.guid,
+            episodeGuid: guid,
             audioUrl: targetEpisode.enclosureUrl,
             title: targetEpisode.title,
             podcastTitle: targetEpisode.podcastTitle,
@@ -1187,6 +1227,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
             force,
           },
           (progress: UploadProgress) => {
+            if (!isCurrent()) return;
             const pct = progress.totalBytesExpectedToSend > 0
               ? 50 + (progress.totalBytesSent / progress.totalBytesExpectedToSend) * 50 // 50-100% for upload
               : 50;
@@ -1197,39 +1238,46 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
             }));
           },
         );
-        
+
         const audioMd5 = typeof result.audio_md5 === 'string'
           ? result.audio_md5.toLowerCase()
           : localAudioMd5;
-        analyzeFingerprintRef.current = audioMd5
-          ? { episodeGuid: targetEpisode.guid, audioMd5 }
-          : null;
         console.log('[playback] requestAnalyze: upload complete, status:', result.status);
         if (result.status !== 'queued' && result.status !== 'pending') {
-          if (manualReanalysisGuidRef.current === targetEpisode.guid) {
+          if (manualReanalysisGuidRef.current === guid) {
             manualReanalysisGuidRef.current = null;
           }
         }
+
+        if (result.status === 'ready') {
+          // Cache even if the user moved on, so the map is restored when they come back.
+          try {
+            await cacheSkipMap(guid, result, targetEpisode.enclosureUrl);
+          } catch (cacheErr) {
+            console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
+          }
+        }
+
+        if (!isCurrent()) {
+          console.log('[playback] requestAnalyze: episode changed; not applying result for', guid);
+          return;
+        }
+        analyzeFingerprintRef.current = audioMd5 ? { episodeGuid: guid, audioMd5 } : null;
         setUploadProgress(null);
         setSkipMap(result);
         skipMapRef.current = result;
         setAnalyzeStatus(result.status);
-        
+
         if (result.status === 'ready') {
-          // Cache skip map; don't let storage failure break the analyze flow.
-          try {
-            await cacheSkipMap(targetEpisode.guid, result, targetEpisode.enclosureUrl);
-          } catch (cacheErr) {
-            console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
-          }
           // Load settings and apply filter
           const settings = await getPodcastSkipSettings({
             collectionId: targetEpisode.collectionId,
             feedUrl: targetEpisode.feedUrl,
           });
+          if (!isCurrent()) return;
           setSkipSettingsState(settings);
           const filtered = applySkipFilter(result.segments, settings);
-          player.setSkipSegments(filtered);
+          player.setSkipSegments(filtered, guid);
           const warnings = detectAudioMismatch(targetEpisode, result);
           const summary = formatMismatchSummary(warnings);
           setAudioMismatchWarning(summary);
@@ -1237,7 +1285,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
             console.warn('[playback] Audio mismatch detected:', summary, warnings);
           }
         }
-        
+
         // Keep adDetectionEnabled true even if per-show is OFF — manual Prepare overrides.
         // This allows the segment sheet to open and auto-skip toggle to work on Prepare results.
         console.log('[playback] requestAnalyze: complete, keeping adDetectionEnabled=true');
@@ -1245,19 +1293,40 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       } catch (err: any) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         console.error('[playback] Analyze (upload) failed:', err);
-        setAnalyzeStatus('error');
-        setAnalyzeError(errorMsg);
-        setUploadProgress(null);
-        setAudioMismatchWarning(null);
-        if (manualReanalysisGuidRef.current === targetEpisode.guid) {
+        if (manualReanalysisGuidRef.current === guid) {
           manualReanalysisGuidRef.current = null;
         }
+        if (isCurrent()) {
+          setAnalyzeStatus('error');
+          setAnalyzeError(errorMsg);
+          setUploadProgress(null);
+          setAudioMismatchWarning(null);
+        }
       } finally {
-        // Clear flag so auto-analyze paths can run again.
-        manualPrepareInFlight.current = false;
+        // Clear flag so auto-analyze paths can run again (unless a newer Prepare owns it).
+        if (manualPrepareGuidRef.current === guid) manualPrepareGuidRef.current = null;
       }
     },
-    [applySkipFilter, canCallAdDetectionApi, episode],
+    [applySkipFilter, canCallAdDetectionApi],
+  );
+
+  /** In-flight analyses by guid, so the same episode is never downloaded/uploaded twice at once. */
+  const analyzeInFlightRef = useRef(new Map<string, Promise<void>>());
+  const requestAnalyze = useCallback(
+    (force = false, requestedEpisode?: Episode): Promise<void> => {
+      const targetEpisode = requestedEpisode ?? episodeRef.current ?? episode;
+      const guid = targetEpisode?.guid;
+      if (!guid) return runAnalyze(force, targetEpisode);
+      const existing = analyzeInFlightRef.current.get(guid);
+      // e.g. Prepare on an unstarted episode while play's auto-analyze is already running.
+      if (existing) return existing;
+      const run = runAnalyze(force, targetEpisode).finally(() => {
+        if (analyzeInFlightRef.current.get(guid) === run) analyzeInFlightRef.current.delete(guid);
+      });
+      analyzeInFlightRef.current.set(guid, run);
+      return run;
+    },
+    [episode, runAnalyze],
   );
   requestAnalyzeForEpisodeRef.current = (target) => requestAnalyze(false, target);
 
@@ -1300,14 +1369,15 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
             if (manualReanalysisGuidRef.current === guid) {
               manualReanalysisGuidRef.current = null;
             }
-            if (ep) {
+            if (ep?.guid === guid) {
               // Load settings and apply filter
               const settings = await getPodcastSkipSettings({
                 collectionId: ep.collectionId,
                 feedUrl: ep.feedUrl,
               });
+              if (cancelled || episodeRef.current?.guid !== guid) return;
               const filtered = applySkipFilter(map.segments, settings);
-              player.setSkipSegments(filtered);
+              player.setSkipSegments(filtered, guid);
               const warnings = detectAudioMismatch(ep, map);
               const summary = formatMismatchSummary(warnings);
               setAudioMismatchWarning(summary);

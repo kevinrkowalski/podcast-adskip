@@ -66,12 +66,17 @@ export default function SettingsScreen() {
   useEffect(() => {
     let alive = true;
     (async () => {
-      const url = await hydrateApiBaseUrl();
-      const key = await hydrateAppKey();
-      if (!alive) return;
-      setApiUrlState(url);
-      setAppKeyState(key);
-      setLoaded(true);
+      try {
+        const url = await hydrateApiBaseUrl();
+        if (alive) setApiUrlState(url);
+        const key = await hydrateAppKey();
+        if (alive) setAppKeyState(key);
+      } catch (e) {
+        // Keep defaults; don't leave the form stuck unloaded.
+        console.warn('[settings] Failed to load saved API settings:', e);
+      } finally {
+        if (alive) setLoaded(true);
+      }
     })();
     return () => {
       alive = false;
@@ -313,6 +318,8 @@ export default function SettingsScreen() {
 function BackgroundRefreshSettings() {
   const [enabled, setEnabled] = useState(true);
   const [last, setLast] = useState<RefreshResult | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setEnabled(await isBackgroundRefreshEnabled());
@@ -330,6 +337,21 @@ function BackgroundRefreshSettings() {
   const onToggle = async (v: boolean) => {
     setEnabled(v);
     await setBackgroundRefreshEnabled(v);
+  };
+
+  const onRefreshNow = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setRefreshMsg(null);
+    try {
+      await refreshAutoQueueFeeds(true);
+      await reload();
+    } catch (e) {
+      console.warn('[settings] Refresh now failed:', e);
+      setRefreshMsg(e instanceof Error ? `Refresh failed: ${e.message}` : 'Refresh failed. Please try again.');
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const lastText = last
@@ -355,13 +377,12 @@ function BackgroundRefreshSettings() {
       </View>
       <Text style={styles.hint}>Last refreshed: {lastText}</Text>
       <Pressable
-        style={styles.btnSecondary}
-        onPress={async () => {
-          await refreshAutoQueueFeeds(true);
-          await reload();
-        }}>
-        <Text style={styles.btnSecondaryText}>Refresh now</Text>
+        style={[styles.btnSecondary, refreshing && styles.btnDisabled]}
+        onPress={() => void onRefreshNow()}
+        disabled={refreshing}>
+        <Text style={styles.btnSecondaryText}>{refreshing ? 'Refreshing…' : 'Refresh now'}</Text>
       </Pressable>
+      {!!refreshMsg && <Text style={styles.health}>{refreshMsg}</Text>}
     </>
   );
 }

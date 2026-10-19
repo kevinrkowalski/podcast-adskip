@@ -39,6 +39,7 @@ _MIGRATE_COLS = (
     ("analyzed_audio_duration_ms", "INTEGER"),
     ("audio_sha256", "TEXT"),
     ("audio_md5", "TEXT"),
+    ("pending_audio_sha256", "TEXT"),
 )
 
 
@@ -80,6 +81,31 @@ async def delete_expired_skip_maps(
         cursor = await db.execute(
             "DELETE FROM skip_maps WHERE COALESCE(analyzed_at, updated_at, created_at) < ?",
             (cutoff.isoformat(),),
+        )
+        await db.commit()
+        return cursor.rowcount
+
+
+INTERRUPTED_ERROR = "Analysis interrupted (server restarted)"
+
+
+async def fail_interrupted_analyses() -> int:
+    """Mark rows left 'pending' by a previous process as errored.
+
+    Background tasks do not survive a restart, so any pending row at startup
+    can never complete and would otherwise block re-analysis forever.
+    """
+    now = _now()
+    async with aiosqlite.connect(_db_path()) as db:
+        await _ensure_columns(db)
+        cursor = await db.execute(
+            """
+            UPDATE skip_maps
+            SET status = 'error', stage = 'error', error = ?,
+                stage_updated_at = ?, updated_at = ?
+            WHERE status = 'pending'
+            """,
+            (INTERRUPTED_ERROR, now, now),
         )
         await db.commit()
         return cursor.rowcount
@@ -159,6 +185,9 @@ def _row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:
         "analyzed_audio_duration_ms": analyzed_audio_duration_ms,
         "audio_sha256": row["audio_sha256"] if "audio_sha256" in keys else None,
         "audio_md5": row["audio_md5"] if "audio_md5" in keys else None,
+        "pending_audio_sha256": (
+            row["pending_audio_sha256"] if "pending_audio_sha256" in keys else None
+        ),
     }
 
 
@@ -187,6 +216,7 @@ async def set_status(
     stage: str | None = None,
     duration_ms: int | None = None,
     reset_started: bool = False,
+    pending_audio_sha256: str | None = None,
 ) -> None:
     now = _now()
     async with aiosqlite.connect(_db_path()) as db:
@@ -216,9 +246,9 @@ async def set_status(
             INSERT INTO skip_maps (
               episode_guid, status, audio_url, feed_url, title, error,
               stage, started_at, stage_updated_at, duration_ms,
-              created_at, updated_at
+              pending_audio_sha256, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(episode_guid) DO UPDATE SET
               status = excluded.status,
               audio_url = COALESCE(excluded.audio_url, skip_maps.audio_url),
@@ -229,6 +259,9 @@ async def set_status(
               started_at = COALESCE(?, skip_maps.started_at),
               stage_updated_at = COALESCE(?, skip_maps.stage_updated_at),
               duration_ms = COALESCE(excluded.duration_ms, skip_maps.duration_ms),
+              pending_audio_sha256 = CASE WHEN ? THEN excluded.pending_audio_sha256
+                ELSE COALESCE(excluded.pending_audio_sha256, skip_maps.pending_audio_sha256)
+              END,
               updated_at = excluded.updated_at
             """,
             (
@@ -242,10 +275,13 @@ async def set_status(
                 started_at,
                 stage_updated_at if stage_updated_at is not None else now,
                 duration_ms,
+                pending_audio_sha256,
                 now,
                 now,
                 started_at if (reset_started or not prev_started) else None,
                 stage_updated_at,
+                # A new run replaces (or clears) the in-flight audio fingerprint.
+                1 if reset_started else 0,
             ),
         )
         await db.commit()

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import aiofiles
-from fastapi import APIRouter, BackgroundTasks, File, Form, Header, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Request, UploadFile
 
 from app.auth import check_app_key
 from app.db import get_skip_map, set_status
@@ -66,9 +66,12 @@ async def analyze_episode_upload(
     This ensures the analyzed audio matches what the player will play,
     avoiding dynamic ad insertion mismatches.
     """
-    enforce_analyze_rate_limit(request)
-    check_app_key(x_app_key)
-    
+    try:
+        check_app_key(x_app_key)
+    except HTTPException:
+        # Unauthenticated traffic always counts, so brute-forcing keys is throttled.
+        enforce_analyze_rate_limit(request)
+        raise
 
     # Save uploaded file to temp location
     suffix = Path(audio_file.filename or "audio.mp3").suffix or ".mp3"
@@ -98,9 +101,11 @@ async def analyze_episode_upload(
         existing = await get_skip_map(episode_guid)
         if existing and force and existing.get("audio_sha256") == audio_sha256:
             logger.info("Forced reanalysis requested for matching audio: %s", episode_guid)
-        if existing and not force and existing.get("audio_sha256") == audio_sha256:
-            tmp_path.unlink(missing_ok=True)
-            if existing["status"] == "ready":
+        if existing and not force:
+            # audio_sha256 describes the stored (completed) segments;
+            # pending_audio_sha256 is the file the in-flight run is analyzing.
+            if existing["status"] == "ready" and existing.get("audio_sha256") == audio_sha256:
+                tmp_path.unlink(missing_ok=True)
                 logger.info("Returning matching cached skip map for %s", episode_guid)
                 return AnalyzeEpisodeResponse(
                     status="ready",
@@ -114,13 +119,20 @@ async def analyze_episode_upload(
                     audio_md5=existing.get("audio_md5"),
                     **_progress_kwargs(existing),
                 )
-            if existing["status"] == "pending":
+            if (
+                existing["status"] == "pending"
+                and existing.get("pending_audio_sha256") == audio_sha256
+            ):
+                tmp_path.unlink(missing_ok=True)
                 return AnalyzeEpisodeResponse(
                     status="queued",
                     episode_guid=episode_guid,
                     message="Analysis already in progress for this audio",
                     **_progress_kwargs(existing),
                 )
+
+        # Only requests that actually start an analysis count against the limit.
+        enforce_analyze_rate_limit(request)
 
         if sync:
             result = await run_analyze_from_file(
@@ -160,6 +172,7 @@ async def analyze_episode_upload(
             stage="queued",
             duration_ms=duration_ms,
             reset_started=True,
+            pending_audio_sha256=audio_sha256,
         )
         background_tasks.add_task(
             run_analyze_from_file,
@@ -185,6 +198,9 @@ async def analyze_episode_upload(
             **_progress_kwargs(queued),
         )
         
+    except HTTPException:
+        tmp_path.unlink(missing_ok=True)
+        raise
     except Exception:
         # Clean up on error
         tmp_path.unlink(missing_ok=True)

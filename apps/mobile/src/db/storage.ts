@@ -220,6 +220,8 @@ export async function cacheSkipMap(
       console.warn('[storage] skip-map write skipped:', inner);
       throw inner;
     }
+    // Don't leave an older map under the URL key to be restored later by URL.
+    if (url) await AsyncStorage.removeItem(skipMapUrlKey(url)).catch(() => {});
   }
   console.log(
     `[storage] saved skip-map: ${map.status}, ${map.segments?.length ?? 0} segments`,
@@ -278,12 +280,19 @@ export async function getCachedSkipMap(
   );
 
   // Migrate / re-index under the GUID we have now so next open hits the primary key.
+  // Rewrite episode_guid too, so later removal by (guid, url) finds this copy and
+  // callers comparing episode_guid with the current episode match.
   if (guid) {
+    const reindexed: SkipMap = { ...byUrl, episode_guid: guid };
     try {
-      await AsyncStorage.setItem(skipMapGuidKey(guid), JSON.stringify(byUrl));
+      await AsyncStorage.multiSet([
+        [skipMapGuidKey(guid), JSON.stringify(reindexed)],
+        [skipMapUrlKey(url), JSON.stringify(reindexed)],
+      ]);
     } catch (error) {
       console.warn('[storage] skip-map GUID re-index skipped:', error);
     }
+    return reindexed;
   }
   return byUrl;
 }
@@ -407,13 +416,22 @@ function adDetectionTargetKeys(target: AdDetectionTarget): string[] {
   return keys;
 }
 
+/** Throws if storage can't be read (callers that write the set back must not proceed). */
+async function readAdDetectionDisabled(): Promise<Set<string>> {
+  const raw = await AsyncStorage.getItem(KEYS.adDetectionDisabled);
+  if (!raw) return new Set();
+  try {
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
 /** Collection/feed keys for shows that have ad detection explicitly disabled. */
 export async function getAdDetectionDisabled(): Promise<Set<string>> {
   try {
-    const raw = await AsyncStorage.getItem(KEYS.adDetectionDisabled);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw);
-    return new Set(Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === 'string') : []);
+    return await readAdDetectionDisabled();
   } catch {
     return new Set();
   }
@@ -432,7 +450,8 @@ export async function setPodcastAdDetectionEnabled(
 ): Promise<void> {
   const keys = adDetectionTargetKeys(target);
   if (!keys.length) return;
-  const disabled = await getAdDetectionDisabled();
+  // A failed read must not turn into "no shows disabled" and be written back.
+  const disabled = await readAdDetectionDisabled();
   for (const key of keys) {
     if (enabled) disabled.delete(key);
     else disabled.add(key);

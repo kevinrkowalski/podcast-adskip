@@ -6,6 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState } from 'react-native';
 import type { AdSegment } from '@/src/types';
 import { getApiBaseUrl, getResolvedAppKey, hydrateApiBaseUrl, hydrateAppKey } from './backend';
+import { fetchWithTimeout } from './http';
 
 const OUTBOX_KEY = '@podcast-adskip/feedbackOutbox';
 const MAX_OUTBOX = 50;
@@ -41,7 +42,7 @@ export function toFeedbackSegment(s: AdSegment): Seg {
 async function post(report: FeedbackReport): Promise<void> {
   await Promise.all([hydrateApiBaseUrl(), hydrateAppKey()]);
   const key = getResolvedAppKey();
-  const res = await fetch(`${getApiBaseUrl()}/v1/feedback`, {
+  const res = await fetchWithTimeout(`${getApiBaseUrl()}/v1/feedback`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -71,7 +72,24 @@ async function writeOutbox(list: FeedbackReport[]) {
   await AsyncStorage.setItem(OUTBOX_KEY, JSON.stringify(list.slice(-MAX_OUTBOX)));
 }
 
-/** Rejected for good (bad payload/auth): don't retry those forever. */
+let outboxChain: Promise<unknown> = Promise.resolve();
+
+/** Read-modify-write the outbox one operation at a time so concurrent edits aren't lost. */
+function updateOutbox(change: (list: FeedbackReport[]) => FeedbackReport[]): Promise<void> {
+  const run = outboxChain.then(async () => {
+    await writeOutbox(change(await readOutbox()));
+  });
+  outboxChain = run.catch(() => undefined);
+  return run;
+}
+
+/** Reports are never edited once queued, so their JSON identifies them. */
+const reportKey = (r: FeedbackReport) => JSON.stringify(r);
+
+/**
+ * Rejected for good (bad payload): don't retry those forever. Auth failures (401/503)
+ * are retried, so reports go through once the app key / server config is fixed.
+ */
 function isPermanent(e: unknown): boolean {
   const status = (e as { status?: number })?.status;
   return status === 400 || status === 422;
@@ -85,7 +103,7 @@ export async function submitFeedback(report: FeedbackReport): Promise<'sent' | '
     return 'sent';
   } catch (e) {
     if (isPermanent(e)) throw e;
-    await writeOutbox([...(await readOutbox()), report]);
+    await updateOutbox((list) => [...list, report]);
     return 'queued';
   }
 }
@@ -100,16 +118,18 @@ export function flushFeedbackOutbox(): Promise<number> {
     try {
       const list = await readOutbox();
       if (!list.length) return 0;
-      const remaining: FeedbackReport[] = [];
+      const done = new Set<string>();
       for (const r of list) {
         try {
           await post(r);
           sent += 1;
+          done.add(reportKey(r));
         } catch (e) {
-          if (!isPermanent(e)) remaining.push(r);
+          if (isPermanent(e)) done.add(reportKey(r));
         }
       }
-      await writeOutbox(remaining);
+      // Remove only what was handled; reports queued meanwhile are kept.
+      if (done.size) await updateOutbox((current) => current.filter((r) => !done.has(reportKey(r))));
       return sent;
     } finally {
       flushing = null;

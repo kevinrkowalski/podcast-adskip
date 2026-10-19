@@ -13,12 +13,20 @@ import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import org.json.JSONArray
 
+private const val KEY_SKIP_SEGMENTS_INDEX = "skipSegmentsIndex"
+private const val MAX_STORED_SEGMENT_EPISODES = 100
+
 class PodcastAutoModule : Module() {
   private val context: Context
     get() = requireNotNull(appContext.reactContext)
 
   private val preferences by lazy {
     context.getSharedPreferences(PodcastAutoPlaybackService.PREFERENCES_NAME, Context.MODE_PRIVATE)
+  }
+
+  /** Separate file: the catalog is large and the main prefs are rewritten every few seconds. */
+  private val catalogPreferences by lazy {
+    context.getSharedPreferences(PodcastAutoPlaybackService.CATALOG_PREFERENCES_NAME, Context.MODE_PRIVATE)
   }
 
   private val statusReceiver = object : BroadcastReceiver() {
@@ -61,7 +69,11 @@ class PodcastAutoModule : Module() {
     }
 
     Function("setCatalog") { catalogJson: String ->
-      preferences.edit().putString(PodcastAutoPlaybackService.KEY_CATALOG, catalogJson).apply()
+      catalogPreferences.edit().putString(PodcastAutoPlaybackService.KEY_CATALOG, catalogJson).apply()
+      // Drop the copy older builds kept in the main prefs file.
+      if (preferences.contains(PodcastAutoPlaybackService.KEY_CATALOG)) {
+        preferences.edit().remove(PodcastAutoPlaybackService.KEY_CATALOG).apply()
+      }
       context.sendBroadcast(
         Intent(PodcastAutoPlaybackService.ACTION_CATALOG_UPDATED).setPackage(context.packageName)
       )
@@ -115,11 +127,7 @@ class PodcastAutoModule : Module() {
       } catch (_: Exception) {
         "[]"
       }
-      if (!episodeGuid.isNullOrBlank()) {
-        preferences.edit()
-          .putString(PodcastAutoPlaybackService.KEY_SKIP_SEGMENTS_PREFIX + episodeGuid, safeJson)
-          .apply()
-      }
+      if (!episodeGuid.isNullOrBlank()) storeSkipSegments(episodeGuid, safeJson)
     }
     Function("getEventLog") { PlaybackEventLog.read(context) }
     Function("clearEventLog") { PlaybackEventLog.clear(context) }
@@ -163,6 +171,38 @@ class PodcastAutoModule : Module() {
     Intent(action)
       .setPackage(context.packageName)
       .setClass(context, PodcastAutoPlaybackService::class.java)
+
+  /**
+   * One key per episode would grow forever (and SharedPreferences rewrites the whole file
+   * on every save), so keep segments for the most recently set episodes only.
+   */
+  private fun storeSkipSegments(episodeGuid: String, segmentsJson: String) {
+    val key = PodcastAutoPlaybackService.KEY_SKIP_SEGMENTS_PREFIX + episodeGuid
+    val index = try {
+      JSONArray(preferences.getString(KEY_SKIP_SEGMENTS_INDEX, "[]"))
+    } catch (_: Exception) {
+      JSONArray()
+    }
+    val guids = (0 until index.length()).map { index.optString(it) }.filter { it.isNotBlank() && it != episodeGuid }.toMutableList()
+    val edit = preferences.edit()
+    if (segmentsJson == "[]") {
+      edit.remove(key)
+    } else {
+      edit.putString(key, segmentsJson)
+      guids.add(0, episodeGuid)
+    }
+    while (guids.size > MAX_STORED_SEGMENT_EPISODES) {
+      edit.remove(PodcastAutoPlaybackService.KEY_SKIP_SEGMENTS_PREFIX + guids.removeAt(guids.size - 1))
+    }
+    // One-time cleanup of keys written before the index existed.
+    if (!preferences.contains(KEY_SKIP_SEGMENTS_INDEX)) {
+      val keep = guids.map { PodcastAutoPlaybackService.KEY_SKIP_SEGMENTS_PREFIX + it }.toSet() + key
+      preferences.all.keys
+        .filter { it.startsWith(PodcastAutoPlaybackService.KEY_SKIP_SEGMENTS_PREFIX) && it !in keep }
+        .forEach { edit.remove(it) }
+    }
+    edit.putString(KEY_SKIP_SEGMENTS_INDEX, JSONArray(guids).toString()).apply()
+  }
 
   private fun hasCurrentEpisode(): Boolean =
     !preferences.getString(PodcastAutoPlaybackService.KEY_CURRENT_EPISODE, null).isNullOrBlank()

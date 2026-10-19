@@ -1,7 +1,37 @@
 import type { Episode, PodcastSearchResult } from '@/src/types';
+import { fetchWithTimeout } from './http';
 
 const ITUNES_SEARCH = 'https://itunes.apple.com/search';
 const ITUNES_LOOKUP = 'https://itunes.apple.com/lookup';
+const ITUNES_TIMEOUT_MS = 20_000;
+/** Apple rate-limits lookups (~20/min) with 403/429; back off and retry. */
+const RATE_LIMIT_BACKOFF_MS = [3_000, 10_000, 20_000];
+
+class HttpStatusError extends Error {
+  constructor(label: string, readonly status: number) {
+    super(`${label} failed: ${status}`);
+  }
+}
+
+async function getJson<T>(url: string, label: string): Promise<T> {
+  return fetchWithTimeout(url, undefined, ITUNES_TIMEOUT_MS, async (res) => {
+    if (!res.ok) throw new HttpStatusError(label, res.status);
+    return (await res.json()) as T;
+  });
+}
+
+async function getJsonWithRateLimitRetry<T>(url: string, label: string): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await getJson<T>(url, label);
+    } catch (e) {
+      const status = e instanceof HttpStatusError ? e.status : 0;
+      const wait = RATE_LIMIT_BACKOFF_MS[attempt];
+      if ((status !== 403 && status !== 429) || wait == null) throw e;
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+}
 
 interface ItunesPodcastResult {
   collectionId: number;
@@ -82,9 +112,7 @@ export async function searchPodcasts(term: string, limit = 25): Promise<PodcastS
   const q = term.trim();
   if (!q) return [];
   const url = `${ITUNES_SEARCH}?term=${encodeURIComponent(q)}&media=podcast&entity=podcast&country=us&limit=${limit}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`iTunes search failed: ${res.status}`);
-  const data = (await res.json()) as { results?: ItunesPodcastResult[] };
+  const data = await getJson<{ results?: ItunesPodcastResult[] }>(url, 'iTunes search');
   return (data.results ?? [])
     .filter((r) => r.collectionId && r.feedUrl)
     .map(mapPodcast);
@@ -92,9 +120,7 @@ export async function searchPodcasts(term: string, limit = 25): Promise<PodcastS
 
 export async function lookupPodcast(collectionId: number): Promise<PodcastSearchResult | null> {
   const url = `${ITUNES_LOOKUP}?id=${collectionId}&entity=podcast`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`iTunes lookup failed: ${res.status}`);
-  const data = (await res.json()) as { results?: ItunesPodcastResult[] };
+  const data = await getJson<{ results?: ItunesPodcastResult[] }>(url, 'iTunes lookup');
   const show = (data.results ?? []).find((r) => r.feedUrl);
   if (!show) return null;
   return mapPodcast(show);
@@ -105,9 +131,8 @@ export async function lookupPodcastByFeedUrl(feedUrl: string): Promise<PodcastSe
   const q = feedUrl.trim();
   if (!q) return null;
   const url = `${ITUNES_LOOKUP}?url=${encodeURIComponent(q)}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`iTunes lookup failed: ${res.status}`);
-  const data = (await res.json()) as { results?: ItunesPodcastResult[] };
+  // Called once per feed during OPML import, which easily hits Apple's rate limit.
+  const data = await getJsonWithRateLimitRetry<{ results?: ItunesPodcastResult[] }>(url, 'iTunes lookup');
   const show = (data.results ?? []).find((r) => r.collectionId && r.feedUrl);
   if (!show) return null;
   return mapPodcast(show);
@@ -119,9 +144,10 @@ export async function lookupPodcastWithEpisodes(
   episodeLimit = 50,
 ): Promise<{ podcast: PodcastSearchResult | null; episodes: Episode[] }> {
   const url = `${ITUNES_LOOKUP}?id=${collectionId}&entity=podcastEpisode&limit=${episodeLimit}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`iTunes lookup failed: ${res.status}`);
-  const data = (await res.json()) as { results?: Array<ItunesPodcastResult & ItunesEpisodeResult> };
+  const data = await getJson<{ results?: Array<ItunesPodcastResult & ItunesEpisodeResult> }>(
+    url,
+    'iTunes lookup',
+  );
   const results = data.results ?? [];
 
   const showRow = results.find(
@@ -238,9 +264,7 @@ export async function fetchTopPodcasts(
   const capped = Math.min(Math.max(1, limit), 200);
   const genreSeg = genreId != null ? `/genre=${genreId}` : '';
   const url = `https://itunes.apple.com/us/rss/toppodcasts/limit=${capped}${genreSeg}/json`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Apple charts failed: ${res.status}`);
-  const data = (await res.json()) as ItunesRssFeed;
+  const data = await getJson<ItunesRssFeed>(url, 'Apple charts');
   const raw = data.feed?.entry;
   const entries = !raw ? [] : Array.isArray(raw) ? raw : [raw];
   return entries.map(mapRssEntry).filter((r): r is PodcastSearchResult => r != null);

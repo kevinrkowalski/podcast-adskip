@@ -76,6 +76,14 @@ test('queue logic', () => {
   assert.equal(ids(r.toAdd), 'n1,n2', 'new episodes added oldest first');
   r = q.detectNewEpisodes(r.state, [n2, n1, old1]);
   assert.equal(r.toAdd.length, 0, 'not re-added on next refresh');
+  // Appears late, dated before n2 (already seen) but after auto-add was turned on.
+  const late = ep('late', '2026-10-13T06:00:00Z');
+  r = q.detectNewEpisodes(r.state, [n2, late, n1, old1]);
+  assert.equal(ids(r.toAdd), 'late', 'late-appearing episode is still added');
+  r = q.detectNewEpisodes(r.state, [ep('undated'), n2]);
+  assert.equal(ids(r.toAdd), 'undated', 'undated new episode is added');
+  r = q.detectNewEpisodes(r.state, [ep('before-enable', '2026-10-11T00:00:00Z'), n2]);
+  assert.equal(r.toAdd.length, 0, 'nothing published before auto-add was enabled');
   // Played episodes leave the queue; the playing one stays pinned until it changes.
   const playedSet = new Set(['a', 'c']);
   const isP = (g: string) => playedSet.has(g);

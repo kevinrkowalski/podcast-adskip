@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Dimensions,
   FlatList,
   Image,
@@ -11,7 +12,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Link, useRouter } from 'expo-router';
+import { Link, useFocusEffect, useRouter } from 'expo-router';
 import { cleanFeedUrlInput, subscribeByFeedUrl } from '@/src/import/importOpml';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -41,6 +42,10 @@ export default function SearchScreen() {
   const [chartItems, setChartItems] = useState<PodcastSearchResult[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState<string | null>(null);
+  const chartReqId = useRef(0);
+  const searchReqId = useRef(0);
+  const subBusy = useRef<Set<number>>(new Set());
+  const [subBusyIds, setSubBusyIds] = useState<Set<number>>(new Set());
 
   const router = useRouter();
   const [rssOpen, setRssOpen] = useState(false);
@@ -60,16 +65,19 @@ export default function SearchScreen() {
   }, []);
 
   const loadCharts = useCallback(async (id: number | null) => {
+    const req = ++chartReqId.current;
     setChartLoading(true);
     setChartError(null);
     try {
       const items = await fetchTopPodcasts(id, 25);
+      if (req !== chartReqId.current) return;
       setChartItems(items);
     } catch (e) {
+      if (req !== chartReqId.current) return;
       setChartError(e instanceof Error ? e.message : 'Failed to load charts');
       setChartItems([]);
     } finally {
-      setChartLoading(false);
+      if (req === chartReqId.current) setChartLoading(false);
     }
   }, []);
 
@@ -79,12 +87,21 @@ export default function SearchScreen() {
   }, [showDiscover, genreId, loadCharts]);
 
   useEffect(() => {
-    if (showDiscover) void refreshSubs();
+    if (showDiscover) void refreshSubs().catch((e) => console.warn('refreshSubs failed', e));
   }, [showDiscover, refreshSubs]);
+
+  // Tab screens stay mounted; pick up (un)subscribes made on other screens.
+  useFocusEffect(
+    useCallback(() => {
+      void refreshSubs().catch((e) => console.warn('refreshSubs failed', e));
+    }, [refreshSubs]),
+  );
 
   const onChangeQuery = (text: string) => {
     setQuery(text);
     if (!text.trim()) {
+      // Invalidate any in-flight search so its results don't land in hidden state.
+      searchReqId.current++;
       setResults([]);
       setError(null);
       setLoading(false);
@@ -93,31 +110,45 @@ export default function SearchScreen() {
 
   const onSearch = useCallback(async () => {
     if (!query.trim()) return;
+    const req = ++searchReqId.current;
     setLoading(true);
     setError(null);
     try {
       await refreshSubs();
       const items = await searchPodcasts(query.trim());
+      if (req !== searchReqId.current) return;
       setResults(items);
     } catch (e) {
+      if (req !== searchReqId.current) return;
       setError(e instanceof Error ? e.message : 'Search failed');
     } finally {
-      setLoading(false);
+      if (req === searchReqId.current) setLoading(false);
     }
   }, [query, refreshSubs]);
 
   const onSubscribe = async (item: PodcastSearchResult) => {
     if (!item.feedUrl) return;
-    await subscribe({
-      collectionId: item.collectionId,
-      collectionName: item.collectionName,
-      artistName: item.artistName,
-      feedUrl: item.feedUrl,
-      artworkUrl: item.artworkUrl600 || item.artworkUrl100,
-      subscribedAt: new Date().toISOString(),
-    });
-    await syncAndroidAutoCatalog();
-    await refreshSubs();
+    const id = item.collectionId;
+    if (subBusy.current.has(id)) return;
+    subBusy.current.add(id);
+    setSubBusyIds(new Set(subBusy.current));
+    try {
+      await subscribe({
+        collectionId: item.collectionId,
+        collectionName: item.collectionName,
+        artistName: item.artistName,
+        feedUrl: item.feedUrl,
+        artworkUrl: item.artworkUrl600 || item.artworkUrl100,
+        subscribedAt: new Date().toISOString(),
+      });
+      await syncAndroidAutoCatalog();
+      await refreshSubs();
+    } catch (e) {
+      Alert.alert('Could not subscribe', e instanceof Error ? e.message : 'Please try again.');
+    } finally {
+      subBusy.current.delete(id);
+      setSubBusyIds(new Set(subBusy.current));
+    }
   };
 
   const onAddRss = async () => {
@@ -202,6 +233,7 @@ export default function SearchScreen() {
 
   const renderSearchItem = ({ item }: { item: PodcastSearchResult }) => {
     const isSub = subscribedIds.has(item.collectionId);
+    const isBusy = subBusyIds.has(item.collectionId);
     const art = item.artworkUrl600 || item.artworkUrl100;
     return (
       <View style={styles.row}>
@@ -227,7 +259,7 @@ export default function SearchScreen() {
         <Pressable
           style={[styles.subBtn, isSub && styles.subBtnDone]}
           onPress={() => onSubscribe(item)}
-          disabled={isSub || !item.feedUrl}>
+          disabled={isSub || isBusy || !item.feedUrl}>
           <Text style={[styles.subBtnText, isSub && styles.subBtnTextDone]}>
             {isSub ? 'Added' : 'Subscribe'}
           </Text>

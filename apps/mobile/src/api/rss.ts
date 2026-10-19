@@ -2,35 +2,44 @@ import type { Episode } from '@/src/types';
 import { cacheEpisodes, getCachedEpisodes } from '@/src/db/storage';
 import { syncAndroidAutoCatalog } from '@/src/player/androidAutoCatalog';
 import { processFeedForAutoQueue } from '@/src/queue/queueStore';
+import { fetchWithTimeout } from './http';
 
 /** Minimal RSS 2.0 / iTunes enclosure parser (no native XML dep). */
 
+/** Large feeds on slow networks can take a while; still never hang forever. */
+const RSS_FETCH_TIMEOUT_MS = 60_000;
+/** In-memory XML kept for paging/show notes; feeds can be several MB each. */
+const MAX_CACHED_XML_FEEDS = 8;
+
+function codePointOr(code: number, fallback: string): string {
+  // String.fromCodePoint throws RangeError outside 0..0x10FFFF (one bad entity would
+  // otherwise fail the whole feed).
+  return Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : fallback;
+}
 
 /** Decode XML/HTML entities commonly present in RSS attribute values and text. */
-function decodeXmlEntities(value: string): string {
+export function decodeXmlEntities(value: string): string {
+  // &amp; last, so "&amp;lt;" decodes once to the literal text "&lt;".
   return value
-    .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
     .replace(/&quot;/gi, '"')
     .replace(/&apos;/gi, "'")
-    .replace(/&#(\d+);/g, (_, n) => {
-      const code = Number(n);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : _;
-    })
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => {
-      const code = parseInt(h, 16);
-      return Number.isFinite(code) ? String.fromCodePoint(code) : _;
-    });
+    .replace(/&#(\d+);/g, (m, n) => codePointOr(Number(n), m))
+    .replace(/&#x([0-9a-f]+);/gi, (m, h) => codePointOr(parseInt(h, 16), m))
+    .replace(/&amp;/gi, '&');
 }
 
-function textBetween(xml: string, tag: string): string | undefined {
-  const cdata = new RegExp(`<${tag}[^>]*>\\s*<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>\\s*<\\/${tag}>`, 'i');
-  const mC = xml.match(cdata);
-  if (mC) return decodeXmlEntities(mC[1].trim());
-  const plain = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
-  const m = xml.match(plain);
-  return m ? decodeXmlEntities(m[1].replace(/<[^>]+>/g, '').trim()) : undefined;
+export function textBetween(xml: string, tag: string): string | undefined {
+  // Use the first <tag> element, then unwrap CDATA inside it (searching for a CDATA
+  // variant across the whole string could pick a later, nested element instead).
+  const m = xml.match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+  if (!m) return undefined;
+  const inner = m[1].trim();
+  if (inner.includes('<![CDATA[')) {
+    return decodeXmlEntities(inner.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').trim());
+  }
+  return decodeXmlEntities(inner.replace(/<[^>]+>/g, '').trim());
 }
 
 /** Raw inner text (CDATA unwrapped, entities decoded) with HTML kept for show notes. */
@@ -66,18 +75,21 @@ export function pickEpisodeNotes(item: string): string | undefined {
   return best;
 }
 
-function attr(tag: string, name: string): string | undefined {
-  const m = tag.match(new RegExp(`${name}=["']([^"']+)["']`, 'i'));
-  return m?.[1] != null ? decodeXmlEntities(m[1]) : undefined;
+export function attr(tag: string, name: string): string | undefined {
+  // Match the closing quote of the same kind, so url="…/Don't.mp3" isn't cut short.
+  const m = tag.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i'));
+  const value = m ? (m[1] ?? m[2]) : undefined;
+  return value ? decodeXmlEntities(value) : undefined;
 }
 
-function parseDurationMs(raw?: string): number | undefined {
+export function parseDurationMs(raw?: string): number | undefined {
   if (!raw) return undefined;
-  if (/^\d+$/.test(raw)) return parseInt(raw, 10) * 1000;
-  const parts = raw.split(':').map((p) => parseInt(p, 10));
-  if (parts.some((n) => Number.isNaN(n))) return undefined;
-  if (parts.length === 3) return ((parts[0] * 3600) + (parts[1] * 60) + parts[2]) * 1000;
-  if (parts.length === 2) return ((parts[0] * 60) + parts[1]) * 1000;
+  const text = raw.trim();
+  if (/^\d+(\.\d+)?$/.test(text)) return Math.round(parseFloat(text) * 1000);
+  const parts = text.split(':').map((p) => parseFloat(p));
+  if (parts.some((n) => !Number.isFinite(n))) return undefined;
+  if (parts.length === 3) return Math.round(((parts[0] * 3600) + (parts[1] * 60) + parts[2]) * 1000);
+  if (parts.length === 2) return Math.round(((parts[0] * 60) + parts[1]) * 1000);
   return undefined;
 }
 
@@ -93,13 +105,34 @@ export interface ParsedFeed {
 export interface ParseRssOptions {
   /** Stop after this many items (lazy / first page). Omit for full archive. */
   maxItems?: number;
+  /**
+   * Take the newest items even when the feed lists oldest first (serial/self-hosted
+   * feeds). Otherwise items are taken in file order.
+   */
+  newestFirst?: boolean;
 }
 
 /** In-memory XML so scroll-to-load-more can re-parse without re-fetching. */
 const xmlByFeed = new Map<string, string>();
 
+function rememberXml(feedUrl: string, xml: string) {
+  xmlByFeed.delete(feedUrl);
+  xmlByFeed.set(feedUrl, xml);
+  while (xmlByFeed.size > MAX_CACHED_XML_FEEDS) {
+    const oldest = xmlByFeed.keys().next().value;
+    if (oldest === undefined) break;
+    xmlByFeed.delete(oldest);
+  }
+}
+
+function recallXml(feedUrl: string): string | undefined {
+  const xml = xmlByFeed.get(feedUrl);
+  if (xml !== undefined) rememberXml(feedUrl, xml); // mark most recently used
+  return xml;
+}
+
 export function getCachedRssXml(feedUrl: string): string | undefined {
-  return xmlByFeed.get(feedUrl);
+  return recallXml(feedUrl);
 }
 
 export function clearCachedRssXml(feedUrl?: string): void {
@@ -152,7 +185,20 @@ export function parseRssXml(
   const limit = options?.maxItems;
   let sawMore = false;
 
-  for (const item of iterateItems(xml)) {
+  let items: Iterable<string> = iterateItems(xml);
+  if (options?.newestFirst) {
+    const all = [...iterateItems(xml)];
+    const dateOf = (item: string | undefined) => {
+      const raw = item ? textBetween(item, 'pubDate') : undefined;
+      const t = raw ? Date.parse(raw) : NaN;
+      return Number.isFinite(t) ? t : NaN;
+    };
+    const first = dateOf(all[0]);
+    const last = dateOf(all[all.length - 1]);
+    items = Number.isFinite(first) && Number.isFinite(last) && last > first ? all.reverse() : all;
+  }
+
+  for (const item of items) {
     if (limit != null && episodes.length >= limit) {
       sawMore = true;
       break;
@@ -189,13 +235,14 @@ export async function fetchRssXml(
   opts?: { force?: boolean },
 ): Promise<string> {
   if (!opts?.force) {
-    const existing = xmlByFeed.get(feedUrl);
+    const existing = recallXml(feedUrl);
     if (existing) return existing;
   }
-  const res = await fetch(feedUrl);
-  if (!res.ok) throw new Error(`RSS fetch failed: ${res.status}`);
-  const xml = await res.text();
-  xmlByFeed.set(feedUrl, xml);
+  const xml = await fetchWithTimeout(feedUrl, undefined, RSS_FETCH_TIMEOUT_MS, async (res) => {
+    if (!res.ok) throw new Error(`RSS fetch failed: ${res.status}`);
+    return res.text();
+  });
+  rememberXml(feedUrl, xml);
   return xml;
 }
 
@@ -228,7 +275,7 @@ export function parseMoreFromCachedXml(
   meta?: { collectionId?: number; podcastTitle?: string; artworkUrl?: string },
   maxItems?: number,
 ): ParsedFeed | null {
-  const xml = xmlByFeed.get(feedUrl);
+  const xml = recallXml(feedUrl);
   if (!xml) return null;
   return parseRssXml(xml, feedUrl, meta, maxItems != null ? { maxItems } : undefined);
 }

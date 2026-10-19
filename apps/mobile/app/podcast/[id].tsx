@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Image,
   Pressable,
@@ -84,7 +85,15 @@ export default function PodcastDetailScreen() {
   const [sourceHint, setSourceHint] = useState<string | null>(null);
   const [positions, setPositions] = useState<Record<string, PlaybackPosition>>({});
   const [rssHasMore, setRssHasMore] = useState(false);
-  const cancelled = useRef(false);
+  // Each load gets its own generation; anything from an older load (or after
+  // unmount) is stale and must not write state.
+  const loadGen = useRef(0);
+  const unmounted = useRef(false);
+  const positionsReq = useRef(0);
+  // Mirror of the current episode list so merges happen outside setState updaters.
+  const episodesRef = useRef<Episode[]>([]);
+  const [subBusy, setSubBusy] = useState(false);
+  const subBusyRef = useRef(false);
   const rssMaxItems = useRef(RSS_INITIAL_ITEMS);
   const feedMeta = useRef<{
     collectionId: number;
@@ -94,15 +103,37 @@ export default function PodcastDetailScreen() {
   } | null>(null);
   const expandingLock = useRef(false);
 
-  const refreshPositions = useCallback(async (eps: Episode[]) => {
-    const map = await getPlaybackPositions(eps.map((e) => e.guid));
-    if (!cancelled.current) setPositions(map);
+  useEffect(() => {
+    unmounted.current = false;
+    return () => {
+      unmounted.current = true;
+    };
   }, []);
 
+  const refreshPositions = useCallback(async (eps: Episode[]) => {
+    const req = ++positionsReq.current;
+    const gen = loadGen.current;
+    const map = await getPlaybackPositions(eps.map((e) => e.guid));
+    // Drop out-of-order reads and anything from a superseded load.
+    if (req !== positionsReq.current || gen !== loadGen.current || unmounted.current) return;
+    setPositions(map);
+  }, []);
+
+  const applyEpisodes = useCallback(
+    (next: Episode[]) => {
+      episodesRef.current = next;
+      setEpisodes(next);
+      void refreshPositions(next);
+    },
+    [refreshPositions],
+  );
+
   const load = useCallback(async () => {
-    cancelled.current = false;
+    const gen = ++loadGen.current;
+    const isStale = () => gen !== loadGen.current || unmounted.current;
     setLoading(true);
     setVisibleCount(EPISODES_PAGE_SIZE);
+    episodesRef.current = [];
     setEpisodes([]);
     setExpanding(false);
     setError(null);
@@ -125,7 +156,7 @@ export default function PodcastDetailScreen() {
       } catch {
         podcast = null;
       }
-      if (cancelled.current) return;
+      if (isStale()) return;
       if (!podcast?.feedUrl) {
         const stored = (await getSubscriptions()).find((s) => s.collectionId === collectionId);
         if (stored?.feedUrl) {
@@ -162,11 +193,21 @@ export default function PodcastDetailScreen() {
               artworkUrl100: typeof artworkParam === 'string' ? artworkParam : undefined,
             };
       }
+      if (isStale()) return;
       if (!podcast?.feedUrl) throw new Error('Podcast or feedUrl not found');
       setShow(podcast);
       const subs = await getSubscriptions();
-      if (cancelled.current) return;
-      setIsSub(subs.some((s) => s.collectionId === collectionId));
+      if (isStale()) return;
+      // The feed-URL fallback can resolve to a stored show with a different id.
+      const resolvedId = podcast.collectionId;
+      const resolvedFeed = podcast.feedUrl.trim().toLowerCase();
+      setIsSub(
+        subs.some(
+          (s) =>
+            s.collectionId === resolvedId ||
+            (!!s.feedUrl && s.feedUrl.trim().toLowerCase() === resolvedFeed),
+        ),
+      );
 
       const meta = {
         collectionId,
@@ -175,29 +216,28 @@ export default function PodcastDetailScreen() {
         feedUrl: podcast.feedUrl,
       };
       feedMeta.current = meta;
-      setAdDetectionEnabled(await isPodcastAdDetectionEnabled(meta));
-      setSkipSettings(await getPodcastSkipSettings(meta));
-      setAutoQueue(await isAutoQueueEnabled(meta));
+      const adEnabled = await isPodcastAdDetectionEnabled(meta);
+      if (isStale()) return;
+      setAdDetectionEnabled(adEnabled);
+      const skip = await getPodcastSkipSettings(meta);
+      if (isStale()) return;
+      setSkipSettings(skip);
+      const aq = await isAutoQueueEnabled(meta);
+      if (isStale()) return;
+      setAutoQueue(aq);
 
-      let nextEps: Episode[] = [];
       if (itunesEps.length) {
-        nextEps = mergeEpisodes(itunesEps, []);
-        setEpisodes(nextEps);
+        applyEpisodes(mergeEpisodes(itunesEps, []));
         setSourceHint(`Showing the ${itunesEps.length} most recent from iTunes`);
         setLoading(false);
-        void refreshPositions(nextEps);
       }
 
       // Disk cache + bounded RSS refresh — never await full archive on open.
       const { cached, refreshed } = await loadRssEpisodesCached(podcast.feedUrl, meta, {
         maxItems: RSS_INITIAL_ITEMS,
         onUpdate: (parsed) => {
-          if (cancelled.current) return;
-          setEpisodes((prev) => {
-            const merged = mergeEpisodes(parsed.episodes, prev);
-            void refreshPositions(merged);
-            return merged;
-          });
+          if (isStale()) return;
+          applyEpisodes(mergeEpisodes(parsed.episodes, episodesRef.current));
           setRssHasMore(!!parsed.truncated);
           setSourceHint(
             parsed.episodes.length
@@ -207,15 +247,10 @@ export default function PodcastDetailScreen() {
         },
       });
 
-      if (cancelled.current) return;
+      if (isStale()) return;
 
       if (cached.length) {
-        setEpisodes((prev) => {
-          const merged = mergeEpisodes(cached, prev);
-          nextEps = merged;
-          void refreshPositions(merged);
-          return merged;
-        });
+        applyEpisodes(mergeEpisodes(cached, episodesRef.current));
         if (!itunesEps.length) {
           setSourceHint(`${cached.length} cached episodes`);
         }
@@ -226,48 +261,57 @@ export default function PodcastDetailScreen() {
 
       // Fire-and-forget: surface soft failure only if we have nothing else.
       refreshed.catch((rssErr) => {
-        if (cancelled.current) return;
-        setEpisodes((prev) => {
-          if (prev.length === 0) {
-            setError(rssErr instanceof Error ? rssErr.message : 'Failed to load feed');
-          } else {
-            setSourceHint((h) => h ?? 'RSS refresh failed · showing available episodes');
-          }
-          return prev;
-        });
+        if (isStale()) return;
+        if (episodesRef.current.length === 0) {
+          setError(rssErr instanceof Error ? rssErr.message : 'Failed to load feed');
+        } else {
+          setSourceHint((h) => h ?? 'RSS refresh failed · showing available episodes');
+        }
       });
     } catch (e) {
-      if (cancelled.current) return;
+      if (isStale()) return;
       setError(e instanceof Error ? e.message : 'Failed to load');
       setLoading(false);
     }
-  }, [id, feedParam, titleParam, artworkParam, refreshPositions]);
+  }, [id, feedParam, titleParam, artworkParam, applyEpisodes]);
 
   useEffect(() => {
     load();
     return () => {
-      cancelled.current = true;
+      // Invalidate this load when params change or the screen unmounts.
+      loadGen.current++;
     };
   }, [load]);
 
   const onToggleSubscribe = async () => {
-    if (!show?.feedUrl) return;
-    if (isSub) {
-      await unsubscribe(show.collectionId);
+    if (!show?.feedUrl || subBusyRef.current) return;
+    subBusyRef.current = true;
+    setSubBusy(true);
+    const wasSub = isSub;
+    try {
+      if (wasSub) {
+        await unsubscribe(show.collectionId);
+      } else {
+        await subscribe({
+          collectionId: show.collectionId,
+          collectionName: show.collectionName,
+          artistName: show.artistName,
+          feedUrl: show.feedUrl,
+          artworkUrl: show.artworkUrl600 || show.artworkUrl100,
+          subscribedAt: new Date().toISOString(),
+        });
+      }
+      if (!unmounted.current) setIsSub(!wasSub);
       await syncAndroidAutoCatalog();
-      setIsSub(false);
-      return;
+    } catch (e) {
+      Alert.alert(
+        wasSub ? 'Could not unsubscribe' : 'Could not subscribe',
+        e instanceof Error ? e.message : 'Please try again.',
+      );
+    } finally {
+      subBusyRef.current = false;
+      if (!unmounted.current) setSubBusy(false);
     }
-    await subscribe({
-      collectionId: show.collectionId,
-      collectionName: show.collectionName,
-      artistName: show.artistName,
-      feedUrl: show.feedUrl,
-      artworkUrl: show.artworkUrl600 || show.artworkUrl100,
-      subscribedAt: new Date().toISOString(),
-    });
-    await syncAndroidAutoCatalog();
-    setIsSub(true);
   };
 
   const onToggleAdDetection = async (enabled: boolean) => {
@@ -317,7 +361,9 @@ export default function PodcastDetailScreen() {
   };
 
   const loadMore = useCallback(async () => {
-    if (expandingLock.current || cancelled.current) return;
+    if (expandingLock.current || unmounted.current) return;
+    const gen = loadGen.current;
+    const isStale = () => gen !== loadGen.current || unmounted.current;
 
     // First page more from what we already have in memory.
     if (visibleCount < episodes.length) {
@@ -335,28 +381,22 @@ export default function PodcastDetailScreen() {
     try {
       const nextMax = rssMaxItems.current + RSS_EXPAND_STEP;
       const parsed = parseMoreFromCachedXml(meta.feedUrl, meta, nextMax);
-      if (cancelled.current || !parsed) return;
+      if (isStale() || !parsed) return;
       rssMaxItems.current = nextMax;
       setRssHasMore(!!parsed.truncated);
-      setEpisodes((prev) => {
-        const merged = mergeEpisodes(parsed.episodes, prev);
-        void refreshPositions(merged);
-        return merged;
-      });
+      applyEpisodes(mergeEpisodes(parsed.episodes, episodesRef.current));
       setVisibleCount((count) => count + EPISODES_PAGE_SIZE);
       setSourceHint(
         `${parsed.episodes.length} episodes${parsed.truncated ? '+' : ''} from RSS`,
       );
     } finally {
       expandingLock.current = false;
-      if (!cancelled.current) setExpanding(false);
+      if (!isStale()) setExpanding(false);
     }
-  }, [episodes.length, refreshPositions, rssHasMore, visibleCount]);
+  }, [episodes.length, applyEpisodes, rssHasMore, visibleCount]);
 
   usePlayedVersion();
   // Progress bars: re-read saved positions when coming back from the player.
-  const episodesRef = useRef<Episode[]>([]);
-  episodesRef.current = episodes;
   useFocusEffect(
     useCallback(() => {
       if (episodesRef.current.length) void refreshPositions(episodesRef.current);
@@ -407,8 +447,9 @@ export default function PodcastDetailScreen() {
                 <Text style={styles.title}>{show.collectionName}</Text>
                 <Text style={styles.artist}>{show.artistName}</Text>
                 <Pressable
-                  style={[styles.subBtn, isSub && styles.unsubBtn]}
-                  onPress={onToggleSubscribe}>
+                  style={[styles.subBtn, isSub && styles.unsubBtn, subBusy && { opacity: 0.6 }]}
+                  onPress={onToggleSubscribe}
+                  disabled={subBusy}>
                   <Text style={[styles.subText, isSub && styles.unsubText]}>
                     {isSub ? 'Unsubscribe' : 'Subscribe'}
                   </Text>
