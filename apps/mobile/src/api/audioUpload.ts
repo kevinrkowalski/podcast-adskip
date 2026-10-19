@@ -122,10 +122,53 @@ export interface UploadProgress {
 }
 
 /**
- * Download audio file for analysis.
- * Returns the local file path.
+ * In-flight downloads by cache path. Play (download-first), Prepare and the queue
+ * prefetch can ask for the same episode at once; they share one download (two
+ * writers on the same .part file would corrupt it).
  */
-export async function downloadAudioForAnalysis(
+const inFlightDownloads = new Map<
+  string,
+  { promise: Promise<string>; listeners: Set<(progress: DownloadProgress) => void> }
+>();
+
+/**
+ * Download an episode's audio into the cache (or reuse the cached copy).
+ * Returns the local file path. This copy is what gets analyzed and played.
+ */
+export function downloadAudioForAnalysis(
+  episodeGuid: string,
+  audioUrl: string,
+  onProgress?: (progress: DownloadProgress) => void,
+): Promise<string> {
+  const key = getCachePath(episodeGuid, audioUrl);
+  const existing = inFlightDownloads.get(key);
+  if (existing) {
+    if (onProgress) existing.listeners.add(onProgress);
+    return existing.promise;
+  }
+  const listeners = new Set<(progress: DownloadProgress) => void>();
+  if (onProgress) listeners.add(onProgress);
+  const promise = downloadAudioUncoordinated(episodeGuid, audioUrl, (progress) => {
+    listeners.forEach((listener) => {
+      try {
+        listener(progress);
+      } catch {
+        /* a listener's UI update must not break the download */
+      }
+    });
+  }).finally(() => {
+    if (inFlightDownloads.get(key)?.promise === promise) inFlightDownloads.delete(key);
+  });
+  inFlightDownloads.set(key, { promise, listeners });
+  return promise;
+}
+
+/** True while this episode's audio is being downloaded. */
+export function isAudioDownloadInFlight(episodeGuid: string, audioUrl: string): boolean {
+  return inFlightDownloads.has(getCachePath(episodeGuid, audioUrl));
+}
+
+async function downloadAudioUncoordinated(
   episodeGuid: string,
   audioUrl: string,
   onProgress?: (progress: DownloadProgress) => void,

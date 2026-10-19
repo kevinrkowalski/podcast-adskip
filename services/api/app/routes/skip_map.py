@@ -32,7 +32,11 @@ async def read_skip_map(
     if row["status"] == "ready" and (
         not audio_md5 or not row.get("audio_md5") or row["audio_md5"].lower() != audio_md5.lower()
     ):
-        return SkipMapResponse(status="missing", episode_guid=episode_guid)
+        return SkipMapResponse(
+            status="missing",
+            episode_guid=episode_guid,
+            analysis_for_other_audio=True,
+        )
     return SkipMapResponse(
         status=row["status"] if row["status"] in ("ready", "pending", "error") else "missing",
         episode_guid=episode_guid,

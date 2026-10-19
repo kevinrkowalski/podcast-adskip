@@ -3,8 +3,10 @@ declare const require: (m: string) => any;
 declare const __dirname: string;
 import type { AdSegment, Episode } from '@/src/types';
 
-// Regression: ba5edb9 only auto-skipped when the episode played from the downloaded file,
-// so any streamed episode with a ready skip map played straight through its ads.
+// Segment times belong to the downloaded (analyzed) file; a stream can carry different
+// dynamically inserted ads. So skipping works on the downloaded copy, never on a stream.
+// Episodes that use ad skipping are downloaded before they play (see playbackSource.ts),
+// which is what keeps skipping working (PR #42's bug was streamed episodes not skipping).
 
 jest.mock('react-native', () => ({ Platform: { OS: 'ios' } }));
 
@@ -100,22 +102,25 @@ async function playInto(opts?: { localFilePath?: string }) {
 }
 
 describe('auto-skip on the real (expo-audio) backend', () => {
-  it('skips an ad while streaming (no downloaded file)', async () => {
-    const fake = await playInto();
-    expect(fake.source).toMatchObject({ uri: ep.enclosureUrl });
-    expect(fake.seeks).toContain(ad.end_ms / 1000);
-    expect(player.getStatus().positionMs).toBeGreaterThanOrEqual(ad.end_ms);
-  });
-
   it('skips an ad when playing the downloaded file', async () => {
     const fake = await playInto({ localFilePath: 'file:///cache/podcast-audio/stream-ep.mp3' });
+    expect(fake.source).toMatchObject({ uri: 'file:///cache/podcast-audio/stream-ep.mp3' });
     expect(fake.seeks).toContain(ad.end_ms / 1000);
+    expect(player.getStatus().positionMs).toBeGreaterThanOrEqual(ad.end_ms);
+    expect(player.getLoadedSource().localFilePath).toBe('file:///cache/podcast-audio/stream-ep.mp3');
+  });
+
+  it('never applies segment times to a stream (ads may differ per fetch)', async () => {
+    const fake = await playInto();
+    expect(fake.source).toMatchObject({ uri: ep.enclosureUrl });
+    expect(fake.seeks).not.toContain(ad.end_ms / 1000);
+    expect(player.getLoadedSource().localFilePath).toBeNull();
   });
 });
 
 // The Android playback service does the skipping natively (screen off, Android Auto).
-// It must not refuse to skip just because the item is a stream rather than a file.
-test('native service auto-skip is not limited to local files', () => {
+// Same rule: skip on the downloaded file, not on a stream fallback.
+test('native service auto-skips only the downloaded file', () => {
   const fs = require('fs');
   const path = require('path');
   const src: string = fs.readFileSync(
@@ -128,6 +133,7 @@ test('native service auto-skip is not limited to local files', () => {
   const start = src.indexOf('private fun applyNativeAdSkip');
   expect(start).toBeGreaterThan(-1);
   const body = src.slice(start, src.indexOf('\n  private fun ', start + 10));
-  expect(body).not.toMatch(/isPlayingLocalFile|scheme\s*==\s*"file"/);
+  expect(body).toMatch(/if \(!isPlayingLocalFile\(exoPlayer\)\) return/);
   expect(body).toMatch(/currentSegments\(exoPlayer\)/);
+  expect(src).toMatch(/isPlayingLocalFile\(exoPlayer: ExoPlayer\): Boolean =\s*\n\s*exoPlayer\.currentMediaItem\?\.localConfiguration\?\.uri\?\.scheme == "file"/);
 });

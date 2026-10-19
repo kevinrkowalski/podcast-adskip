@@ -396,6 +396,9 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
       .build()
   }
 
+  private fun isPlayingLocalFile(exoPlayer: ExoPlayer): Boolean =
+    exoPlayer.currentMediaItem?.localConfiguration?.uri?.scheme == "file"
+
   private fun applyNativeAdSkip(exoPlayer: ExoPlayer) {
     val position = exoPlayer.currentPosition
     suppressedSegment?.let { (start, end) ->
@@ -403,8 +406,11 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     }
     if (!preferences.getBoolean(KEY_AUTO_SKIP, true) ||
       !preferences.getBoolean(KEY_AD_DETECTION_ENABLED, true)) return
-    // Skip on streams too. playableUri() already prefers the downloaded (analyzed) file;
-    // refusing to skip whenever it's missing broke auto-skip for every streamed episode.
+    // Segment times belong to the downloaded (analyzed) file. A stream can carry different
+    // dynamically inserted ads, so never skip on one. The app downloads episodes that use
+    // ad skipping before playing them; this only matters if a pruned/missing download made
+    // playableUri() fall back to the stream (e.g. restore or an Android Auto pick).
+    if (!isPlayingLocalFile(exoPlayer)) return
     val segments = currentSegments(exoPlayer) ?: return
     for (index in 0 until segments.length()) {
       val segment = segments.optJSONObject(index) ?: continue
