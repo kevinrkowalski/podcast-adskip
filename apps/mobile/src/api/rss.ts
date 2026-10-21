@@ -149,6 +149,32 @@ function* iterateItems(xml: string): Generator<string> {
   }
 }
 
+/** An item's identity, as parseRssXml assigns it to Episode.guid. */
+function itemGuid(item: string): string | undefined {
+  const enclosureTag = item.match(/<enclosure\b[^>]*\/?>/i)?.[0];
+  const enclosureUrl = enclosureTag ? attr(enclosureTag, 'url') : undefined;
+  return textBetween(item, 'guid') || enclosureUrl || textBetween(item, 'link');
+}
+
+function notesForGuid(xml: string, guid: string): string | undefined {
+  for (const item of iterateItems(xml)) {
+    if (itemGuid(item) === guid) return pickEpisodeNotes(item);
+  }
+  return undefined;
+}
+
+/**
+ * Show notes for one episode, searched across the whole feed (only the matching item's
+ * notes are parsed). Uses the in-memory feed when it has the episode; otherwise fetches
+ * the feed, e.g. for an episode newer than the cached copy.
+ */
+export async function findEpisodeNotes(feedUrl: string, guid: string): Promise<string | undefined> {
+  const cached = recallXml(feedUrl);
+  const fromCache = cached ? notesForGuid(cached, guid) : undefined;
+  if (fromCache?.trim()) return fromCache;
+  return notesForGuid(await fetchRssXml(feedUrl, { force: cached !== undefined }), guid);
+}
+
 function extractChannelImage(channelHead: string): string | undefined {
   const itunesTag = channelHead.match(/<itunes:image\b[^>]*\/?>/i)?.[0] ?? '';
   const itunes = attr(itunesTag, 'href');
@@ -206,7 +232,7 @@ export function parseRssXml(
     const enclosureTag = item.match(/<enclosure\b[^>]*\/?>/i)?.[0];
     const enclosureUrl = enclosureTag ? attr(enclosureTag, 'url') : undefined;
     const enclosureType = enclosureTag ? attr(enclosureTag, 'type') : undefined;
-    const guid = textBetween(item, 'guid') || enclosureUrl || textBetween(item, 'link');
+    const guid = itemGuid(item);
     if (!guid) continue;
     const duration = textBetween(item, 'itunes:duration');
     episodes.push({

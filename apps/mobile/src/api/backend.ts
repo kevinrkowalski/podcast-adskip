@@ -119,6 +119,8 @@ export async function analyzeEpisode(input: {
   duration_ms?: number;
   feed_url?: string;
   force?: boolean;
+  /** MD5 of the local copy: a matching ready map comes back without a server download. */
+  audio_md5?: string;
   sync?: boolean;
 }): Promise<SkipMap> {
   const qs = input.sync ? '?sync=true' : '';

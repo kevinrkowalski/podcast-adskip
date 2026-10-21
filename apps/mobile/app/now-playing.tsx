@@ -139,11 +139,16 @@ export default function PlayerScreen() {
   const isPlaying = opened ? false : playback.isPlaying;
   const positionMs = opened ? opened.positionMs : playback.positionMs;
   const durationMs = opened ? opened.durationMs : playback.durationMs;
-  const skipMap = opened ? null : playback.skipMap;
-  const analyzeStatus = opened ? null : playback.analyzeStatus;
-  const analyzeError = opened ? null : playback.analyzeError;
+  // An unstarted episode shows the map already prepared for its download (if any).
+  // An unstarted episode shows the map already prepared for its download (if any), or
+  // the progress of a Prepare started on it.
+  const skipMap = opened ? (opened.skipMap ?? null) : playback.skipMap;
+  const analyzeStatus = opened
+    ? (opened.analyzeStatus ?? (opened.skipMap?.status === 'ready' ? 'ready' : null))
+    : playback.analyzeStatus;
+  const analyzeError = opened ? (opened.analyzeError ?? null) : playback.analyzeError;
   const audioMismatchWarning = opened ? null : playback.audioMismatchWarning;
-  const uploadProgress = opened ? null : playback.uploadProgress;
+  const uploadProgress = opened ? (opened.uploadProgress ?? null) : playback.uploadProgress;
   // Download-before-play (episodes that use ad skipping never stream).
   const playbackDownload =
     !opened && playback.playbackDownload?.guid === playback.episode?.guid
@@ -164,14 +169,9 @@ export default function PlayerScreen() {
     ? () => runOpenedStart(() => playback.startOpenedEpisode())
     : playback.togglePlay;
   const seek = opened ? playback.seekOpenedEpisode : playback.seek;
-  const requestAnalyze = opened
-    ? (force?: boolean) =>
-        runOpenedStart(async () => {
-          // Manual Prepare on an unstarted episode: switch to it, then prepare.
-          await playback.startOpenedEpisode();
-          await playback.requestAnalyze(force);
-        })
-    : playback.requestAnalyze;
+  // Prepare on an unstarted episode gets it ready without starting it; Play still works
+  // (and picks up the prepared download) while it runs.
+  const requestAnalyze = opened ? playback.prepareOpenedEpisode : playback.requestAnalyze;
   // An opened (unstarted) episode may be from a different show than the one
   // playing, so the live per-show adDetectionEnabled doesn't apply to it.
   const showAdDetectionEnabled = opened ? true : adDetectionEnabled;

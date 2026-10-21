@@ -137,6 +137,28 @@ class StreamCacheSession(
       (lastModified != null && newModified != null && lastModified != newModified))
   }
 
+  private fun isRedirectFailure(e: Throwable): Boolean =
+    generateSequence(e) { it.cause }.any {
+      it is java.net.NoRouteToHostException || it.message?.contains("redirect", ignoreCase = true) == true
+    }
+
+  /**
+   * Whether [source], opened with a Range request at [position] against [resolvedUri], is
+   * a ranged answer from the very same file this session is saving (same checks as a
+   * resume). Only then may the player hear its bytes without making the copy unverified.
+   */
+  fun isSameFileRange(source: HttpDataSource, position: Long): Boolean {
+    if (source.responseCode != 206) return false
+    val start = contentRangeStart(source)
+    if (start != null && start != position) return false
+    val total = contentRangeTotal(source)
+    val known = totalLength
+    if (known != C.LENGTH_UNSET.toLong() && total != null && total != known) return false
+    if (!sameResource(source)) return false
+    // Without a size or validator there's no way to tell it's the same file.
+    return (known != C.LENGTH_UNSET.toLong() && total != null) || etag != null || lastModified != null
+  }
+
   private fun fail(message: String) {
     synchronized(lock) {
       if (state != State.DOWNLOADING) return
@@ -232,6 +254,11 @@ class StreamCacheSession(
             if (e is HttpDataSource.InvalidResponseCodeException && e.responseCode < 500) {
               return fail("HTTP ${e.responseCode}")
             }
+            if (bytesWritten == 0L && isRedirectFailure(e)) {
+              // Redirect loops are deterministic: fail now so the app can resolve the
+              // chain server-side instead of buffering through every retry.
+              return fail("too many redirects (${e.message})")
+            }
             attempt += 1
             log("stream-cache io error $guid at $bytesWritten (attempt $attempt): ${e.message}")
             if (attempt > MAX_ATTEMPTS) return fail(e.message ?: "network error")
@@ -300,6 +327,8 @@ class StreamCacheDataSource(
   private var position = 0L
   private var bytesRemaining = C.LENGTH_UNSET.toLong()
   private var fallback: HttpDataSource? = null
+  /** Ranged read of the same file for a position far ahead of the download (see open). */
+  private var ahead: HttpDataSource? = null
   private var opened = false
 
   override fun open(dataSpec: DataSpec): Long {
@@ -319,6 +348,11 @@ class StreamCacheDataSource(
       throw androidx.media3.datasource.DataSourceException(
         androidx.media3.common.PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE
       )
+    }
+    openAhead(position, dataSpec.length)?.let { length ->
+      opened = true
+      transferStarted(dataSpec)
+      return length
     }
     file = openFile()
     val remainingInFile = if (total != C.LENGTH_UNSET.toLong()) total - position else C.LENGTH_UNSET.toLong()
@@ -343,6 +377,34 @@ class StreamCacheDataSource(
     }
   }
 
+  /**
+   * MP4/M4A files often keep their index (moov) at the end, and the extractor must read it
+   * before playing; a user seek can also land far past the download. Waiting for the
+   * download to reach that point turns play-while-downloading into download-first, so
+   * fetch that range of the same file directly. Returns null to read from the saved file.
+   */
+  private fun openAhead(from: Long, length: Long): Long? {
+    if (session.state != StreamCacheSession.State.DOWNLOADING) return null
+    if (from <= session.bytesWritten + AHEAD_THRESHOLD_BYTES) return null
+    val uri = session.resolvedUri ?: return null
+    val source = httpFactory.createDataSource()
+    return try {
+      val result = source.open(DataSpec.Builder().setUri(uri).setPosition(from).setLength(length).build())
+      if (!session.isSameFileRange(source, from)) {
+        source.close()
+        return null
+      }
+      ahead = source
+      result
+    } catch (e: IOException) {
+      try {
+        source.close()
+      } catch (_: IOException) {
+      }
+      null
+    }
+  }
+
   private fun openFallback(from: Long, length: Long): Long {
     session.playedUnverifiedBytes = true
     val source = httpFactory.createDataSource()
@@ -358,7 +420,7 @@ class StreamCacheDataSource(
   override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
     if (length == 0) return 0
     while (true) {
-      fallback?.let { source ->
+      (fallback ?: ahead)?.let { source ->
         val n = source.read(buffer, offset, length)
         if (n > 0) bytesTransferred(n)
         return n
@@ -396,15 +458,23 @@ class StreamCacheDataSource(
 
   override fun getUri(): Uri? = session.resolvedUri ?: dataSpec?.uri
 
-  override fun getResponseHeaders(): Map<String, List<String>> = fallback?.responseHeaders ?: emptyMap()
+  companion object {
+    /** Reads starting further than this past the download use a ranged fetch instead of waiting. */
+    private const val AHEAD_THRESHOLD_BYTES = 1L * 1024 * 1024
+  }
+
+  override fun getResponseHeaders(): Map<String, List<String>> =
+    (fallback ?: ahead)?.responseHeaders ?: emptyMap()
 
   override fun close() {
     try {
       file?.close()
       fallback?.close()
+      ahead?.close()
     } finally {
       file = null
       fallback = null
+      ahead = null
       if (opened) {
         opened = false
         transferEnded()
