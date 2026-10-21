@@ -183,6 +183,9 @@ WINDOW_OVERLAP_S = 20.0
 SEGMENT_MERGE_GAP_MS = 8_000
 SPEECHLESS_GAP_MERGE_MAX_MS = 20_000
 BREAK_BLOCK_GAP_MAX_MS = 30_000
+# After a break cue, a short spoken gap before the next ad (network bumper, a sign-off
+# like "stay with us", Whisper's "Thank you." over music) is part of the break too.
+BREAK_BLOCK_SPOKEN_GAP_MAX_MS = 15_000
 BREAK_CUE_LOOKBACK_MS = 15_000
 # Whisper span edges carry fractional ms (e.g. 387.7049s) while validated
 # segments are rounded, so allow a small tolerance before treating an edge
@@ -231,6 +234,26 @@ def _ends_with_break_cue(transcript: dict[str, Any], seg: AdSegment) -> bool:
     return bool(BREAK_BLOCK_CUES.search(_transcript_text(transcript, window_start, seg.end_ms)))
 
 
+def _merged_confidence(last: AdSegment, seg: AdSegment) -> float:
+    """Confidence of `last` merged with `seg` (which starts at or after it).
+
+    Audio covered by both detections (overlapping windows label the same span twice)
+    is as trustworthy as the stronger one; audio only one of them covers keeps that
+    one's confidence. The weakest part decides, so bridging into an uncertain span
+    stays conservative while a duplicate never drags a confident ad below the
+    auto-skip bar.
+    """
+    if seg.start_ms >= last.end_ms:
+        # Separate spans joined across a gap (or end to start): no shared audio.
+        return min(last.confidence, seg.confidence)
+    parts = [max(last.confidence, seg.confidence)]
+    if last.start_ms < seg.start_ms or seg.end_ms < last.end_ms:
+        parts.append(last.confidence)
+    if seg.end_ms > last.end_ms:
+        parts.append(seg.confidence)
+    return min(parts)
+
+
 def _merge(
     segments: list[AdSegment],
     gap_ms: int = SEGMENT_MERGE_GAP_MS,
@@ -242,8 +265,8 @@ def _merge(
     - Always merge within ``gap_ms``.
     - With a transcript, bridge speechless (silence/music) gaps up to 20s.
     - Once a break cue ("we'll be right back", "after the break", ...) opens a
-      block, bridge speechless gaps up to 30s so cue + gap + ads become one
-      midroll segment.
+      block, bridge speechless gaps up to 30s, and spoken gaps up to 15s, so
+      cue + gap + ads become one midroll segment.
     """
     if not segments:
         return []
@@ -267,8 +290,8 @@ def _merge(
             in_break[-1]
             and last.type != "unknown"
             and seg.type != "unknown"
-            and speechless
             and gap <= BREAK_BLOCK_GAP_MAX_MS
+            and (speechless or (transcript is not None and gap <= BREAK_BLOCK_SPOKEN_GAP_MAX_MS))
         )
         # Never fold unclassified spans into ads (or vice versa): either the
         # ads stop being skipped or the unknown span gets auto-skipped.
@@ -284,7 +307,7 @@ def _merge(
                 start_ms=last.start_ms,
                 end_ms=max(last.end_ms, seg.end_ms),
                 type=strongest_type,
-                confidence=min(last.confidence, seg.confidence),
+                confidence=_merged_confidence(last, seg),
             )
             if (
                 transcript is not None

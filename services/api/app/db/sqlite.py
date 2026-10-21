@@ -40,7 +40,12 @@ _MIGRATE_COLS = (
     ("audio_sha256", "TEXT"),
     ("audio_md5", "TEXT"),
     ("pending_audio_sha256", "TEXT"),
+    ("run_id", "TEXT"),
 )
+
+
+class RunSuperseded(Exception):
+    """A newer analysis run took over this episode's row; the older run must stop writing."""
 
 
 def _db_path() -> Path:
@@ -79,7 +84,9 @@ async def delete_expired_skip_maps(
     cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
     async with aiosqlite.connect(_db_path()) as db:
         cursor = await db.execute(
-            "DELETE FROM skip_maps WHERE COALESCE(analyzed_at, updated_at, created_at) < ?",
+            # updated_at is the row's latest write (>= analyzed_at). Never delete a row an
+            # analysis is still writing to, even if its previous map is old.
+            "DELETE FROM skip_maps WHERE status != 'pending' AND updated_at < ?",
             (cutoff.isoformat(),),
         )
         await db.commit()
@@ -217,7 +224,17 @@ async def set_status(
     duration_ms: int | None = None,
     reset_started: bool = False,
     pending_audio_sha256: str | None = None,
+    run_id: str | None = None,
 ) -> None:
+    """Upsert an episode's status.
+
+    Runs identify themselves with `run_id`. A write with ``reset_started=True`` starts a
+    new run and takes over the row (a route passing no run_id releases it, so the old run
+    can no longer write). Any other write carrying a run_id only applies while that run
+    still owns the row, otherwise it raises RunSuperseded. Without that, two concurrent
+    analyses of one GUID (e.g. two uploads with different ad variants) interleave their
+    stage, error and ready writes.
+    """
     now = _now()
     async with aiosqlite.connect(_db_path()) as db:
         await _ensure_columns(db)
@@ -241,14 +258,14 @@ async def set_status(
         else:
             stage_updated_at = None  # preserve prior via COALESCE below
 
-        await db.execute(
+        cursor = await db.execute(
             """
             INSERT INTO skip_maps (
               episode_guid, status, audio_url, feed_url, title, error,
               stage, started_at, stage_updated_at, duration_ms,
-              pending_audio_sha256, created_at, updated_at
+              pending_audio_sha256, run_id, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(episode_guid) DO UPDATE SET
               status = excluded.status,
               audio_url = COALESCE(excluded.audio_url, skip_maps.audio_url),
@@ -262,7 +279,9 @@ async def set_status(
               pending_audio_sha256 = CASE WHEN ? THEN excluded.pending_audio_sha256
                 ELSE COALESCE(excluded.pending_audio_sha256, skip_maps.pending_audio_sha256)
               END,
+              run_id = CASE WHEN ? THEN excluded.run_id ELSE skip_maps.run_id END,
               updated_at = excluded.updated_at
+            WHERE ? OR ? IS NULL OR skip_maps.run_id IS ?
             """,
             (
                 episode_guid,
@@ -276,15 +295,23 @@ async def set_status(
                 stage_updated_at if stage_updated_at is not None else now,
                 duration_ms,
                 pending_audio_sha256,
+                run_id,
                 now,
                 now,
                 started_at if (reset_started or not prev_started) else None,
                 stage_updated_at,
                 # A new run replaces (or clears) the in-flight audio fingerprint.
                 1 if reset_started else 0,
+                # ...and takes over the row.
+                1 if reset_started else 0,
+                1 if reset_started else 0,
+                run_id,
+                run_id,
             ),
         )
         await db.commit()
+        if cursor.rowcount == 0:
+            raise RunSuperseded(episode_guid)
 
 
 async def save_skip_map(
@@ -299,12 +326,14 @@ async def save_skip_map(
     analyzed_audio_duration_ms: int | None = None,
     audio_sha256: str | None = None,
     audio_md5: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
+    """Store a finished map. With `run_id`, only while that run owns the row (see set_status)."""
     now = _now()
     payload = json.dumps([s.model_dump() for s in segments])
     async with aiosqlite.connect(_db_path()) as db:
         await _ensure_columns(db)
-        await db.execute(
+        cursor = await db.execute(
             """
             INSERT INTO skip_maps (
               episode_guid, status, segments_json, model, audio_url, feed_url, title,
@@ -327,6 +356,7 @@ async def save_skip_map(
               audio_sha256 = excluded.audio_sha256,
               audio_md5 = excluded.audio_md5,
               updated_at = excluded.updated_at
+            WHERE ? IS NULL OR skip_maps.run_id IS ?
             """,
             (
                 episode_guid,
@@ -343,9 +373,13 @@ async def save_skip_map(
                 audio_md5,
                 now,
                 now,
+                run_id,
+                run_id,
             ),
         )
         await db.commit()
+        if cursor.rowcount == 0:
+            raise RunSuperseded(episode_guid)
     progress = estimate_progress(
         status="ready",
         stage="ready",

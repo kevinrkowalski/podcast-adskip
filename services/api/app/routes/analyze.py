@@ -50,6 +50,26 @@ async def analyze_episode(
         raise
 
     existing = await get_skip_map(body.episode_guid)
+    if (
+        existing
+        and existing["status"] == "ready"
+        and not body.force
+        and body.audio_md5
+        and (existing.get("audio_md5") or "").lower() == body.audio_md5.lower()
+    ):
+        # Same bytes as the stored analysis: no download, and no rate-limit charge.
+        return AnalyzeEpisodeResponse(
+            status="ready",
+            episode_guid=body.episode_guid,
+            segments=existing.get("segments") or [],
+            model=existing.get("model"),
+            analyzed_at=_parse_dt(existing.get("analyzed_at")),
+            audio_url=existing.get("audio_url"),
+            analyzed_audio_size_bytes=existing.get("analyzed_audio_size_bytes"),
+            analyzed_audio_duration_ms=existing.get("analyzed_audio_duration_ms"),
+            audio_md5=existing.get("audio_md5"),
+            **_progress_kwargs(existing),
+        )
     if existing and existing["status"] == "pending" and not body.force:
         return AnalyzeEpisodeResponse(
             status="queued",

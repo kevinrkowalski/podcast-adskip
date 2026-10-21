@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import uuid
 from pathlib import Path
 from typing import Any
 
 from app.config import Settings, get_settings
-from app.db import get_skip_map, save_skip_map, set_status
+from app.db import RunSuperseded, get_skip_map, save_skip_map, set_status
 from app.services.audio_fingerprint import file_fingerprints
 from app.services.detect_ads import heuristic_segments, label_ads_llm
 from app.services.transcribe import download_audio, stub_transcript, transcribe_audio
@@ -55,6 +56,7 @@ async def _stage(
     duration_ms: int | None = None,
     reset_started: bool = False,
     pending_audio_sha256: str | None = None,
+    run_id: str | None = None,
 ) -> None:
     await set_status(
         episode_guid,
@@ -66,7 +68,33 @@ async def _stage(
         duration_ms=duration_ms,
         reset_started=reset_started,
         pending_audio_sha256=pending_audio_sha256,
+        run_id=run_id,
     )
+
+
+async def _superseded_result(episode_guid: str) -> dict[str, Any]:
+    """A newer run owns the row now: report its state instead of writing ours."""
+    logger.info("Analysis for %s superseded by a newer run; stopping", episode_guid)
+    current = await get_skip_map(episode_guid)
+    if current:
+        return current
+    return {
+        "episode_guid": episode_guid,
+        "status": "pending",
+        "segments": [],
+        "model": None,
+        "analyzed_at": None,
+        "message": None,
+        "stage": "queued",
+    }
+
+
+async def _record_failure(episode_guid: str, err: str, run_id: str) -> None:
+    try:
+        await set_status(episode_guid, "error", error=err, stage="error", run_id=run_id)
+    except RunSuperseded:
+        # A newer run owns the row; its result must not be replaced by our failure.
+        pass
 
 
 async def run_analyze(
@@ -83,6 +111,7 @@ async def run_analyze(
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     settings = settings or get_settings()
+    run_id = uuid.uuid4().hex
     existing = await get_skip_map(episode_guid)
     await _stage(
         episode_guid,
@@ -92,6 +121,7 @@ async def run_analyze(
         title=title,
         duration_ms=duration_ms,
         reset_started=True,
+        run_id=run_id,
     )
 
     audio_path: Path | None = None
@@ -110,6 +140,7 @@ async def run_analyze(
                 feed_url=feed_url,
                 title=title,
                 duration_ms=duration_ms,
+                run_id=run_id,
             )
             audio_path = await download_audio(audio_url, settings.max_audio_mb)
             audio_sha256, audio_md5 = await asyncio.to_thread(file_fingerprints, audio_path)
@@ -119,7 +150,7 @@ async def run_analyze(
                 and existing.get("analyzed_at")
                 and existing.get("audio_sha256") == audio_sha256
             ):
-                await set_status(episode_guid, "ready", stage="ready")
+                await set_status(episode_guid, "ready", stage="ready", run_id=run_id)
                 cached = await get_skip_map(episode_guid)
                 return cached or existing
 
@@ -127,6 +158,7 @@ async def run_analyze(
                 episode_guid,
                 "transcribing",
                 duration_ms=duration_ms,
+                run_id=run_id,
             )
             transcript = await transcribe_audio(audio_path, settings)
             analyzed_audio_size_bytes = audio_path.stat().st_size
@@ -137,6 +169,7 @@ async def run_analyze(
                 episode_guid,
                 "labeling",
                 duration_ms=duration_ms,
+                run_id=run_id,
             )
             if settings.has_llm:
                 segments = await label_ads_llm(
@@ -159,6 +192,7 @@ async def run_analyze(
                 episode_guid,
                 "transcribing",
                 duration_ms=duration_ms,
+                run_id=run_id,
             )
             transcript = stub_transcript(duration_ms)
             analyzed_audio_size_bytes = None
@@ -167,11 +201,12 @@ async def run_analyze(
                 episode_guid,
                 "labeling",
                 duration_ms=duration_ms,
+                run_id=run_id,
             )
             segments = heuristic_segments(transcript, duration_ms)
             model = "stub-whisper+heuristic"
 
-        await _stage(episode_guid, "saving", duration_ms=duration_ms)
+        await _stage(episode_guid, "saving", duration_ms=duration_ms, run_id=run_id)
         result = await save_skip_map(
             episode_guid,
             segments,
@@ -183,6 +218,7 @@ async def run_analyze(
             analyzed_audio_duration_ms=analyzed_audio_duration_ms,
             audio_sha256=audio_sha256,
             audio_md5=audio_md5,
+            run_id=run_id,
         )
         logger.info(
             "Analyze ready guid=%s segments=%s model=%s",
@@ -191,10 +227,12 @@ async def run_analyze(
             model,
         )
         return result
+    except RunSuperseded:
+        return await _superseded_result(episode_guid)
     except Exception as exc:
         err = str(exc) or exc.__class__.__name__
         logger.exception("analyze failed for %s: %s", episode_guid, err)
-        await set_status(episode_guid, "error", error=err, stage="error")
+        await _record_failure(episode_guid, err, run_id)
         return {
             "episode_guid": episode_guid,
             "status": "error",
@@ -233,6 +271,7 @@ async def run_analyze_from_file(
 ) -> dict[str, Any]:
     """Analyze a client-uploaded audio file and persist its source metadata."""
     settings = settings or get_settings()
+    run_id = uuid.uuid4().hex
     if audio_sha256 is None or audio_md5 is None:
         calculated_sha256, calculated_md5 = await asyncio.to_thread(file_fingerprints, audio_path)
         audio_sha256 = audio_sha256 or calculated_sha256
@@ -247,14 +286,15 @@ async def run_analyze_from_file(
             duration_ms=duration_ms,
             reset_started=True,
             pending_audio_sha256=audio_sha256,
+            run_id=run_id,
         )
         audio_size_bytes = audio_path.stat().st_size
         if settings.has_real_stt:
-            await _stage(episode_guid, "transcribing", duration_ms=duration_ms)
+            await _stage(episode_guid, "transcribing", duration_ms=duration_ms, run_id=run_id)
             transcript = await transcribe_audio(audio_path, settings)
             analyzed_audio_duration_ms = _transcript_duration_ms(transcript, duration_ms)
             model_parts = [settings.whisper_model]
-            await _stage(episode_guid, "labeling", duration_ms=duration_ms)
+            await _stage(episode_guid, "labeling", duration_ms=duration_ms, run_id=run_id)
             if settings.has_llm:
                 segments = await label_ads_llm(
                     transcript,
@@ -271,14 +311,14 @@ async def run_analyze_from_file(
                 model_parts.append("heuristic")
             model = "+".join(model_parts)
         else:
-            await _stage(episode_guid, "transcribing", duration_ms=duration_ms)
+            await _stage(episode_guid, "transcribing", duration_ms=duration_ms, run_id=run_id)
             transcript = stub_transcript(duration_ms)
             analyzed_audio_duration_ms = _transcript_duration_ms(transcript, duration_ms)
-            await _stage(episode_guid, "labeling", duration_ms=duration_ms)
+            await _stage(episode_guid, "labeling", duration_ms=duration_ms, run_id=run_id)
             segments = heuristic_segments(transcript, duration_ms)
             model = "stub-whisper+heuristic"
 
-        await _stage(episode_guid, "saving", duration_ms=duration_ms)
+        await _stage(episode_guid, "saving", duration_ms=duration_ms, run_id=run_id)
         return await save_skip_map(
             episode_guid,
             segments,
@@ -290,11 +330,14 @@ async def run_analyze_from_file(
             analyzed_audio_duration_ms=analyzed_audio_duration_ms,
             audio_sha256=audio_sha256,
             audio_md5=audio_md5,
+            run_id=run_id,
         )
+    except RunSuperseded:
+        return await _superseded_result(episode_guid)
     except Exception as exc:
         err = str(exc) or exc.__class__.__name__
         logger.exception("uploaded analyze failed for %s: %s", episode_guid, err)
-        await set_status(episode_guid, "error", error=err, stage="error")
+        await _record_failure(episode_guid, err, run_id)
         return {
             "episode_guid": episode_guid,
             "status": "error",

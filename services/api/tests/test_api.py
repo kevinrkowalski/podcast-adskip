@@ -277,10 +277,12 @@ def test_merge_bridges_long_music_gaps_but_not_spoken_gaps():
             {"start": 130, "end": 145, "text": "Brought to you by Acme."},
         ]
     }
+    # No break cue here: a spoken gap after a break cue is bridged (see
+    # test_merge_break_block.py), but ordinary conversation in between is not.
     spoken_gap = {
         "segments": [
-            {"start": 100, "end": 115, "text": "Let's take a break."},
-            {"start": 115, "end": 130, "text": "We'll be right back after this."},
+            {"start": 100, "end": 115, "text": "That's the first story."},
+            {"start": 115, "end": 130, "text": "Now, about the second one."},
             {"start": 130, "end": 145, "text": "Brought to you by Acme."},
         ]
     }
@@ -655,6 +657,15 @@ def test_expired_skip_maps_are_deleted_only_after_retention(monkeypatch, tmp_pat
                     ("recent", recent, recent, recent),
                 ],
             )
+            # An old map being re-analyzed right now must survive the cleanup.
+            await db.execute(
+                """
+                INSERT INTO skip_maps (
+                    episode_guid, status, analyzed_at, created_at, updated_at
+                ) VALUES ('reanalyzing', 'pending', ?, ?, ?)
+                """,
+                (expired, expired, expired),
+            )
             await db.commit()
 
         deleted = await sqlite.delete_expired_skip_maps(90, now=now)
@@ -665,7 +676,7 @@ def test_expired_skip_maps_are_deleted_only_after_retention(monkeypatch, tmp_pat
 
     deleted, remaining = asyncio.run(_seed_and_cleanup())
     assert deleted == 2
-    assert remaining == {"recent", "retention-boundary"}
+    assert remaining == {"reanalyzing", "recent", "retention-boundary"}
 
 
 def test_pending_skip_map_includes_progress_fields():
@@ -705,3 +716,44 @@ def test_pending_skip_map_includes_progress_fields():
         assert body["stage_label"] == "Transcribing"
         assert body["eta_seconds"] >= 5
         assert body["progress_pct"] is not None
+
+
+def test_analyze_with_matching_md5_returns_ready_map_without_rate_limit():
+    import asyncio
+
+    from app.db import save_skip_map
+    from app.models.schemas import AdSegment
+    from app.rate_limit import reset_analyze_limiter
+
+    os.environ["ANALYZE_RATE_LIMIT"] = "1"
+    get_settings.cache_clear()
+    reset_analyze_limiter()
+    md5 = "0123456789abcdef0123456789abcdef"
+    try:
+        with TestClient(app) as client:
+            asyncio.run(
+                save_skip_map(
+                    "md5-shortcut-guid",
+                    [AdSegment(start_ms=0, end_ms=30_000, type="sponsor", confidence=0.9)],
+                    "m",
+                    audio_md5=md5,
+                )
+            )
+            payload = {
+                "episode_guid": "md5-shortcut-guid",
+                "audio_url": "https://example.com/ep.mp3",
+                "audio_md5": md5.upper(),
+            }
+            for _ in range(3):
+                r = client.post("/v1/analyze-episode", json=payload)
+                assert r.status_code == 200, r.text
+                assert r.json()["status"] == "ready"
+                assert r.json()["segments"][0]["end_ms"] == 30_000
+            # Another copy's fingerprint starts a real analysis (and counts).
+            r = client.post("/v1/analyze-episode", json={**payload, "audio_md5": "f" * 32})
+            assert r.status_code == 200
+            assert r.json()["status"] == "queued"
+    finally:
+        os.environ.pop("ANALYZE_RATE_LIMIT", None)
+        get_settings.cache_clear()
+        reset_analyze_limiter()

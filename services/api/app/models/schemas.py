@@ -22,6 +22,9 @@ class AnalyzeEpisodeRequest(BaseModel):
     duration_ms: int | None = None
     feed_url: str | None = None
     force: bool = False
+    # MD5 of the client's copy. When a ready map matches it, it's returned without
+    # re-downloading the audio (a GUID alone can't identify dynamically inserted ads).
+    audio_md5: str | None = Field(default=None, min_length=32, max_length=32)
 
 
 AnalyzeStage = Literal[

@@ -32,16 +32,16 @@ class ResolveResponse(BaseModel):
     hops: int
 
 
-async def _is_public_host(host: str) -> bool:
+async def _public_ip(host: str) -> str:
+    """Resolve `host` and return an address to connect to, or raise if any is not public."""
     try:
         infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
-    except OSError:
-        return False
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if not ip.is_global:
-            return False
-    return True
+    except OSError as exc:
+        raise ValueError("URL host does not resolve") from exc
+    addresses = [ipaddress.ip_address(info[4][0]) for info in infos]
+    if not addresses or not all(ip.is_global for ip in addresses):
+        raise ValueError("URL host is not public")
+    return str(addresses[0])
 
 
 async def resolve_redirects(url: str, client: httpx.AsyncClient, *, check_host: bool = True) -> tuple[str, int]:
@@ -52,15 +52,28 @@ async def resolve_redirects(url: str, client: httpx.AsyncClient, *, check_host: 
         parts = urlsplit(current)
         if parts.scheme not in ("http", "https") or not parts.hostname:
             raise ValueError(f"Unsupported URL: {current[:200]}")
-        if check_host and not await _is_public_host(parts.hostname):
-            raise ValueError("URL host is not public")
         if current in seen:
             raise ValueError(f"Redirect loop at {parts.hostname}")
         seen.add(current)
-        resp = await client.get(current, headers={"User-Agent": UA, "Range": "bytes=0-0"})
+        target = httpx.URL(current)
+        headers = {"User-Agent": UA, "Range": "bytes=0-0"}
+        extensions: dict[str, str] = {}
+        if check_host:
+            # Connect to the exact address that passed the check; letting httpx resolve
+            # the name again would let a DNS-rebinding host swap in a private address.
+            ip = await _public_ip(parts.hostname)
+            headers["Host"] = target.netloc.decode("ascii")
+            if target.scheme == "https":
+                extensions["sni_hostname"] = parts.hostname
+            target = target.copy_with(host=ip)
+        # Stream so a host that ignores Range doesn't make us download the whole episode.
+        request = client.build_request("GET", target, headers=headers, extensions=extensions)
+        resp = await client.send(request, stream=True)
         await resp.aclose()
-        if resp.is_redirect and resp.next_request is not None:
-            current = str(resp.next_request.url)
+        location = resp.headers.get("location")
+        if resp.is_redirect and location:
+            # Join against the original URL, not the IP we connected to.
+            current = str(httpx.URL(current).join(location))
             continue
         if resp.status_code >= 400:
             raise ValueError(f"Audio host returned HTTP {resp.status_code}")
