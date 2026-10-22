@@ -129,6 +129,39 @@ def test_confirmed_missed_ad_fixes_skip_map_and_learns(db, monkeypatch):
     assert "[600.0-630.0]" in prompts[0] and "[0.0-30.0]" not in prompts[0]
 
 
+def test_ad_crossing_window_edge_still_snaps_and_merges(db, monkeypatch):
+    # Report at 13:30: window starts at 9:30, the ad really began at 9:00 (already detected).
+    _mock_llm(monkeypatch, {"verdict": "confirmed", "ad_start_s": 540, "ad_end_s": 689, "ad_type": "sponsor"})
+
+    async def scenario():
+        await _setup_episode([AdSegment(start_ms=540_000, end_ms=600_000, type="sponsor", confidence=0.9)])
+        fid = await _insert_report(kind="missed_ad", position_ms=810_000)
+        result = await review_feedback(fid, settings=LLM)
+        return result, await sqlite.get_skip_map("ep1")
+
+    result, row = asyncio.run(scenario())
+    assert result["review"]["window_ms"][0] == 570_000
+    assert (result["review"]["ad_start_ms"], result["review"]["ad_end_ms"]) == (570_000, 690_000)
+    assert [(s.start_ms, s.end_ms) for s in row["segments"]] == [(540_000, 690_000)]
+
+
+def test_network_promos_do_not_teach_sponsor_names(db, monkeypatch):
+    _mock_llm(monkeypatch, {
+        "verdict": "confirmed", "ad_start_s": 600, "ad_end_s": 690, "ad_type": "network",
+        "sponsors": ["The New York Times"], "break_phrases": ["We'll be right back"],
+    })
+
+    async def scenario():
+        await _setup_episode([])
+        fid = await _insert_report(kind="missed_ad", position_ms=700_000)
+        await review_feedback(fid, settings=LLM)
+        return await learning.get_show_notes(show_key(FEED))
+
+    notes = asyncio.run(scenario())
+    assert notes["sponsors"] == []
+    assert [p["value"] for p in notes["break_phrases"]] == ["We'll be right back"]
+
+
 def test_review_on_other_audio_copy_never_edits_map_and_downgrades_rejects(db, monkeypatch):
     _mock_llm(monkeypatch, {"verdict": "rejected", "reason": "no ad"})
 
