@@ -162,6 +162,17 @@ def test_network_promos_do_not_teach_sponsor_names(db, monkeypatch):
     assert [p["value"] for p in notes["break_phrases"]] == ["We'll be right back"]
 
 
+def test_brand_also_mentioned_in_show_content_is_not_learned():
+    tx = {"segments": [
+        {"start": 0.0, "end": 30.0, "text": "Our reporters at The New York Times found this."},
+        {"start": 30.0, "end": 60.0, "text": "Subscribe to The New York Times today. Acme Mattress too."},
+        {"start": 60.0, "end": 90.0, "text": "Back to the story."},
+    ]}
+    verdict = {"ad_start_ms": 30_000, "ad_end_ms": 60_000}
+    kept = feedback_review.own_brand_filter(["The New York Times", "Acme Mattress"], verdict, tx, (0, 90_000))
+    assert kept == ["Acme Mattress"]
+
+
 def test_review_on_other_audio_copy_never_edits_map_and_downgrades_rejects(db, monkeypatch):
     _mock_llm(monkeypatch, {"verdict": "rejected", "reason": "no ad"})
 
