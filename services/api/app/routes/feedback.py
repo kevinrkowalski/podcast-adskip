@@ -14,12 +14,14 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import aiosqlite
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.auth import check_app_key
 from app.config import get_settings
+from app.db.learning import list_show_notes
 from app.rate_limit import SlidingWindowRateLimiter, client_ip
+from app.services.feedback_review import ensure_review_columns, review_feedback
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +76,11 @@ class FeedbackIn(BaseModel):
 class FeedbackOut(FeedbackIn):
     id: int
     created_at: str
+    # Server-side review of the report (see services/feedback_review.py).
+    review_status: str | None = None
+    review: dict[str, Any] | None = None
+    reviewed_at: str | None = None
+    show_key: str | None = None
 
 
 def _db_path() -> Path:
@@ -85,6 +92,7 @@ def _db_path() -> Path:
 async def _connect() -> aiosqlite.Connection:
     db = await aiosqlite.connect(_db_path())
     await db.execute(_CREATE)
+    await ensure_review_columns(db)
     return db
 
 
@@ -94,6 +102,11 @@ def _row_out(row: aiosqlite.Row) -> FeedbackOut:
     segs = d.pop("segments_json", None) or "[]"
     d["selected_segment"] = json.loads(sel) if sel else None
     d["segments"] = json.loads(segs)
+    review = d.pop("review_json", None)
+    try:
+        d["review"] = json.loads(review) if review else None
+    except ValueError:
+        d["review"] = None
     return FeedbackOut(**d)
 
 
@@ -115,6 +128,7 @@ def reset_feedback_limiter() -> None:
 async def create_feedback(
     body: FeedbackIn,
     request: Request,
+    background_tasks: BackgroundTasks,
     x_app_key: Annotated[str | None, Header()] = None,
 ) -> FeedbackOut:
     check_app_key(x_app_key)
@@ -125,8 +139,8 @@ async def create_feedback(
         cur = await db.execute(
             """INSERT INTO feedback (kind, episode_guid, title, feed_url, position_ms,
                    selected_segment_json, segments_json, model, analyzed_at, note,
-                   client_created_at, app_version, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   client_created_at, app_version, created_at, review_status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')""",
             (
                 body.kind,
                 body.episode_guid,
@@ -148,7 +162,34 @@ async def create_feedback(
     finally:
         await db.close()
     logger.info("Feedback #%s (%s) for %s", new_id, body.kind, body.episode_guid)
-    return FeedbackOut(id=int(new_id or 0), created_at=created_at, **body.model_dump())
+    if new_id and get_settings().has_llm:
+        # Check the report against the transcript and learn from it, after responding.
+        background_tasks.add_task(review_feedback, int(new_id))
+    return FeedbackOut(
+        id=int(new_id or 0), created_at=created_at, review_status="pending", **body.model_dump()
+    )
+
+
+@router.post("/feedback/{feedback_id}/review")
+async def rerun_review(
+    feedback_id: int,
+    x_app_key: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    """(Re)review one report now and return the verdict."""
+    check_app_key(x_app_key)
+    result = await review_feedback(feedback_id)
+    if result["status"] == "missing":
+        raise HTTPException(status_code=404, detail="Feedback not found")
+    return {"id": feedback_id, **result}
+
+
+@router.get("/show-notes")
+async def read_show_notes(
+    x_app_key: Annotated[str | None, Header()] = None,
+) -> list[dict[str, Any]]:
+    """Per-show notes learned from reviewed reports."""
+    check_app_key(x_app_key)
+    return await list_show_notes()
 
 
 @router.get("/feedback", response_model=list[FeedbackOut])
