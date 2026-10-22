@@ -36,6 +36,7 @@ from app.services.detect_ads import (
     _merge,
     _openrouter_headers,
     _transcript_excerpt,
+    _transcript_text,
     _validated_segments,
 )
 from app.services.show_notes import merge_learning, show_key
@@ -458,6 +459,19 @@ def snap_to_transcript(verdict: dict[str, Any], window_tx: dict[str, Any]) -> No
         verdict["ad_start_ms"] = verdict["ad_end_ms"] = None
 
 
+def own_brand_filter(
+    sponsors: list[str], verdict: dict[str, Any], window_tx: dict[str, Any], window: tuple[int, int]
+) -> list[str]:
+    """Drop "sponsors" the hosts also talk about outside the ad (likely the show's own brand)."""
+    start, end = verdict.get("ad_start_ms"), verdict.get("ad_end_ms")
+    if start is None or end is None:
+        return sponsors
+    outside = (
+        _transcript_text(window_tx, window[0], start) + " " + _transcript_text(window_tx, end, window[1])
+    ).casefold()
+    return [name for name in sponsors if name.strip().casefold() not in outside]
+
+
 def corrected_segments(
     kind: str,
     verdict: dict[str, Any],
@@ -588,9 +602,10 @@ async def review_feedback(feedback_id: int, settings: Settings | None = None) ->
             # newspaper's podcast promoting the paper); learning those would make every
             # mention of the network look like an ad.
             learn_sponsors = ad_found and verdict["ad_type"] not in ("network", "crosspromo")
+            sponsors = own_brand_filter(verdict["sponsors"], verdict, window_tx, window) if learn_sponsors else []
             notes = merge_learning(
                 await get_show_notes(key),
-                sponsors=verdict["sponsors"] if learn_sponsors else [],
+                sponsors=sponsors,
                 break_phrases=verdict["break_phrases"] if ad_found else [],
                 not_ads=not_ads,
                 ad_position=position,
