@@ -43,6 +43,26 @@ Cache hits on analysis POST endpoints are validated against a SHA-256 fingerprin
 
 Skip-map records are retained for **90 days** by default. The API removes expired records at startup and then once every 24 hours. Set `SKIP_MAP_RETENTION_DAYS` to change the retention period (minimum 1 day). This cleanup only removes server-side skip-map database records; it does not delete local app downloads.
 
+## Learning from ad reports
+
+`POST /v1/feedback` ("Report bad skip" in the app) now triggers a background review:
+
+- The server looks at the cached transcript in a window around the report (about 4 min
+  before to 2 min after the playhead, or around the picked segment), because report
+  times are rough. If no transcript is cached it downloads the episode and transcribes
+  just that window.
+- The labeling model decides `confirmed` / `rejected` / `inconclusive` and gives the
+  ad's real bounds. The verdict is stored on the report (`review_status`, `review`).
+- Confirmed reports update per-show notes (sponsors, break phrases, missed ad spots,
+  recurring non-ad content), keyed by feed URL. Later analyses of that show get those
+  notes in the labeling prompt.
+- When the reviewed transcript is from the same audio copy as the stored skip map
+  (same MD5), the map is corrected too: a missed ad is added, a wrongly skipped
+  segment is removed. Fingerprints are left untouched.
+
+`POST /v1/feedback/{id}/review` re-runs a review; `GET /v1/show-notes` lists what was learned.
+Transcripts are cached in the `transcripts` table and expire with skip maps.
+
 ## Docker
 
 ```bash

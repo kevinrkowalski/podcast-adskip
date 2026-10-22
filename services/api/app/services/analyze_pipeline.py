@@ -11,7 +11,9 @@ from typing import Any
 
 from app.config import Settings, get_settings
 from app.db import RunSuperseded, get_skip_map, save_skip_map, set_status
+from app.db.learning import get_show_notes, save_transcript
 from app.services.audio_fingerprint import file_fingerprints
+from app.services.show_notes import notes_prompt_block, show_key
 from app.services.detect_ads import heuristic_segments, label_ads_llm
 from app.services.transcribe import download_audio, stub_transcript, transcribe_audio
 
@@ -70,6 +72,25 @@ async def _stage(
         pending_audio_sha256=pending_audio_sha256,
         run_id=run_id,
     )
+
+
+async def _learned_notes(feed_url: str | None, podcast_title: str | None) -> str | None:
+    """Prompt block of notes learned from this show's reviewed reports (None if none)."""
+    try:
+        return notes_prompt_block(await get_show_notes(show_key(feed_url, podcast_title)))
+    except Exception:
+        logger.exception("Could not load learned show notes; analyzing without them")
+        return None
+
+
+async def _cache_transcript(
+    episode_guid: str, transcript: dict[str, Any], audio_sha256: str | None, audio_md5: str | None
+) -> None:
+    """Keep the transcript so ad reports on this episode can be reviewed later."""
+    try:
+        await save_transcript(episode_guid, transcript, audio_sha256=audio_sha256, audio_md5=audio_md5)
+    except Exception:
+        logger.exception("Could not cache transcript for %s", episode_guid)
 
 
 async def _superseded_result(episode_guid: str) -> dict[str, Any]:
@@ -162,6 +183,7 @@ async def run_analyze(
             )
             transcript = await transcribe_audio(audio_path, settings)
             analyzed_audio_size_bytes = audio_path.stat().st_size
+            await _cache_transcript(episode_guid, transcript, audio_sha256, audio_md5)
             analyzed_audio_duration_ms = _transcript_duration_ms(transcript, duration_ms)
             model_parts = [settings.whisper_model]
 
@@ -180,6 +202,7 @@ async def run_analyze(
                     podcast_description=podcast_description,
                     episode_title=title,
                     episode_description=episode_description,
+                    show_notes=await _learned_notes(feed_url, podcast_title),
                 )
                 model_parts.append(_llm_model_label(settings))
             else:
@@ -293,6 +316,7 @@ async def run_analyze_from_file(
             await _stage(episode_guid, "transcribing", duration_ms=duration_ms, run_id=run_id)
             transcript = await transcribe_audio(audio_path, settings)
             analyzed_audio_duration_ms = _transcript_duration_ms(transcript, duration_ms)
+            await _cache_transcript(episode_guid, transcript, audio_sha256, audio_md5)
             model_parts = [settings.whisper_model]
             await _stage(episode_guid, "labeling", duration_ms=duration_ms, run_id=run_id)
             if settings.has_llm:
@@ -304,6 +328,7 @@ async def run_analyze_from_file(
                     podcast_description=podcast_description,
                     episode_title=title,
                     episode_description=episode_description,
+                    show_notes=await _learned_notes(feed_url, podcast_title),
                 )
                 model_parts.append(_llm_model_label(settings))
             else:

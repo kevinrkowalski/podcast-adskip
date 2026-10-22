@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.db import fail_interrupted_analyses, init_db
+from app.db.learning import delete_expired_transcripts
 from app.db.sqlite import delete_expired_skip_maps
 from app.routes import analyze, feedback, health, resolve, skip_map, upload
 
@@ -16,15 +17,23 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+async def _cleanup_expired_records() -> None:
+    deleted = await delete_expired_skip_maps(settings.skip_map_retention_days)
+    if deleted:
+        logger.info("Deleted %d expired skip-map records", deleted)
+    deleted = await delete_expired_transcripts(settings.skip_map_retention_days)
+    if deleted:
+        logger.info("Deleted %d expired cached transcripts", deleted)
+
+
 async def _cleanup_expired_skip_maps_periodically() -> None:
+    # Startup already ran a cleanup, so wait a day before the next one.
     while True:
+        await asyncio.sleep(24 * 60 * 60)
         try:
-            deleted = await delete_expired_skip_maps(settings.skip_map_retention_days)
-            if deleted:
-                logger.info("Deleted %d expired skip-map records", deleted)
+            await _cleanup_expired_records()
         except Exception:
             logger.exception("Scheduled skip-map cleanup failed")
-        await asyncio.sleep(24 * 60 * 60)
 
 
 @asynccontextmanager
@@ -36,9 +45,7 @@ async def lifespan(_app: FastAPI):
     if interrupted:
         logger.warning("Marked %d interrupted pending analyses as error", interrupted)
     try:
-        deleted = await delete_expired_skip_maps(settings.skip_map_retention_days)
-        if deleted:
-            logger.info("Deleted %d expired skip-map records", deleted)
+        await _cleanup_expired_records()
     except Exception:
         logger.exception("Startup skip-map cleanup failed")
 
