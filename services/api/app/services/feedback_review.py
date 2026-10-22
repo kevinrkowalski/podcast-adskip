@@ -435,8 +435,20 @@ def snap_to_transcript(verdict: dict[str, Any], window_tx: dict[str, Any]) -> No
     """Align the model's ad bounds to transcript span edges (drops bounds it can't support)."""
     if verdict.get("ad_start_ms") is None:
         return
+    # An ad running past the window's edge is clamped to the window's first/last span,
+    # so it still snaps (and later merges with a detected segment beyond the edge).
+    spans = [b for b in (_span_ms(sp) for sp in window_tx.get("segments") or []) if b]
+    start_ms, end_ms = verdict["ad_start_ms"], verdict["ad_end_ms"]
+    if spans:
+        first_start = min(b[0] for b in spans)
+        last_end = max(b[1] for b in spans)
+        start_ms = max(start_ms, first_start)
+        end_ms = min(end_ms, last_end)
+    if end_ms <= start_ms:
+        verdict["ad_start_ms"] = verdict["ad_end_ms"] = None
+        return
     proposed = AdSegment(
-        start_ms=verdict["ad_start_ms"], end_ms=verdict["ad_end_ms"], type="sponsor",
+        start_ms=start_ms, end_ms=end_ms, type="sponsor",
         confidence=CORRECTED_AD_CONFIDENCE,
     )
     snapped = _validated_segments([proposed], window_tx)
@@ -572,9 +584,13 @@ async def review_feedback(feedback_id: int, settings: Settings | None = None) ->
                 if fb["kind"] == "skipped_content" and verdict["verdict"] == "confirmed" and verdict["not_ad_description"]
                 else []
             )
+            # Network/cross-promo "sponsors" are usually the show's own network (e.g. a
+            # newspaper's podcast promoting the paper); learning those would make every
+            # mention of the network look like an ad.
+            learn_sponsors = ad_found and verdict["ad_type"] not in ("network", "crosspromo")
             notes = merge_learning(
                 await get_show_notes(key),
-                sponsors=verdict["sponsors"] if ad_found else [],
+                sponsors=verdict["sponsors"] if learn_sponsors else [],
                 break_phrases=verdict["break_phrases"] if ad_found else [],
                 not_ads=not_ads,
                 ad_position=position,
