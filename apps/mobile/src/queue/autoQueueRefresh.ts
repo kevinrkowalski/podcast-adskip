@@ -61,6 +61,8 @@ export function refreshAutoQueueFeeds(
           return key != null && keys.has(key);
         });
         for (const sub of subs) {
+          // Hand the JS thread back between feeds so queued taps run promptly.
+          if (result.shows > 0) await new Promise((r) => setTimeout(r, 0));
           result.shows += 1;
           try {
             const parsed = await fetchAndParseRss(
@@ -89,11 +91,19 @@ export function refreshAutoQueueFeeds(
   return running;
 }
 
-/** Run once now and whenever the app returns to the foreground. */
-export function startAutoQueueRefresh(): () => void {
-  void refreshAutoQueueFeeds(true);
+/** Lets the first screens render and respond before the open-time refresh starts. */
+export const STARTUP_REFRESH_DELAY_MS = 2_000;
+
+/** Run shortly after launch and whenever the app returns to the foreground. */
+export function startAutoQueueRefresh(startupDelayMs = STARTUP_REFRESH_DELAY_MS): () => void {
+  const timer = setTimeout(() => {
+    void refreshAutoQueueFeeds(true);
+  }, startupDelayMs);
   const sub = AppState.addEventListener('change', (state) => {
     if (state === 'active') void refreshAutoQueueFeeds();
   });
-  return () => sub.remove();
+  return () => {
+    clearTimeout(timer);
+    sub.remove();
+  };
 }
