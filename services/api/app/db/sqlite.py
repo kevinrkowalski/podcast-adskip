@@ -41,6 +41,9 @@ _MIGRATE_COLS = (
     ("audio_md5", "TEXT"),
     ("pending_audio_sha256", "TEXT"),
     ("run_id", "TEXT"),
+    # Omni quiet-gap second pass for the stored map: NULL (not run), pending, done,
+    # error, interrupted. Reset by every new save.
+    ("gap_pass_status", "TEXT"),
 )
 
 
@@ -94,6 +97,17 @@ async def delete_expired_skip_maps(
 
 
 INTERRUPTED_ERROR = "Analysis interrupted (server restarted)"
+
+
+async def fail_interrupted_gap_passes() -> int:
+    """Gap passes are in-process background tasks; after a restart none can finish."""
+    async with aiosqlite.connect(_db_path()) as db:
+        await _ensure_columns(db)
+        cursor = await db.execute(
+            "UPDATE skip_maps SET gap_pass_status = 'interrupted' WHERE gap_pass_status = 'pending'"
+        )
+        await db.commit()
+        return cursor.rowcount
 
 
 async def fail_interrupted_analyses() -> int:
@@ -195,6 +209,11 @@ def _row_to_dict(row: aiosqlite.Row) -> dict[str, Any]:
         "pending_audio_sha256": (
             row["pending_audio_sha256"] if "pending_audio_sha256" in keys else None
         ),
+        "run_id": row["run_id"] if "run_id" in keys else None,
+        "gap_pass_status": row["gap_pass_status"] if "gap_pass_status" in keys else None,
+        # The app re-fetches the map later while the background gap pass may still add skips.
+        "gap_pass_pending": status == "ready"
+        and ("gap_pass_status" in keys and row["gap_pass_status"] == "pending"),
     }
 
 
@@ -327,8 +346,13 @@ async def save_skip_map(
     audio_sha256: str | None = None,
     audio_md5: str | None = None,
     run_id: str | None = None,
+    gap_pass_status: str | None = None,
 ) -> dict[str, Any]:
-    """Store a finished map. With `run_id`, only while that run owns the row (see set_status)."""
+    """Store a finished map. With `run_id`, only while that run owns the row (see set_status).
+
+    `gap_pass_status="pending"` marks that a background Omni gap pass will follow and may
+    add skips to this map (the app re-fetches it later); any other save clears the mark.
+    """
     now = _now()
     payload = json.dumps([s.model_dump() for s in segments])
     async with aiosqlite.connect(_db_path()) as db:
@@ -338,8 +362,9 @@ async def save_skip_map(
             INSERT INTO skip_maps (
               episode_guid, status, segments_json, model, audio_url, feed_url, title,
               analyzed_at, error, stage, stage_updated_at, analyzed_audio_size_bytes,
-              analyzed_audio_duration_ms, audio_sha256, audio_md5, created_at, updated_at
-            ) VALUES (?, 'ready', ?, ?, ?, ?, ?, ?, NULL, 'ready', ?, ?, ?, ?, ?, ?, ?)
+              analyzed_audio_duration_ms, audio_sha256, audio_md5, gap_pass_status,
+              created_at, updated_at
+            ) VALUES (?, 'ready', ?, ?, ?, ?, ?, ?, NULL, 'ready', ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(episode_guid) DO UPDATE SET
               status = 'ready',
               segments_json = excluded.segments_json,
@@ -355,6 +380,7 @@ async def save_skip_map(
               analyzed_audio_duration_ms = excluded.analyzed_audio_duration_ms,
               audio_sha256 = excluded.audio_sha256,
               audio_md5 = excluded.audio_md5,
+              gap_pass_status = excluded.gap_pass_status,
               updated_at = excluded.updated_at
             WHERE ? IS NULL OR skip_maps.run_id IS ?
             """,
@@ -371,6 +397,7 @@ async def save_skip_map(
                 analyzed_audio_duration_ms,
                 audio_sha256,
                 audio_md5,
+                gap_pass_status,
                 now,
                 now,
                 run_id,
@@ -398,6 +425,9 @@ async def save_skip_map(
         "analyzed_audio_duration_ms": analyzed_audio_duration_ms,
         "audio_sha256": audio_sha256,
         "audio_md5": audio_md5,
+        "run_id": run_id,
+        "gap_pass_status": gap_pass_status,
+        "gap_pass_pending": gap_pass_status == "pending",
         **progress,
         "started_at": None,
     }

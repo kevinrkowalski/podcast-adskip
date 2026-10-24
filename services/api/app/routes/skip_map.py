@@ -48,6 +48,7 @@ async def read_skip_map(
         analyzed_audio_size_bytes=row.get("analyzed_audio_size_bytes"),
         analyzed_audio_duration_ms=row.get("analyzed_audio_duration_ms"),
         audio_md5=row.get("audio_md5"),
+        gap_pass_pending=bool(row.get("gap_pass_pending")),
         stage=row.get("stage"),
         stage_label=row.get("stage_label"),
         progress_pct=row.get("progress_pct"),

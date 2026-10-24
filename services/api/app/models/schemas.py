@@ -10,6 +10,9 @@ class AdSegment(BaseModel):
     type: Literal["sponsor", "midroll", "preroll", "postroll", "crosspromo", "network", "intro_outro", "unknown"] = "unknown"
     confidence: float = Field(0.5, ge=0.0, le=1.0)
     sample_text: str | None = Field(default=None, max_length=400)
+    # Which pass produced the span: None = main pass; "omni_gap" = added by the Omni
+    # quiet-gap pass; "main+omni_gap" = a main-pass ad the gap pass extended.
+    source: str | None = Field(default=None, max_length=40)
 
 
 class AnalyzeEpisodeRequest(BaseModel):
@@ -59,6 +62,9 @@ class AnalyzeEpisodeResponse(AnalyzeProgressFields):
     analyzed_audio_size_bytes: int | None = Field(default=None, ge=0)
     analyzed_audio_duration_ms: int | None = Field(default=None, ge=0)
     audio_md5: str | None = None
+    # A background Omni gap pass may still add ad skips to this ready map; the app
+    # re-fetches the map later (segments only grow) until this is false.
+    gap_pass_pending: bool = False
 
 
 class SkipMapResponse(AnalyzeProgressFields):
@@ -76,6 +82,8 @@ class SkipMapResponse(AnalyzeProgressFields):
     # bytes, e.g. another download with different dynamically inserted ads. The app
     # downloads/re-analyzes its own copy instead of applying those segment times.
     analysis_for_other_audio: bool = False
+    # See AnalyzeEpisodeResponse.gap_pass_pending.
+    gap_pass_pending: bool = False
 
 
 class HealthResponse(BaseModel):

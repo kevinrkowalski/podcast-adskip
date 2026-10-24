@@ -23,6 +23,8 @@ export interface AdSegment {
   confidence: number;
   /** Short transcript excerpt overlapping this detected segment. */
   sample_text?: string | null;
+  /** Server: which pass found it ('omni_gap' / 'main+omni_gap' = added by the second pass). */
+  source?: string | null;
 }
 
 export type SkipMapStatus = 'ready' | 'pending' | 'missing' | 'error' | 'queued';
@@ -65,6 +67,11 @@ export interface SkipMap {
    * ready map exists for different audio bytes (another download of this episode).
    */
   analysis_for_other_audio?: boolean;
+  /**
+   * Server: this ready map may still gain ad skips from a background second pass; refetch
+   * it (same audio_md5) a little later.
+   */
+  gap_pass_pending?: boolean;
 }
 
 export interface PodcastSearchResult {
