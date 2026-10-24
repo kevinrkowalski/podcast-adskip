@@ -261,6 +261,21 @@ def _merged_confidence(last: AdSegment, seg: AdSegment) -> float:
     return min(parts)
 
 
+def _skip_class(segment_type: str) -> str:
+    """The app's skip bucket for a segment type; segments only merge within one bucket.
+
+    Intro/outro has its own skip setting in the app, and unknown spans are never
+    auto-skipped, so folding an ad into either (or either into an ad) changes
+    what gets skipped: the ad inherits the intro label, or a cold open inherits
+    the ad label.
+    """
+    if segment_type == "unknown":
+        return "unknown"
+    if segment_type == "intro_outro":
+        return "intro_outro"
+    return "ad"
+
+
 def _merge(
     segments: list[AdSegment],
     gap_ms: int = SEGMENT_MERGE_GAP_MS,
@@ -274,6 +289,8 @@ def _merge(
     - Once a break cue ("we'll be right back", "after the break", ...) opens a
       block, bridge speechless gaps up to 30s, and spoken gaps up to 15s, so
       cue + gap + ads become one midroll segment.
+    - Never merge across skip classes (ads, intro/outro, unknown): an ad next to
+      a show intro/outro stays its own ad segment, and the intro stays intro.
     """
     if not segments:
         return []
@@ -282,35 +299,51 @@ def _merge(
     strongest_confidences = [ordered[0].confidence]
     in_break = [
         transcript is not None
-        and ordered[0].type != "unknown"
+        and _skip_class(ordered[0].type) == "ad"
         and _ends_with_break_cue(transcript, ordered[0])
     ]
     for seg in ordered[1:]:
-        last = merged[-1]
+        seg_class = _skip_class(seg.type)
+        # Merge into the latest segment of the same class. If a segment of another
+        # class sits after it, only a true overlap (a duplicate detection from an
+        # overlapping window) may still merge, so a gap never swallows that span.
+        idx = len(merged) - 1
+        while idx >= 0 and _skip_class(merged[idx].type) != seg_class:
+            idx -= 1
+        if idx < 0:
+            same_class = False
+            idx = len(merged) - 1
+        else:
+            same_class = True
+        last = merged[idx]
         gap = seg.start_ms - last.end_ms
+        interleaved = idx != len(merged) - 1
         speechless = transcript is not None and (
             gap <= 0 or not _has_spoken_text_between(transcript, last.end_ms, seg.start_ms)
         )
         within_regular_window = gap <= gap_ms
         bridge_speechless_gap = speechless and gap <= SPEECHLESS_GAP_MERGE_MAX_MS
+        # Never fold ads into unclassified or intro/outro spans (or vice versa):
+        # either the ads stop being skipped as ads or the other span gets
+        # skipped as an ad.
+        both_ads = same_class and seg_class == "ad"
         bridge_break_block = (
-            in_break[-1]
-            and last.type != "unknown"
-            and seg.type != "unknown"
+            in_break[idx]
+            and both_ads
             and gap <= BREAK_BLOCK_GAP_MAX_MS
             and (speechless or (transcript is not None and gap <= BREAK_BLOCK_SPOKEN_GAP_MAX_MS))
         )
-        # Never fold unclassified spans into ads (or vice versa): either the
-        # ads stop being skipped or the unknown span gets auto-skipped.
-        same_class = (last.type == "unknown") == (seg.type == "unknown")
-        if same_class and (within_regular_window or bridge_speechless_gap or bridge_break_block):
+        can_merge = within_regular_window or bridge_speechless_gap or bridge_break_block
+        if interleaved:
+            can_merge = gap <= 0
+        if same_class and can_merge:
             strongest_type = last.type
-            if seg.confidence > strongest_confidences[-1]:
+            if seg.confidence > strongest_confidences[idx]:
                 strongest_type = seg.type
-                strongest_confidences[-1] = seg.confidence
-            if in_break[-1] and last.type != "unknown" and seg.type != "unknown":
+                strongest_confidences[idx] = seg.confidence
+            if in_break[idx] and both_ads:
                 strongest_type = "midroll"
-            merged[-1] = AdSegment(
+            merged[idx] = AdSegment(
                 start_ms=last.start_ms,
                 end_ms=max(last.end_ms, seg.end_ms),
                 type=strongest_type,
@@ -318,16 +351,16 @@ def _merge(
             )
             if (
                 transcript is not None
-                and merged[-1].type != "unknown"
+                and _skip_class(merged[idx].type) == "ad"
                 and _ends_with_break_cue(transcript, seg)
             ):
-                in_break[-1] = True
+                in_break[idx] = True
         else:
             merged.append(seg)
             strongest_confidences.append(seg.confidence)
             in_break.append(
                 transcript is not None
-                and seg.type != "unknown"
+                and seg_class == "ad"
                 and _ends_with_break_cue(transcript, seg)
             )
     return merged
