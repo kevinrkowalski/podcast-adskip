@@ -68,6 +68,7 @@ async def analyze_episode(
             analyzed_audio_size_bytes=existing.get("analyzed_audio_size_bytes"),
             analyzed_audio_duration_ms=existing.get("analyzed_audio_duration_ms"),
             audio_md5=existing.get("audio_md5"),
+            gap_pass_pending=bool(existing.get("gap_pass_pending")),
             **_progress_kwargs(existing),
         )
     if existing and existing["status"] == "pending" and not body.force:
@@ -115,6 +116,7 @@ async def analyze_episode(
             analyzed_audio_size_bytes=result.get("analyzed_audio_size_bytes"),
             analyzed_audio_duration_ms=result.get("analyzed_audio_duration_ms"),
             audio_md5=result.get("audio_md5"),
+            gap_pass_pending=bool(result.get("gap_pass_pending")),
             **_progress_kwargs(result),
         )
 

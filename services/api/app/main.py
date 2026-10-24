@@ -6,10 +6,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.db import fail_interrupted_analyses, init_db
+from app.db import fail_interrupted_analyses, fail_interrupted_gap_passes, init_db
+from app.db.omni_gap import delete_expired_log_entries
 from app.db.learning import delete_expired_transcripts
 from app.db.sqlite import delete_expired_skip_maps
-from app.routes import analyze, feedback, health, resolve, skip_map, upload
+from app.routes import analyze, feedback, health, omni_gap_log, resolve, skip_map, upload
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,6 +25,9 @@ async def _cleanup_expired_records() -> None:
     deleted = await delete_expired_transcripts(settings.skip_map_retention_days)
     if deleted:
         logger.info("Deleted %d expired cached transcripts", deleted)
+    deleted = await delete_expired_log_entries(settings.skip_map_retention_days)
+    if deleted:
+        logger.info("Deleted %d expired Omni gap-pass log rows", deleted)
 
 
 async def _cleanup_expired_skip_maps_periodically() -> None:
@@ -44,6 +48,9 @@ async def lifespan(_app: FastAPI):
     interrupted = await fail_interrupted_analyses()
     if interrupted:
         logger.warning("Marked %d interrupted pending analyses as error", interrupted)
+    interrupted = await fail_interrupted_gap_passes()
+    if interrupted:
+        logger.warning("Marked %d interrupted Omni gap passes", interrupted)
     try:
         await _cleanup_expired_records()
     except Exception:
@@ -84,6 +91,7 @@ app.include_router(skip_map.router)
 app.include_router(upload.router)
 app.include_router(feedback.router)
 app.include_router(resolve.router)
+app.include_router(omni_gap_log.router)
 
 
 @app.get("/")

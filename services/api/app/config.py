@@ -38,6 +38,16 @@ class Settings(BaseSettings):
     # Legacy Groq model ids (only used when llm_provider=groq / GROQ_API_KEY path)
     groq_llm_model: str = "llama-3.3-70b-versatile"
     gemini_model: str = "gemini-2.5-flash"
+    # Second pass: Qwen Omni listens to low-speech gaps in the Whisper transcript (audio
+    # Whisper may have dropped, e.g. an inserted ad transcribed as "Thank you.") and can
+    # only ADD ad skips. Runs in the background after the main skip map is saved.
+    omni_gap_enabled: bool = True
+    omni_gap_model: str = "qwen/qwen3.8-omni-flash"
+    # Concurrent Omni calls across the whole server (clips are sent in parallel).
+    omni_gap_concurrency: int = 3
+    # No short drop: answers count however long they take. This only stops a
+    # genuinely hung HTTP call so a background task can never hang forever.
+    omni_gap_call_timeout_s: float = 600.0
     # Optional OpenRouter attribution headers
     openrouter_http_referer: str = "https://github.com/podcast-adskip"
     openrouter_app_title: str = "podcast-adskip"

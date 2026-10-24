@@ -15,6 +15,7 @@ from app.db.learning import get_show_notes, save_transcript
 from app.services.audio_fingerprint import file_fingerprints
 from app.services.show_notes import notes_prompt_block, show_key
 from app.services.detect_ads import heuristic_segments, label_ads_llm
+from app.services.omni_gap import GapPassJob, gap_pass_wanted, schedule_gap_pass
 from app.services.transcribe import download_audio, stub_transcript, transcribe_audio
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,56 @@ async def _superseded_result(episode_guid: str) -> dict[str, Any]:
         "message": None,
         "stage": "queued",
     }
+
+
+async def _start_gap_pass(
+    result: dict[str, Any],
+    *,
+    audio_path: Path,
+    transcript: dict[str, Any],
+    segments: list[Any],
+    run_id: str,
+    podcast_title: str | None,
+    episode_title: str | None,
+    duration_ms: int | None,
+    settings: Settings,
+) -> bool:
+    """Hand the analyzed audio to the background Omni gap pass (which then owns the file).
+
+    Returns True when the pass took the file. The saved map is already returned to the
+    caller as-is; the pass can only add ad skips to it later.
+    """
+    if not result.get("gap_pass_pending"):
+        return False
+    try:
+        schedule_gap_pass(
+            GapPassJob(
+                episode_guid=result["episode_guid"],
+                audio_path=audio_path,
+                transcript=transcript,
+                segments=list(segments),
+                run_id=run_id,
+                audio_md5=result.get("audio_md5"),
+                podcast_title=podcast_title,
+                episode_title=episode_title,
+                duration_ms=duration_ms,
+            ),
+            settings,
+        )
+        return True
+    except Exception:
+        logger.exception("Could not start gap pass for %s", result.get("episode_guid"))
+        try:
+            from app.db.omni_gap import finish_gap_pass
+
+            await finish_gap_pass(
+                result["episode_guid"], run_id=run_id, audio_md5=result.get("audio_md5"), status="error"
+            )
+        except Exception:
+            logger.exception("Could not clear gap-pass flag")
+        result["gap_pass_pending"] = False
+        result["gap_pass_status"] = "error"
+        return False
 
 
 async def _record_failure(episode_guid: str, err: str, run_id: str) -> None:
@@ -230,6 +281,9 @@ async def run_analyze(
             model = "stub-whisper+heuristic"
 
         await _stage(episode_guid, "saving", duration_ms=duration_ms, run_id=run_id)
+        want_gap_pass = (
+            settings.has_real_stt and audio_path is not None and gap_pass_wanted(settings, transcript)
+        )
         result = await save_skip_map(
             episode_guid,
             segments,
@@ -242,7 +296,21 @@ async def run_analyze(
             audio_sha256=audio_sha256,
             audio_md5=audio_md5,
             run_id=run_id,
+            gap_pass_status="pending" if want_gap_pass else None,
         )
+        if want_gap_pass and audio_path is not None:
+            if await _start_gap_pass(
+                result,
+                audio_path=audio_path,
+                transcript=transcript,
+                segments=segments,
+                run_id=run_id,
+                podcast_title=podcast_title,
+                episode_title=title,
+                duration_ms=duration_ms,
+                settings=settings,
+            ):
+                audio_path = None  # the background gap pass deletes it when done
         logger.info(
             "Analyze ready guid=%s segments=%s model=%s",
             episode_guid,
@@ -299,6 +367,7 @@ async def run_analyze_from_file(
         calculated_sha256, calculated_md5 = await asyncio.to_thread(file_fingerprints, audio_path)
         audio_sha256 = audio_sha256 or calculated_sha256
         audio_md5 = audio_md5 or calculated_md5
+    handed_off = False
     try:
         await _stage(
             episode_guid,
@@ -344,7 +413,8 @@ async def run_analyze_from_file(
             model = "stub-whisper+heuristic"
 
         await _stage(episode_guid, "saving", duration_ms=duration_ms, run_id=run_id)
-        return await save_skip_map(
+        want_gap_pass = settings.has_real_stt and gap_pass_wanted(settings, transcript)
+        result = await save_skip_map(
             episode_guid,
             segments,
             model,
@@ -356,7 +426,21 @@ async def run_analyze_from_file(
             audio_sha256=audio_sha256,
             audio_md5=audio_md5,
             run_id=run_id,
+            gap_pass_status="pending" if want_gap_pass else None,
         )
+        if want_gap_pass:
+            handed_off = await _start_gap_pass(
+                result,
+                audio_path=audio_path,
+                transcript=transcript,
+                segments=segments,
+                run_id=run_id,
+                podcast_title=podcast_title,
+                episode_title=title,
+                duration_ms=duration_ms,
+                settings=settings,
+            )
+        return result
     except RunSuperseded:
         return await _superseded_result(episode_guid)
     except Exception as exc:
@@ -380,7 +464,8 @@ async def run_analyze_from_file(
             "analyzed_audio_duration_ms": None,
         }
     finally:
-        try:
-            audio_path.unlink(missing_ok=True)
-        except OSError:
-            logger.warning("Could not delete uploaded audio %s", audio_path)
+        if not handed_off:  # otherwise the background gap pass deletes it when done
+            try:
+                audio_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not delete uploaded audio %s", audio_path)

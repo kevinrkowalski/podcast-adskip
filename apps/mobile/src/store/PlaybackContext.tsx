@@ -55,6 +55,7 @@ import { syncBackgroundRefreshRegistration } from '@/src/queue/backgroundRefresh
 import { hydratePlayed, isNearEnd, isPlayed, setPlayed } from '@/src/played/playedStore';
 import { startFeedbackOutbox } from '@/src/api/feedback';
 import { filterSkippableSegments, normalizeSegment } from '@/src/player/skipLogic';
+import { needsGapPassRefresh, pollGapPass, segmentsChanged } from '@/src/player/gapPassRefresh';
 import {
   decidePlaybackSource,
   downloadFailureMessage,
@@ -1266,6 +1267,53 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   );
 
   const closeOpenedEpisode = useCallback(() => updateOpened(null), [updateOpened]);
+
+  // The server may add ad skips to a ready map shortly after (background gap pass). While
+  // the map says gap_pass_pending, refetch that same map (same audio fingerprint) and swap
+  // in its segments. Per-show skip settings are re-applied unchanged; nothing else moves.
+  useEffect(() => {
+    const start = skipMap;
+    if (!needsGapPassRefresh(start)) return;
+    let cancelled = false;
+    const isCurrent = () =>
+      !cancelled &&
+      skipMapRef.current === start &&
+      episodeRef.current?.guid === start.episode_guid;
+    void (async () => {
+      if (!(await getAutoSkipEnabled())) return; // global Ad-skip off: no API calls
+      await Promise.all([hydrateApiBaseUrl(), hydrateAppKey()]);
+      await pollGapPass(start, {
+        fetchMap: (guid, md5) => getSkipMap(guid, md5),
+        isCurrent,
+        onUpdate: async (fresh) => {
+          const ep = episodeRef.current;
+          if (!ep || !isCurrent()) return;
+          try {
+            await cacheSkipMap(ep.guid, fresh, ep.enclosureUrl);
+          } catch (cacheErr) {
+            console.warn('[playback] cacheSkipMap failed (non-fatal):', cacheErr);
+          }
+          if (!isCurrent()) return;
+          const settings = await getPodcastSkipSettings({
+            collectionId: ep.collectionId,
+            feedUrl: ep.feedUrl,
+          });
+          if (!isCurrent()) return;
+          if (segmentsChanged(start, fresh)) {
+            player.setSkipSegments(applySkipFilter(fresh.segments, settings), ep.guid);
+          }
+          console.log(
+            `[playback] gap pass done for ${ep.guid}: ${fresh.segments.length} segments`,
+          );
+          skipMapRef.current = fresh;
+          setSkipMap(fresh);
+        },
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [skipMap, applySkipFilter]);
 
   // Up Next: hydrate, refresh auto-add shows, and auto-advance when an episode ends
   // (expo-audio didJustFinish, native service STATE_ENDED, or stub clock).
