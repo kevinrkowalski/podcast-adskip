@@ -38,7 +38,7 @@ let state: AnalyzerState = {
 let hydrated = false;
 let analyzing = false;
 let stopRequested = false;
-let scheduleTimer: NodeJS.Timeout | null = null;
+let scheduleTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * Function that requests analysis for an episode. Injected by PlaybackContext
@@ -217,7 +217,7 @@ async function analyzeNext(): Promise<void> {
     await persistState();
 
     // Continue with next episode if not stopped and still initialized
-    if (!stopRequested && analyzeFunction && getQueueFunction) {
+    if (!stopRequested && analyzeFunction !== null && getQueueFunction !== null) {
       scheduleNext();
     }
   }

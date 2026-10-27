@@ -1325,8 +1325,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     const stopFeedback = startFeedbackOutbox();
     const stopRefresh = startAutoQueueRefresh();
     
-    // Start background queue analyzer
-    const analyzeForQueue = (ep: Episode) => requestAnalyze(false, ep);
+    // Start background queue analyzer (pass requestAnalyze via ref to avoid dependency)
+    const analyzeForQueue = (ep: Episode) => {
+      const fn = requestAnalyzeForEpisodeRef.current;
+      return fn ? fn(ep) : Promise.resolve(null);
+    };
     const stopAnalyzer = startQueueAnalyzer(analyzeForQueue, getQueue);
     
     return () => {
@@ -1334,7 +1337,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       stopRefresh();
       stopAnalyzer();
     };
-  }, [requestAnalyze]);
+  }, []);
 
   useEffect(() => {
     return player.subscribeEnded((finished) => {
