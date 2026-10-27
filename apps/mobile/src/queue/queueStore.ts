@@ -151,14 +151,14 @@ export async function addToQueue(ep: Episode) {
   await hydrateQueue();
   setQueue(addPure(queue, slim(ep)));
   // Trigger background analysis for newly queued episodes
-  triggerQueueAnalysis(true);
+  triggerQueueAnalysis();
 }
 
 export async function playNext(ep: Episode) {
   await hydrateQueue();
   setQueue(playNextPure(queue, slim(ep), currentGuid));
   // Trigger background analysis for newly queued episodes
-  triggerQueueAnalysis(true);
+  triggerQueueAnalysis();
 }
 
 export async function removeFromQueue(guid: string) {
@@ -281,7 +281,7 @@ export function processFeedForAutoQueue(target: ShowTarget, feedEpisodes: Episod
     setQueue(next);
     console.log('[queue] auto-added', next.length - before, 'new episode(s) for', key);
     // Trigger background analysis for auto-added episodes
-    triggerQueueAnalysis(true);
+    triggerQueueAnalysis();
     return next.length - before;
   }).catch((e) => {
     console.warn('[queue] auto-add failed:', e);

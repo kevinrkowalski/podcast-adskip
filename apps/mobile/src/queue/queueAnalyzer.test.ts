@@ -1,149 +1,236 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { startQueueAnalyzer, triggerQueueAnalysis, __resetForTesting } from './queueAnalyzer';
+import {
+  MAX_RETRIES,
+  RETRY_DELAY_MS,
+  SERVER_POLL_MS,
+  STARTUP_DELAY_MS,
+  __resetForTesting,
+  startQueueAnalyzer,
+  triggerQueueAnalysis,
+} from './queueAnalyzer';
 import type { Episode } from '@/src/types';
 
-// Mock dependencies
-jest.mock('@react-native-async-storage/async-storage');
-jest.mock('@/src/db/storage');
-jest.mock('@/src/api/audioUpload');
-jest.mock('@/src/api/backend');
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn(async () => null),
+  setItem: jest.fn(async () => undefined),
+}));
+jest.mock('@/src/db/storage', () => ({
+  getAutoSkipEnabled: jest.fn(),
+  isPodcastAdDetectionEnabled: jest.fn(),
+  getCachedSkipMap: jest.fn(),
+}));
+jest.mock('@/src/api/audioUpload', () => ({
+  getCachedAudioPath: jest.fn(),
+  getCachedAudioMd5: jest.fn(),
+}));
+jest.mock('@/src/api/backend', () => ({
+  getSkipMap: jest.fn(),
+}));
 
-const mockAsyncStorage = AsyncStorage as jest.Mocked<typeof AsyncStorage>;
+const storage = jest.requireMock('@/src/db/storage');
+const audio = jest.requireMock('@/src/api/audioUpload');
+const backend = jest.requireMock('@/src/api/backend');
 
-describe('queueAnalyzer', () => {
-  let mockAnalyze: jest.Mock;
-  let mockGetQueue: jest.Mock;
-  let stopAnalyzer: (() => void) | null = null;
-
-  const createEpisode = (guid: string, collectionId: number): Episode => ({
+const ep = (guid: string, collectionId = 1): Episode =>
+  ({
     guid,
     title: `Episode ${guid}`,
-    feedUrl: 'https://example.com/feed.xml',
+    feedUrl: `https://example.com/${collectionId}.xml`,
     enclosureUrl: `https://example.com/audio/${guid}.mp3`,
     collectionId,
     podcastTitle: 'Test Podcast',
-  });
+  }) as Episode;
+
+/** Resolves after `ms` of fake time, letting every awaited promise settle along the way. */
+const advance = (ms: number) => jest.advanceTimersByTimeAsync(ms);
+
+describe('queueAnalyzer', () => {
+  let queue: Episode[];
+  let current: string | null;
+  let analyze: jest.Mock;
+  let stop: (() => void) | null;
+
+  const start = () => {
+    stop = startQueueAnalyzer(analyze, () => queue, () => [current]);
+  };
 
   beforeEach(() => {
-    jest.clearAllMocks();
     jest.useFakeTimers();
-    
-    // Reset module state between tests
+    jest.clearAllMocks();
     __resetForTesting();
-    
-    mockAnalyze = jest.fn().mockResolvedValue({ status: 'ready' });
-    mockGetQueue = jest.fn().mockReturnValue([]);
-    
-    mockAsyncStorage.getItem.mockResolvedValue(null);
-    mockAsyncStorage.setItem.mockResolvedValue(undefined);
-    
-    // Mock storage functions
-    const storage = require('@/src/db/storage');
-    storage.getAutoSkipEnabled = jest.fn().mockResolvedValue(true);
-    storage.isPodcastAdDetectionEnabled = jest.fn().mockResolvedValue(true);
-    
-    // Mock audio functions
-    const audioUpload = require('@/src/api/audioUpload');
-    audioUpload.getCachedAudioPath = jest.fn().mockResolvedValue(null);
-    audioUpload.getCachedAudioMd5 = jest.fn().mockResolvedValue(null);
-    
-    // Mock backend
-    const backend = require('@/src/api/backend');
-    backend.getSkipMap = jest.fn().mockResolvedValue({ status: 'missing' });
+    queue = [];
+    current = null;
+    stop = null;
+    analyze = jest.fn(async (e: Episode) => ({ status: 'ready', episode_guid: e.guid, segments: [] }));
+    storage.getAutoSkipEnabled.mockResolvedValue(true);
+    storage.isPodcastAdDetectionEnabled.mockResolvedValue(true);
+    storage.getCachedSkipMap.mockResolvedValue(null);
+    audio.getCachedAudioPath.mockResolvedValue(null);
+    audio.getCachedAudioMd5.mockResolvedValue(null);
+    backend.getSkipMap.mockResolvedValue({ status: 'missing', episode_guid: 'x', segments: [] });
   });
 
   afterEach(() => {
-    if (stopAnalyzer) {
-      stopAnalyzer();
-      stopAnalyzer = null;
-    }
-    jest.runOnlyPendingTimers();
+    stop?.();
     jest.useRealTimers();
   });
 
-  it('should not analyze when queue is empty', async () => {
-    mockGetQueue.mockReturnValue([]);
-    
-    stopAnalyzer = startQueueAnalyzer(mockAnalyze, mockGetQueue);
-    
-    // Fast-forward past startup delay
-    jest.advanceTimersByTime(6000);
-    await Promise.resolve();
-    
-    expect(mockAnalyze).not.toHaveBeenCalled();
+  it('waits for the startup delay, then analyzes the first eligible queued episode', async () => {
+    queue = [ep('a'), ep('b')];
+    start();
+    await advance(STARTUP_DELAY_MS - 100);
+    expect(analyze).not.toHaveBeenCalled();
+    await advance(200);
+    expect(analyze).toHaveBeenCalledTimes(1);
+    expect(analyze.mock.calls[0][0].guid).toBe('a');
   });
 
-  it('should start and stop without errors', () => {
-    const ep1 = createEpisode('ep1', 1);
-    const ep2 = createEpisode('ep2', 1);
-    
-    mockGetQueue.mockReturnValue([ep1, ep2]);
-    
-    stopAnalyzer = startQueueAnalyzer(mockAnalyze, mockGetQueue);
-    expect(stopAnalyzer).toBeDefined();
-    
-    stopAnalyzer();
-    stopAnalyzer = null;
+  it('analyzes a not-yet-playing first item, but skips the current episode', async () => {
+    queue = [ep('playing'), ep('next')];
+    current = 'playing';
+    start();
+    await advance(STARTUP_DELAY_MS + 10);
+    expect(analyze.mock.calls.map((c) => c[0].guid)).toEqual(['next']);
   });
 
-  it('should not analyze when podcast ad detection is disabled', async () => {
-    const storage = require('@/src/db/storage');
-    storage.isPodcastAdDetectionEnabled.mockResolvedValue(false);
-    
-    const ep1 = createEpisode('playing', 1);
-    const ep2 = createEpisode('queued', 1);
-    mockGetQueue.mockReturnValue([ep1, ep2]);
-    
-    stopAnalyzer = startQueueAnalyzer(mockAnalyze, mockGetQueue);
-    
-    jest.advanceTimersByTime(6000);
-    await Promise.resolve();
-    
-    expect(mockAnalyze).not.toHaveBeenCalled();
+  it('never analyzes shows with ad detection off, or when global detection is off', async () => {
+    queue = [ep('off', 2), ep('on', 1)];
+    storage.isPodcastAdDetectionEnabled.mockImplementation(async (t: { collectionId?: number }) => t.collectionId !== 2);
+    start();
+    await advance(STARTUP_DELAY_MS + 5_000);
+    expect(analyze.mock.calls.map((c) => c[0].guid)).toEqual(['on']);
+
+    stop?.();
+    __resetForTesting();
+    analyze.mockClear();
+    storage.getAutoSkipEnabled.mockResolvedValue(false);
+    queue = [ep('c'), ep('d')];
+    start();
+    await advance(STARTUP_DELAY_MS + 5_000);
+    expect(analyze).not.toHaveBeenCalled();
   });
 
-  it('should skip episodes that already have a ready skip map', async () => {
-    const backend = require('@/src/api/backend');
-    backend.getSkipMap.mockResolvedValue({ status: 'ready' });
-    
-    const ep1 = createEpisode('playing', 1);
-    const ep2 = createEpisode('queued', 1);
-    mockGetQueue.mockReturnValue([ep1, ep2]);
-    
-    stopAnalyzer = startQueueAnalyzer(mockAnalyze, mockGetQueue);
-    
-    jest.advanceTimersByTime(6000);
-    await Promise.resolve();
-    
-    expect(mockAnalyze).not.toHaveBeenCalled();
+  it('skips episodes with a ready or in-progress map', async () => {
+    queue = [ep('ready'), ep('local'), ep('busy'), ep('todo')];
+    audio.getCachedAudioPath.mockImplementation(async (g: string) => (g === 'local' ? '/cache/local.mp3' : null));
+    audio.getCachedAudioMd5.mockImplementation(async (g: string) => (g === 'local' ? 'abc' : null));
+    storage.getCachedSkipMap.mockImplementation(async (g: string) =>
+      g === 'local' ? { status: 'ready', audio_md5: 'ABC', episode_guid: g, segments: [] } : null,
+    );
+    backend.getSkipMap.mockImplementation(async (g: string) => ({
+      status: g === 'ready' ? 'ready' : g === 'busy' ? 'pending' : 'missing',
+      episode_guid: g,
+      segments: [],
+    }));
+    start();
+    await advance(STARTUP_DELAY_MS + 5_000);
+    expect(analyze.mock.calls.map((c) => c[0].guid)).toEqual(['todo']);
   });
 
-  it('should handle trigger without errors', () => {
-    const ep1 = createEpisode('playing', 1);
-    const ep2 = createEpisode('queued', 1);
-    mockGetQueue.mockReturnValue([ep1, ep2]);
-    
-    stopAnalyzer = startQueueAnalyzer(mockAnalyze, mockGetQueue);
-    
-    // Trigger analysis should not throw
-    expect(() => triggerQueueAnalysis(true)).not.toThrow();
-    expect(() => triggerQueueAnalysis(false)).not.toThrow();
+  it('runs one analysis at a time, in queue order', async () => {
+    queue = [ep('a'), ep('b'), ep('c')];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const done = new Set<string>();
+    analyze.mockImplementation(async (e: Episode) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 10_000));
+      inFlight -= 1;
+      done.add(e.guid);
+      return { status: 'ready', episode_guid: e.guid, segments: [] };
+    });
+    backend.getSkipMap.mockImplementation(async (g: string) => ({
+      status: done.has(g) ? 'ready' : 'missing',
+      episode_guid: g,
+      segments: [],
+    }));
+    start();
+    await advance(STARTUP_DELAY_MS + 10);
+    triggerQueueAnalysis();
+    triggerQueueAnalysis();
+    await advance(60_000);
+    expect(analyze.mock.calls.map((c) => c[0].guid)).toEqual(['a', 'b', 'c']);
+    expect(maxInFlight).toBe(1);
   });
 
-  it('should handle episodes being analyzed elsewhere', async () => {
-    const backend = require('@/src/api/backend');
-    backend.getSkipMap.mockResolvedValue({ status: 'pending' });
-    
-    const ep1 = createEpisode('playing', 1);
-    const ep2 = createEpisode('queued', 1);
-    mockGetQueue.mockReturnValue([ep1, ep2]);
-    
-    stopAnalyzer = startQueueAnalyzer(mockAnalyze, mockGetQueue);
-    
-    jest.advanceTimersByTime(6000);
-    await Promise.resolve();
-    
-    // Should not analyze if already pending
-    expect(mockAnalyze).not.toHaveBeenCalled();
+  it('holds the next upload while the server is still working on the last one', async () => {
+    queue = [ep('a'), ep('b')];
+    let aServerDone = false;
+    analyze.mockImplementation(async (e: Episode) => ({
+      status: e.guid === 'a' ? 'queued' : 'ready',
+      episode_guid: e.guid,
+      audio_md5: 'md5-' + e.guid,
+      segments: [],
+    }));
+    backend.getSkipMap.mockImplementation(async (g: string) => ({
+      status: g === 'a' ? (aServerDone ? 'ready' : analyze.mock.calls.length ? 'pending' : 'missing') : 'missing',
+      episode_guid: g,
+      segments: [],
+    }));
+    start();
+    await advance(STARTUP_DELAY_MS + 10);
+    expect(analyze).toHaveBeenCalledTimes(1);
+    const pollsBefore = backend.getSkipMap.mock.calls.length;
+    await advance(SERVER_POLL_MS * 3);
+    expect(analyze).toHaveBeenCalledTimes(1);
+    // Bounded polling: about one check per SERVER_POLL_MS, not a tight loop.
+    expect(backend.getSkipMap.mock.calls.length - pollsBefore).toBeLessThanOrEqual(4);
+    expect(backend.getSkipMap).toHaveBeenCalledWith('a', 'md5-a');
+    aServerDone = true;
+    await advance(SERVER_POLL_MS + 2_000);
+    expect(analyze.mock.calls.map((c) => c[0].guid)).toEqual(['a', 'b']);
+  });
+
+  it(`retries a failing episode at most ${MAX_RETRIES} times, spaced out`, async () => {
+    queue = [ep('bad')];
+    analyze.mockRejectedValue(new Error('upload failed'));
+    start();
+    await advance(STARTUP_DELAY_MS + 10);
+    expect(analyze).toHaveBeenCalledTimes(1);
+    await advance(RETRY_DELAY_MS / 2);
+    expect(analyze).toHaveBeenCalledTimes(1);
+    await advance(RETRY_DELAY_MS * 10);
+    expect(analyze).toHaveBeenCalledTimes(MAX_RETRIES);
+    triggerQueueAnalysis();
+    await advance(RETRY_DELAY_MS * 10);
+    expect(analyze).toHaveBeenCalledTimes(MAX_RETRIES);
+  });
+
+  it('a null / error result counts as a failure too', async () => {
+    queue = [ep('x')];
+    analyze.mockResolvedValue(null);
+    start();
+    await advance(STARTUP_DELAY_MS + RETRY_DELAY_MS * 10);
+    expect(analyze).toHaveBeenCalledTimes(MAX_RETRIES);
+  });
+
+  it('picks up an episode added to the queue later via trigger', async () => {
+    start();
+    await advance(STARTUP_DELAY_MS + 10);
+    expect(analyze).not.toHaveBeenCalled();
+    queue = [ep('new')];
+    triggerQueueAnalysis();
+    await advance(2_000);
+    expect(analyze.mock.calls.map((c) => c[0].guid)).toEqual(['new']);
+  });
+
+  it('a trigger right after start still respects the startup delay', async () => {
+    queue = [ep('a')];
+    start();
+    triggerQueueAnalysis();
+    await advance(STARTUP_DELAY_MS - 500);
+    expect(analyze).not.toHaveBeenCalled();
+    await advance(1_000);
+    expect(analyze).toHaveBeenCalledTimes(1);
+  });
+
+  it('does nothing after stop', async () => {
+    queue = [ep('a')];
+    start();
+    stop?.();
+    stop = null;
+    triggerQueueAnalysis();
+    await advance(STARTUP_DELAY_MS * 3);
+    expect(analyze).not.toHaveBeenCalled();
   });
 });
