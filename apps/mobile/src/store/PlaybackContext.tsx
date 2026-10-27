@@ -56,6 +56,7 @@ import { hydratePlayed, isNearEnd, isPlayed, setPlayed } from '@/src/played/play
 import { startFeedbackOutbox } from '@/src/api/feedback';
 import { filterSkippableSegments, normalizeSegment } from '@/src/player/skipLogic';
 import { needsGapPassRefresh, pollGapPass, segmentsChanged } from '@/src/player/gapPassRefresh';
+import { startQueueAnalyzer, triggerQueueAnalysis } from '@/src/queue/queueAnalyzer';
 import {
   decidePlaybackSource,
   downloadFailureMessage,
@@ -1323,11 +1324,17 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     void syncBackgroundRefreshRegistration();
     const stopFeedback = startFeedbackOutbox();
     const stopRefresh = startAutoQueueRefresh();
+    
+    // Start background queue analyzer
+    const analyzeForQueue = (ep: Episode) => requestAnalyze(false, ep);
+    const stopAnalyzer = startQueueAnalyzer(analyzeForQueue, getQueue);
+    
     return () => {
       stopFeedback();
       stopRefresh();
+      stopAnalyzer();
     };
-  }, []);
+  }, [requestAnalyze]);
 
   useEffect(() => {
     return player.subscribeEnded((finished) => {
@@ -1519,6 +1526,11 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         } catch (error) {
           console.warn('[playback] Could not reload skip map after enabling detection:', error);
         }
+      }
+      
+      // Trigger queue analysis: episodes from this show may now be analyzable
+      if (enabled) {
+        triggerQueueAnalysis(true);
       }
     },
     [clearAdDetection, loadSkipMap],
