@@ -6,6 +6,7 @@ import { useSyncExternalStore } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { hydratePlayed, isPlayed, subscribePlayed } from '@/src/played/playedStore';
 import type { Episode } from '@/src/types';
+import { triggerQueueAnalysis } from './queueAnalyzer';
 import {
   addOnPlay,
   addToQueue as addPure,
@@ -149,11 +150,15 @@ export async function markPlaying(ep: Episode) {
 export async function addToQueue(ep: Episode) {
   await hydrateQueue();
   setQueue(addPure(queue, slim(ep)));
+  // Trigger background analysis for newly queued episodes
+  triggerQueueAnalysis();
 }
 
 export async function playNext(ep: Episode) {
   await hydrateQueue();
   setQueue(playNextPure(queue, slim(ep), currentGuid));
+  // Trigger background analysis for newly queued episodes
+  triggerQueueAnalysis();
 }
 
 export async function removeFromQueue(guid: string) {
@@ -275,6 +280,8 @@ export function processFeedForAutoQueue(target: ShowTarget, feedEpisodes: Episod
     for (const ep of toAdd) next = addPure(next, slim(ep));
     setQueue(next);
     console.log('[queue] auto-added', next.length - before, 'new episode(s) for', key);
+    // Trigger background analysis for auto-added episodes
+    triggerQueueAnalysis();
     return next.length - before;
   }).catch((e) => {
     console.warn('[queue] auto-add failed:', e);

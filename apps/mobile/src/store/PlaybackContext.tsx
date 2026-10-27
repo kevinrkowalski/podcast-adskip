@@ -56,13 +56,14 @@ import { hydratePlayed, isNearEnd, isPlayed, setPlayed } from '@/src/played/play
 import { startFeedbackOutbox } from '@/src/api/feedback';
 import { filterSkippableSegments, normalizeSegment } from '@/src/player/skipLogic';
 import { needsGapPassRefresh, pollGapPass, segmentsChanged } from '@/src/player/gapPassRefresh';
+import { startQueueAnalyzer, triggerQueueAnalysis } from '@/src/queue/queueAnalyzer';
 import {
   decidePlaybackSource,
   downloadFailureMessage,
   needsReanalysisForLocalFile,
   serverHasAnalysis,
 } from '@/src/player/playbackSource';
-import { getQueue } from '@/src/queue/queueStore';
+import { getCurrentQueueGuid, getQueue } from '@/src/queue/queueStore';
 import {
   shouldPlayWhileDownloading,
   streamCacheFailureMessage,
@@ -242,13 +243,13 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
    * Guid whose requestAnalyze (Prepare) is in flight; prevents loadSkipMap/clearAdDetection
    * from clobbering that episode's progress. Other episodes are unaffected.
    */
-  const manualPrepareGuidRef = useRef<string | null>(null);
-  const isPrepareInFlightForCurrent = useCallback(
-    () =>
-      manualPrepareGuidRef.current != null &&
-      manualPrepareGuidRef.current === episodeRef.current?.guid,
-    [],
-  );
+  // A set, not a single guid: a background queue analysis of another episode must not
+  // overwrite the current episode's in-flight Prepare.
+  const preparingGuidsRef = useRef(new Set<string>());
+  const isPrepareInFlightForCurrent = useCallback(() => {
+    const guid = episodeRef.current?.guid;
+    return guid != null && preparingGuidsRef.current.has(guid);
+  }, []);
   /**
    * Set while playEpisode switches to a new episode, until the player reports it. Player
    * updates for the previous episode in that window must not be treated as an episode
@@ -1323,9 +1324,22 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     void syncBackgroundRefreshRegistration();
     const stopFeedback = startFeedbackOutbox();
     const stopRefresh = startAutoQueueRefresh();
+    
+    // Start background queue analyzer (pass requestAnalyze via ref to avoid dependency)
+    const analyzeForQueue = (ep: Episode) => {
+      const fn = requestAnalyzeForEpisodeRef.current;
+      return fn ? fn(ep) : Promise.resolve(null);
+    };
+    // The loaded/playing episode is handled by the player's own auto-analyze flow.
+    const stopAnalyzer = startQueueAnalyzer(analyzeForQueue, getQueue, () => [
+      episodeRef.current?.guid,
+      getCurrentQueueGuid(),
+    ]);
+    
     return () => {
       stopFeedback();
       stopRefresh();
+      stopAnalyzer();
     };
   }, []);
 
@@ -1409,6 +1423,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     setAutoSkipState(v);
     player.setAutoSkip(v);
     await setAutoSkipEnabled(v);
+    if (v) triggerQueueAnalysis();
     if (gen !== skipLoadGen.current) return;
 
     const current = episodeRef.current;
@@ -1500,6 +1515,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const setPodcastAdDetection = useCallback(
     async (target: AdDetectionTarget, enabled: boolean) => {
       await setPodcastAdDetectionEnabled(target, enabled);
+      // Queued episodes from this show may now be analyzable (any show, not just the loaded one).
+      if (enabled) triggerQueueAnalysis();
       const current = episodeRef.current;
       if (!current) return;
       const matches =
@@ -1576,7 +1593,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       console.log('[playback] requestAnalyze: starting download/upload flow for', guid, 'force:', force);
 
       // Prevent loadSkipMap / clearAdDetection from clobbering this episode's Prepare.
-      manualPrepareGuidRef.current = guid;
+      preparingGuidsRef.current.add(guid);
       if (force) manualReanalysisGuidRef.current = guid;
 
       if (isCurrent()) {
@@ -1759,8 +1776,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         }
         return null;
       } finally {
-        // Clear flag so auto-analyze paths can run again (unless a newer Prepare owns it).
-        if (manualPrepareGuidRef.current === guid) manualPrepareGuidRef.current = null;
+        // Clear flag so auto-analyze paths can run again. requestAnalyze dedupes per guid,
+        // so only one run per guid is ever in flight.
+        preparingGuidsRef.current.delete(guid);
       }
     },
     [applySkipFilter, canCallAdDetectionApi],
