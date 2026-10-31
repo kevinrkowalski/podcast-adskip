@@ -38,3 +38,27 @@ test('uses the cached feed without refetching when it has the episode', async ()
   expect(await findEpisodeNotes('https://feed', 'a')).toBe('A notes');
   expect(mockFetchWithTimeout).toHaveBeenCalledTimes(1);
 });
+
+test('falls back to the audio URL when the guid changed', async () => {
+  serve(
+    '<rss><channel><item><guid>new-guid</guid><title>Renamed</title>' +
+      '<enclosure url="https://cdn/ep1.mp3?token=new" type="audio/mpeg"/>' +
+      '<description>Ep 1 notes</description></item></channel></rss>',
+  );
+  expect(
+    await findEpisodeNotes('https://feed', 'https://cdn/ep1.mp3?token=old', {
+      enclosureUrl: 'https://cdn/ep1.mp3?token=old',
+      title: 'Episode 1',
+    }),
+  ).toBe('Ep 1 notes');
+});
+
+test('falls back to the title when neither guid nor audio URL match', async () => {
+  serve(`<rss><channel>${item('other', 'Other notes')}${item('Episode 2', 'Ep 2 notes')}</channel></rss>`);
+  expect(await findEpisodeNotes('https://feed', 'gone', { title: 'Episode 2' })).toBe('Ep 2 notes');
+});
+
+test('prefers an exact guid match over fallbacks', async () => {
+  serve(`<rss><channel>${item('Same title', 'Wrong')}${item('g1', 'Right')}</channel></rss>`);
+  expect(await findEpisodeNotes('https://feed', 'g1', { title: 'Same title' })).toBe('Right');
+});

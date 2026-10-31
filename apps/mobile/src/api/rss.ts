@@ -169,23 +169,54 @@ function itemGuid(item: string): string | undefined {
   return textBetween(item, 'guid') || enclosureUrl || textBetween(item, 'link');
 }
 
-function notesForGuid(xml: string, guid: string): string | undefined {
+/** Hints for finding an episode whose feed guid changed since it was queued. */
+export interface EpisodeMatchHints {
+  enclosureUrl?: string;
+  title?: string;
+}
+
+/** Audio URL without query/fragment (tracking params and signatures change per fetch). */
+function enclosureKey(url?: string): string | undefined {
+  const base = url?.trim().split(/[?#]/)[0];
+  return base ? base.toLowerCase() : undefined;
+}
+
+function notesForEpisode(xml: string, guid: string, hints?: EpisodeMatchHints): string | undefined {
+  const wantEnclosure = enclosureKey(hints?.enclosureUrl);
+  const wantTitle = hints?.title?.trim();
+  let byEnclosure: string | undefined;
+  let byTitle: string | undefined;
   for (const item of iterateItems(xml)) {
     if (itemGuid(item) === guid) return pickEpisodeNotes(item);
+    // Publishers sometimes re-key items (or add a <guid> to an enclosure-keyed feed):
+    // fall back to the same audio file, then the same title.
+    if (wantEnclosure && byEnclosure === undefined) {
+      const tag = item.match(/<enclosure\b[^>]*\/?>/i)?.[0];
+      if (tag && enclosureKey(attr(tag, 'url')) === wantEnclosure) byEnclosure = item;
+    }
+    if (wantTitle && byTitle === undefined && textBetween(item, 'title') === wantTitle) {
+      byTitle = item;
+    }
   }
-  return undefined;
+  const fallback = byEnclosure ?? byTitle;
+  return fallback ? pickEpisodeNotes(fallback) : undefined;
 }
 
 /**
  * Show notes for one episode, searched across the whole feed (only the matching item's
  * notes are parsed). Uses the in-memory feed when it has the episode; otherwise fetches
- * the feed, e.g. for an episode newer than the cached copy.
+ * the feed, e.g. for an episode newer than the cached copy. Matches by guid, falling back
+ * to the audio URL / title in `hints` when the guid is no longer in the feed.
  */
-export async function findEpisodeNotes(feedUrl: string, guid: string): Promise<string | undefined> {
+export async function findEpisodeNotes(
+  feedUrl: string,
+  guid: string,
+  hints?: EpisodeMatchHints,
+): Promise<string | undefined> {
   const cached = recallXml(feedUrl);
-  const fromCache = cached ? notesForGuid(cached, guid) : undefined;
+  const fromCache = cached ? notesForEpisode(cached, guid, hints) : undefined;
   if (fromCache?.trim()) return fromCache;
-  return notesForGuid(await fetchRssXml(feedUrl, { force: cached !== undefined }), guid);
+  return notesForEpisode(await fetchRssXml(feedUrl, { force: cached !== undefined }), guid, hints);
 }
 
 function extractChannelImage(channelHead: string): string | undefined {
