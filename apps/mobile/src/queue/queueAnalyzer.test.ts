@@ -224,6 +224,36 @@ describe('queueAnalyzer', () => {
     expect(analyze).toHaveBeenCalledTimes(1);
   });
 
+  it('does not re-check episodes the server already finished', async () => {
+    queue = [ep('a'), ep('b')];
+    backend.getSkipMap.mockImplementation(async (guid: string) =>
+      guid === 'a'
+        ? { status: 'ready', episode_guid: 'a', segments: [] }
+        : { status: 'missing', episode_guid: guid, segments: [] },
+    );
+    start();
+    await advance(STARTUP_DELAY_MS);
+    expect(analyze).toHaveBeenCalledWith(queue[1]);
+    const checksForA = backend.getSkipMap.mock.calls.filter(([g]: [string]) => g === 'a').length;
+    triggerQueueAnalysis();
+    await advance(5_000);
+    expect(backend.getSkipMap.mock.calls.filter(([g]: [string]) => g === 'a').length).toBe(checksForA);
+  });
+
+  it('retries later after a network error instead of stalling until the next trigger', async () => {
+    queue = [ep('a'), ep('b')];
+    backend.getSkipMap.mockRejectedValue(new Error('offline'));
+    start();
+    await advance(STARTUP_DELAY_MS);
+    expect(analyze).not.toHaveBeenCalled();
+    // One check per pass, not one per queued episode.
+    expect(backend.getSkipMap).toHaveBeenCalledTimes(1);
+
+    backend.getSkipMap.mockResolvedValue({ status: 'missing', episode_guid: 'x', segments: [] });
+    await advance(RETRY_DELAY_MS);
+    expect(analyze).toHaveBeenCalledWith(queue[0]);
+  });
+
   it('does nothing after stop', async () => {
     queue = [ep('a')];
     start();

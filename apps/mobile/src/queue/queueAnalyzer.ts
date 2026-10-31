@@ -113,25 +113,31 @@ function schedule(delayMs: number): void {
   }, delay);
 }
 
-/** True when this episode already has (or is getting) an analysis for the bytes we'd play. */
-async function hasExistingAnalysis(ep: Episode): Promise<boolean> {
-  if (!ep.enclosureUrl) return true; // nothing to analyze
+/**
+ * Whether this episode already has (or is getting) an analysis for the bytes we'd play:
+ * 'ready' (done), 'busy' (server working on it), 'none' (needs analysis), or 'error'
+ * (couldn't tell: network/API trouble).
+ */
+type ExistingAnalysis = 'ready' | 'busy' | 'none' | 'error';
+
+async function checkExistingAnalysis(ep: Episode): Promise<ExistingAnalysis> {
+  if (!ep.enclosureUrl) return 'ready'; // nothing to analyze
   try {
     const localPath = await getCachedAudioPath(ep.guid, ep.enclosureUrl);
     const audioMd5 = localPath ? await getCachedAudioMd5(ep.guid, ep.enclosureUrl) : null;
     if (audioMd5) {
       const cached = await getCachedSkipMap(ep.guid, ep.enclosureUrl);
-      if (cached?.status === 'ready' && cached.audio_md5?.toLowerCase() === audioMd5) return true;
+      if (cached?.status === 'ready' && cached.audio_md5?.toLowerCase() === audioMd5) return 'ready';
     }
     // With no download yet, the server can only answer by guid; a ready map for other bytes
     // reports "missing", so we still download (needed for skips anyway) and upload; the
     // server reuses its result when the bytes match.
     const map = await getSkipMap(ep.guid, audioMd5);
-    return map.status === 'ready' || BUSY.has(map.status);
+    if (map.status === 'ready') return 'ready';
+    return BUSY.has(map.status) ? 'busy' : 'none';
   } catch (e) {
-    // Network/API trouble: try again on a later trigger rather than hammering.
     console.warn('[queueAnalyzer] Could not check existing analysis for', ep.guid, e);
-    return true;
+    return 'error';
   }
 }
 
@@ -161,7 +167,18 @@ async function findNextEpisode(): Promise<Pick> {
       feedUrl: ep.feedUrl,
     });
     if (!enabled) continue;
-    if (await hasExistingAnalysis(ep)) continue;
+    const existing = await checkExistingAnalysis(ep);
+    if (existing === 'ready') {
+      // Done: don't ask the server about it again on every pass this session.
+      analyzedThisSession.add(ep.guid);
+      continue;
+    }
+    if (existing === 'busy') continue;
+    if (existing === 'error') {
+      // Probably offline: stop this pass (don't hit the API once per queued episode)
+      // and look again later instead of waiting for the next queue change.
+      return { episode: null, retryInMs: RETRY_DELAY_MS };
+    }
     return { episode: ep, retryInMs: null };
   }
   return { episode: null, retryInMs };

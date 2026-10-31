@@ -187,6 +187,8 @@ const POSITION_SAVE_INTERVAL_MS = 5_000;
 /** Poll skip-map while analyze is queued/pending (ETA UI). */
 const ANALYZE_POLL_INTERVAL_MS = 2_000;
 const ANALYZE_POLL_MAX_MS = 10 * 60_000;
+/** Show-notes fetch retries after a failure (offline / timeout), while the episode is shown. */
+const SHOW_NOTES_RETRY_DELAYS_MS = [10_000, 30_000, 90_000];
 
 export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const [episode, setEpisode] = useState<Episode | null>(null);
@@ -683,10 +685,17 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   }, [abortLoadKeepCache, applyReadyMap, canUseAdDetection, clearAdDetection, getMatchingLocalSkipMap]);
 
   // Queue items and Android Auto picks carry no show notes (kept small in storage);
-  // fill them in from the cached/fetched feed once the episode is loaded.
-  const restoreShowNotesRef = useRef((target: Episode) => {
+  // fill them in from the cached/fetched feed once the episode is loaded. A failed fetch
+  // (offline, timeout) is retried a few times while the episode is still shown.
+  const restoreShowNotesRef = useRef((target: Episode, attempt = 0) => {
     if (target.description?.trim() || !target.feedUrl) return;
-    void findEpisodeNotes(target.feedUrl, target.guid)
+    const stillShown = () =>
+      episodeRef.current?.guid === target.guid ||
+      openedEpisodeRef.current?.episode.guid === target.guid;
+    void findEpisodeNotes(target.feedUrl, target.guid, {
+      enclosureUrl: target.enclosureUrl,
+      title: target.title,
+    })
       .then((description) => {
         if (!description?.trim()) return;
         // The loaded episode, or one opened but not started yet (or both, briefly).
@@ -704,7 +713,14 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         }
       })
       .catch((error) => {
-        console.warn('[playback] Could not restore show notes:', error);
+        const delay = SHOW_NOTES_RETRY_DELAYS_MS[attempt];
+        if (delay == null) {
+          console.warn('[playback] Could not restore show notes:', error);
+          return;
+        }
+        setTimeout(() => {
+          if (stillShown()) restoreShowNotesRef.current(target, attempt + 1);
+        }, delay);
       });
   });
 
@@ -868,8 +884,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       // Until loadAndPlay reports `ep`, the player still describes `prev`.
       if (prev?.guid !== ep.guid) switchingToGuidRef.current = ep.guid;
       setEpisode(ep);
-      restoreShowNotesRef.current(ep);
       episodeRef.current = ep;
+      restoreShowNotesRef.current(ep);
       setPlaybackDownload(null);
       // The player stops saving any other episode once this one loads.
       abandonStreamCacheDownloads(ep.guid);
