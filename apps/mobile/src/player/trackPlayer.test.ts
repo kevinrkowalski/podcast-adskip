@@ -82,6 +82,23 @@ describe('android playback service status', () => {
   });
 });
 
+describe('show notes', () => {
+  it('keeps restored notes when the same episode is reloaded from a slim copy', async () => {
+    const slim = episode('Q', { enclosureUrl: 'https://cdn/q.mp3' });
+    await player.loadAndPlay(slim);
+    player.updateEpisodeMetadata({ ...slim, description: '<p>Notes</p>' });
+    // e.g. switching to the downloaded file with the queue's description-less copy
+    await player.loadAndPlay(slim, { localFilePath: '/tmp/q.mp3' });
+    expect(player.getStatus().episode?.description).toBe('<p>Notes</p>');
+  });
+
+  it('does not carry notes over to a different episode', async () => {
+    await player.loadAndPlay(episode('A', { description: 'A notes' }));
+    await player.loadAndPlay(episode('B'));
+    expect(player.getStatus().episode?.description).toBeUndefined();
+  });
+});
+
 describe('setSkipSegments', () => {
   it('ignores segments meant for an episode that is not loaded', async () => {
     mockNative.available = true;
