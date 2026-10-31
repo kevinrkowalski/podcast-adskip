@@ -339,6 +339,17 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         });
       }
       if (previousGuid !== nextGuid) clearedPositionGuid.current = null;
+      // The player can report a copy captured before show notes were restored (queue
+      // items carry none); keep the restored notes rather than blanking them.
+      const prevEp = episodeRef.current;
+      if (
+        st.episode &&
+        prevEp?.guid === st.episode.guid &&
+        !st.episode.description?.trim() &&
+        prevEp.description?.trim()
+      ) {
+        st = { ...st, episode: { ...st.episode, description: prevEp.description } };
+      }
       episodeRef.current = st.episode;
       positionRef.current = st.positionMs;
       durationRef.current = st.durationMs;
@@ -991,7 +1002,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       }
 
       try {
-        await player.loadAndPlay(ep, {
+        // Show notes may have been restored into episodeRef while we awaited above.
+        const loadEp = episodeRef.current?.guid === ep.guid ? episodeRef.current : ep;
+        await player.loadAndPlay(loadEp, {
           startPositionMs,
           localFilePath: localFilePath || undefined,
           streamCachePath: streamCachePath ?? undefined,

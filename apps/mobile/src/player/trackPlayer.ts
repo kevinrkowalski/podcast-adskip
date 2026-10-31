@@ -601,7 +601,9 @@ export async function loadAndPlay(
     opts?.startPositionMs != null && opts.startPositionMs > 0
       ? Math.floor(opts.startPositionMs)
       : 0;
-  status.episode = episode;
+  // Reloading the same episode (e.g. switching to the downloaded copy) must not drop
+  // show notes restored after the caller captured `episode`.
+  status.episode = mergeEpisodeMetadata(episode, status.episode);
   status.positionMs = startMs;
   status.durationMs = episode.durationMs ?? 0;
   status.isPlaying = false;
