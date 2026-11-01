@@ -24,6 +24,8 @@ import {
 
 const QUEUE_KEY = '@podcast-adskip/queue';
 const AUTO_QUEUE_KEY = '@podcast-adskip/autoQueue';
+/** Where unreadable auto-add settings are copied before anything overwrites them. */
+export const AUTO_QUEUE_BACKUP_KEY = `${AUTO_QUEUE_KEY}:corrupt-backup`;
 
 let queue: Episode[] = [];
 let hydrated = false;
@@ -207,10 +209,18 @@ async function readAutoQueue(): Promise<AutoQueueAll> {
   const raw = await AsyncStorage.getItem(AUTO_QUEUE_KEY);
   if (!raw) return {};
   try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? (parsed as AutoQueueAll) : {};
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as AutoQueueAll;
+    throw new Error('not an object');
   } catch {
-    console.warn('[queue] auto-add settings are corrupt; starting empty');
+    // Treated as empty, but the next toggle writes every show's settings back from that:
+    // keep a copy of what was stored first.
+    console.warn('[queue] auto-add settings are corrupt; backing them up and starting empty');
+    try {
+      await AsyncStorage.setItem(AUTO_QUEUE_BACKUP_KEY, raw);
+    } catch (e) {
+      console.warn('[queue] could not back up auto-add settings:', e);
+    }
     return {};
   }
 }

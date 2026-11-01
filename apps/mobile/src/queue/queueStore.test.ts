@@ -79,3 +79,16 @@ test('turning auto-add off is not undone by a concurrent feed refresh', async ()
   await Promise.all([refresh, toggleOff]);
   expect(await store.isAutoQueueEnabled(show)).toBe(false);
 });
+
+test('unreadable auto-add settings are backed up before a toggle overwrites them', async () => {
+  const { storage, load: loadStore } = load();
+  await storage.clear();
+  const corrupt = '{"collection:1":{"enabled":true,"lastSeenPubMs":1'; // truncated write
+  await storage.setItem(AUTO_QUEUE_KEY, corrupt);
+  const store = loadStore();
+
+  await store.setAutoQueueEnabled({ collectionId: 2 }, true, []);
+
+  expect(await storage.getItem(store.AUTO_QUEUE_BACKUP_KEY)).toBe(corrupt);
+  expect(Object.keys(JSON.parse((await storage.getItem(AUTO_QUEUE_KEY))!))).toEqual(['collection:2']);
+});
