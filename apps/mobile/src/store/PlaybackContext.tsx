@@ -409,10 +409,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const clearCachedPlaybackData = useCallback((): boolean => {
     if (isPrepareInFlightForCurrent()) return false;
 
+    // Saved positions stay (Settings → Clear cache keeps them).
     skipLoadGen.current += 1;
-    const guid = episodeRef.current?.guid;
-    clearedPositionGuid.current = guid ?? null;
-    if (guid) void clearPlaybackPosition(guid);
     setSkipMap(null);
     skipMapRef.current = null;
     analyzeFingerprintRef.current = null;

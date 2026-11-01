@@ -20,7 +20,7 @@ import { usePlayback } from '@/src/store/PlaybackContext';
 import { showQueueActions } from '@/src/queue/queueActions';
 import { ReportSkipSheet } from '@/components/ReportSkipSheet';
 import { useUpNextCount } from '@/src/queue/queueStore';
-import { formatMs, segmentTypeLabel } from '@/src/player/skipLogic';
+import { filterSkippableSegments, formatMs, normalizeSegment, segmentTypeLabel } from '@/src/player/skipLogic';
 import { streamCacheNotice } from '@/src/player/streamCache';
 import { Scrubber } from '@/components/Scrubber';
 import { theme } from '@/constants/Colors';
@@ -37,7 +37,6 @@ function formatShowNotes(raw?: string): string {
     .replace(/<li[^>]*>/gi, '• ')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
     .replace(/&quot;/gi, '"')
     .replace(/&#39;|&apos;/gi, "'")
     .replace(/&lt;/gi, '<')
@@ -47,6 +46,8 @@ function formatShowNotes(raw?: string): string {
       const c = parseInt(h, 16);
       return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : m;
     })
+    // Last, so "&amp;lt;" decodes once to the text "&lt;" (not on to "<").
+    .replace(/&amp;/gi, '&')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -186,6 +187,17 @@ export default function PlayerScreen() {
   const [reportVisible, setReportVisible] = useState(false);
 
   const segs = skipMap?.segments ?? [];
+  // What will actually be skipped: confident segments of kinds this show skips (an
+  // unstarted episode's show settings aren't loaded, so all kinds count for it).
+  const loadedSkipSettings = opened ? null : playback.skipSettings;
+  const skipCount = useMemo(() => {
+    if (loadedSkipSettings && !loadedSkipSettings.skipEnabled) return 0;
+    return filterSkippableSegments(segs.map(normalizeSegment), {
+      skipAdvertisement: loadedSkipSettings?.skipAdvertisement ?? true,
+      skipIntroOutro: loadedSkipSettings?.skipIntroOutro ?? true,
+      skipSelfPromotion: loadedSkipSettings?.skipSelfPromotion ?? true,
+    }).length;
+  }, [segs, loadedSkipSettings]);
   const displayPos = scrubPreview != null ? scrubPreview : positionMs;
   const remainingMs = Math.max(0, durationMs - displayPos);
   const showNotes = useMemo(() => formatShowNotes(episode?.description), [episode?.description]);
@@ -247,7 +259,8 @@ export default function PlayerScreen() {
       return '…';
     }
     if (analyzeStatus === 'ready') {
-      return segs.length ? `${segs.length} ads` : 'Clean';
+      if (!segs.length) return 'Clean';
+      return skipCount === 1 ? '1 skip' : `${skipCount} skips`;
     }
     if (analyzeStatus === 'offline') return 'Offline';
     if (analyzeStatus === 'error') {
@@ -264,7 +277,7 @@ export default function PlayerScreen() {
       return 'Prep';
     }
     return 'Prep';
-  }, [showAdDetectionEnabled, autoSkip, analyzeStatus, analyzeError, segs.length, isAnalyzing, analyzeEtaLabel]);
+  }, [showAdDetectionEnabled, autoSkip, analyzeStatus, analyzeError, segs.length, skipCount, isAnalyzing, analyzeEtaLabel]);
 
   if (!episode) {
     return (

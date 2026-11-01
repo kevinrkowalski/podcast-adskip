@@ -11,7 +11,6 @@ import {
   getAllAudioCacheMetadata,
   getAudioCacheMetadata,
   getCachedSkipMaps,
-  removeAllAudioCacheMetadata,
   removeAudioCacheMetadata,
   removeCachedSkipMap,
   saveAudioCacheMetadata,
@@ -756,24 +755,45 @@ export async function pruneExpiredAudioCache(now = Date.now()): Promise<number> 
 }
 
 /**
- * Clear all downloaded audio and the skip maps associated with those downloads.
+ * Clear downloaded audio and the skip maps associated with those downloads.
+ *
+ * Kept: the downloads of `keep` (the episode loaded in the player reopens its file on
+ * every seek, and an ad skip is a seek) and anything still downloading (the app's own
+ * downloads and the native play-while-downloading copy write into this folder).
+ * Returns how many files were deleted.
  */
-export async function clearAudioCache(): Promise<void> {
+export async function clearAudioCache(
+  keep: { episodeGuid: string; audioUrl?: string | null }[] = [],
+): Promise<number> {
+  const keepFiles = new Set(
+    keep.filter((k) => k.audioUrl).map((k) => getCacheFileName(k.episodeGuid, k.audioUrl!)),
+  );
+  const busyPaths = new Set([...inFlightDownloads.keys(), ...streamCacheDownloads.keys()]);
+  const isKept = (fileName: string) => {
+    const base = fileName.replace(/(\.stream)?\.part$/, '');
+    return keepFiles.has(base) || busyPaths.has(`${AUDIO_CACHE_DIR}${base}`);
+  };
+
   const metadata = await getAllAudioCacheMetadata();
   const info = await FileSystem.getInfoAsync(AUDIO_CACHE_DIR);
   const files = info.exists ? await FileSystem.readDirectoryAsync(AUDIO_CACHE_DIR) : [];
-  const relatedMaps = mapsForAudioFiles(await getCachedSkipMaps(), new Set(files));
+  const doomed = files.filter((f) => !isKept(f));
+  const relatedMaps = mapsForAudioFiles(await getCachedSkipMaps(), new Set(doomed));
 
   for (const entry of metadata) {
+    if (isKept(entry.fileName)) continue;
     await removeCachedSkipMap(entry.episodeGuid, entry.audioUrl);
+    await removeAudioCacheMetadata(entry.fileName);
   }
   for (const map of relatedMaps) {
     await removeCachedSkipMap(map.episodeGuid, map.audioUrl);
   }
-  if (info.exists) {
-    await FileSystem.deleteAsync(AUDIO_CACHE_DIR, { idempotent: true });
+  let removed = 0;
+  for (const fileName of doomed) {
+    await FileSystem.deleteAsync(`${AUDIO_CACHE_DIR}${fileName}`, { idempotent: true });
+    removed += 1;
   }
-  await removeAllAudioCacheMetadata();
+  return removed;
 }
 
 /**

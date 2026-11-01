@@ -28,6 +28,7 @@ import {
   healthCheck,
   hydrateApiBaseUrl,
   hydrateAppKey,
+  isInsecureRemoteApiUrl,
   setApiBaseUrlOverride,
   setAppKeyOverride,
 } from '@/src/api/backend';
@@ -53,7 +54,7 @@ import { displayFontFamily } from '@/constants/Typography';
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
-  const { setAutoSkip, autoSkip, clearCachedPlaybackData } = usePlayback();
+  const { setAutoSkip, autoSkip, clearCachedPlaybackData, episode, openedEpisode } = usePlayback();
   const [apiUrl, setApiUrlState] = useState(DEFAULT_API_URL);
   const [appKey, setAppKeyState] = useState('');
   const [saving, setSaving] = useState(false);
@@ -179,7 +180,7 @@ export default function SettingsScreen() {
   const onClearCache = () => {
     Alert.alert(
       'Clear on-device cache?',
-      'Removes cached episode lists, skip maps, and downloaded analysis audio from this device. Subscriptions and settings stay. Episode lists refresh from RSS, and valid skip maps may be restored from the API or regenerated when you play an episode.',
+      'Removes cached episode lists, skip maps, and downloaded audio from this device. Subscriptions, settings and play positions stay, and so does the download of the episode that is loaded (or still downloading). Episode lists refresh from RSS, and skip maps come back from the API when you play an episode.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -192,10 +193,14 @@ export default function SettingsScreen() {
                 return;
               }
               clearCachedRssXml();
-              await clearAudioCache();
+              // The player reopens its file on every seek (an ad skip is a seek).
+              const keep = [episode, openedEpisode?.episode]
+                .filter((ep): ep is NonNullable<typeof ep> => !!ep)
+                .map((ep) => ({ episodeGuid: ep.guid, audioUrl: ep.enclosureUrl }));
+              const files = await clearAudioCache(keep);
               const n = await clearCaches();
               setCacheMsg(
-                `Cleared ${n} on-device cache records, saved play positions, in-memory segments, and downloaded analysis audio. Episode lists and API skip maps can return when reopened.`,
+                `Cleared ${n} cached records and ${files} downloaded file${files === 1 ? '' : 's'}. Play positions were kept. Episode lists and skip maps come back when reopened.`,
               );
             } catch (error) {
               console.warn('[settings] Failed to clear cache:', error);
@@ -239,6 +244,12 @@ export default function SettingsScreen() {
           <Text style={styles.hint}>
             Default: EXPO_PUBLIC_API_URL or {DEFAULT_API_URL}. Physical devices need your LAN IP.
           </Text>
+          {isInsecureRemoteApiUrl(apiUrl) && (
+            <Text style={styles.warning}>
+              This server is reached over plain http, so your App Key travels unencrypted across the
+              internet. Use https:// for a server outside your home network.
+            </Text>
+          )}
           <Text style={[styles.label, { marginTop: 14 }]}>App Key</Text>
           <TextInput
             style={styles.input}
@@ -539,6 +550,12 @@ const styles = StyleSheet.create({
     color: theme.text,
     fontSize: 16,
     fontWeight: '600',
+  },
+  warning: {
+    color: theme.danger,
+    fontSize: 12,
+    marginTop: 6,
+    lineHeight: 16,
   },
   health: {
     color: theme.textSecondary,
