@@ -267,5 +267,9 @@ export async function fetchTopPodcasts(
   const data = await getJson<ItunesRssFeed>(url, 'Apple charts');
   const raw = data.feed?.entry;
   const entries = !raw ? [] : Array.isArray(raw) ? raw : [raw];
-  return entries.map(mapRssEntry).filter((r): r is PodcastSearchResult => r != null);
+  // A show listed twice would repeat in the grid (and share a list key): keep the first.
+  const seen = new Set<number>();
+  return entries
+    .map(mapRssEntry)
+    .filter((r): r is PodcastSearchResult => r != null && !seen.has(r.collectionId) && !!seen.add(r.collectionId));
 }
