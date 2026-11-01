@@ -28,6 +28,9 @@ import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSession.MediaItemsWithStartPosition
+import androidx.media3.session.CommandButton
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
@@ -126,6 +129,9 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
       // Hold wake + Wi-Fi locks while playing so streams don't stall when the screen is off.
       .setWakeMode(C.WAKE_MODE_NETWORK)
       .setHandleAudioBecomingNoisy(true)
+      // Headset / system "seek back/forward" use the same steps as the app's buttons.
+      .setSeekBackIncrementMs(SKIP_BACK_MS)
+      .setSeekForwardIncrementMs(SKIP_FORWARD_MS)
       .build()
     player = exoPlayer
     exoPlayer.setPlaybackSpeed(preferences.getFloat(KEY_PLAYBACK_RATE, 1f))
@@ -202,6 +208,9 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
 
     val session = MediaLibrarySession.Builder(this, exoPlayer, LibraryCallback())
       .setId(SESSION_ID)
+      // Back 15 / forward 30 buttons, like the app's player: shown by Android Auto and
+      // in the media notification.
+      .setMediaButtonPreferences(skipButtons())
       .build()
     mediaLibrarySession = session
     // The app drives this service with startService() intents, not a MediaController, so
@@ -728,7 +737,55 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     return null
   }
 
+  private fun skipButtons(): List<CommandButton> = listOf(
+    CommandButton.Builder(CommandButton.ICON_SKIP_BACK_15)
+      .setDisplayName("Back 15 seconds")
+      .setSessionCommand(SKIP_BACK_COMMAND)
+      .setSlots(CommandButton.SLOT_BACK)
+      .build(),
+    CommandButton.Builder(CommandButton.ICON_SKIP_FORWARD_30)
+      .setDisplayName("Forward 30 seconds")
+      .setSessionCommand(SKIP_FORWARD_COMMAND)
+      .setSlots(CommandButton.SLOT_FORWARD)
+      .build()
+  )
+
   private inner class LibraryCallback : MediaLibrarySession.Callback {
+    override fun onConnect(
+      session: MediaSession,
+      controller: MediaSession.ControllerInfo
+    ): MediaSession.ConnectionResult {
+      // Let controllers (Android Auto, the notification) send the skip buttons' commands.
+      val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
+        .add(SKIP_BACK_COMMAND)
+        .add(SKIP_FORWARD_COMMAND)
+        .build()
+      return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+        .setAvailableSessionCommands(commands)
+        .build()
+    }
+
+    override fun onCustomCommand(
+      session: MediaSession,
+      controller: MediaSession.ControllerInfo,
+      customCommand: SessionCommand,
+      args: Bundle
+    ): ListenableFuture<SessionResult> {
+      val exoPlayer = player
+      val delta = when (customCommand.customAction) {
+        SKIP_BACK_ACTION -> -SKIP_BACK_MS
+        SKIP_FORWARD_ACTION -> SKIP_FORWARD_MS
+        else -> return super.onCustomCommand(session, controller, customCommand, args)
+      }
+      if (exoPlayer != null) {
+        log("command: skip ${delta / 1000}s (from ${controller.packageName})")
+        // A user seek: landing inside an ad means they want to hear it (see
+        // onPositionDiscontinuity), same as the app's buttons.
+        exoPlayer.seekTo(clampToDuration(exoPlayer, exoPlayer.currentPosition + delta))
+      }
+      return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+    }
+
     override fun onSetMediaItems(
       mediaSession: MediaSession,
       controller: MediaSession.ControllerInfo,
@@ -924,6 +981,13 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     private const val ROOT_ID = "podcast-adskip-root"
     private const val PODCAST_PREFIX = "podcast:"
     private const val SESSION_ID = "podcast-adskip"
+    /** Same steps as the app's player buttons (−15 / +30). */
+    private const val SKIP_BACK_MS = 15_000L
+    private const val SKIP_FORWARD_MS = 30_000L
+    private const val SKIP_BACK_ACTION = "expo.modules.podcastauto.SKIP_BACK"
+    private const val SKIP_FORWARD_ACTION = "expo.modules.podcastauto.SKIP_FORWARD"
+    private val SKIP_BACK_COMMAND = SessionCommand(SKIP_BACK_ACTION, Bundle.EMPTY)
+    private val SKIP_FORWARD_COMMAND = SessionCommand(SKIP_FORWARD_ACTION, Bundle.EMPTY)
     private const val MONITOR_INTERVAL_MS = 500L
     private const val POSITION_SAVE_INTERVAL_MS = 5_000L
     private const val AUTO_SKIP_OFFSET_MS = 100L
