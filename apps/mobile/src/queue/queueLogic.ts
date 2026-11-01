@@ -133,9 +133,18 @@ function pubMs(ep: Episode): number {
   return Number.isFinite(t) ? t : 0;
 }
 
+/**
+ * pubDate as a "newest seen" marker, never later than now: one future-dated item (a
+ * typo'd year, a scheduled premiere) would otherwise push the marker into the future,
+ * and every real episode after it would look too old to add.
+ */
+function markerMs(ep: Episode, nowMs: number): number {
+  return Math.min(pubMs(ep), nowMs);
+}
+
 /** Baseline when the user turns auto-add on: everything currently known counts as seen. */
 export function enableAutoQueueState(knownEpisodes: Episode[], nowMs: number): AutoQueueState {
-  const newest = knownEpisodes.reduce((m, e) => Math.max(m, pubMs(e)), 0);
+  const newest = knownEpisodes.reduce((m, e) => Math.max(m, markerMs(e, nowMs)), 0);
   return {
     enabled: true,
     lastSeenPubMs: Math.max(newest, nowMs),
@@ -155,9 +164,13 @@ export function enableAutoQueueState(knownEpisodes: Episode[], nowMs: number): A
 export function detectNewEpisodes(
   state: AutoQueueState,
   feedEpisodes: Episode[],
+  nowMs: number = Date.now(),
 ): { toAdd: Episode[]; state: AutoQueueState } {
   const seen = new Set(state.seenGuids);
-  const floor = Math.max(state.lastSeenPubMs - LATE_ARRIVAL_GRACE_MS, state.enabledAtMs ?? 0);
+  // Capped here too, so a marker already stuck in the future (saved before the cap)
+  // heals on the next refresh.
+  const lastSeen = Math.min(state.lastSeenPubMs, nowMs);
+  const floor = Math.max(lastSeen - LATE_ARRIVAL_GRACE_MS, Math.min(state.enabledAtMs ?? 0, nowMs));
   const toAdd = feedEpisodes
     .filter((e) => {
       if (!e.guid || seen.has(e.guid) || !e.enclosureUrl) return false;
@@ -165,7 +178,7 @@ export function detectNewEpisodes(
       return t === 0 || t > floor;
     })
     .sort((a, b) => pubMs(a) - pubMs(b));
-  const newest = feedEpisodes.reduce((m, e) => Math.max(m, pubMs(e)), state.lastSeenPubMs);
+  const newest = feedEpisodes.reduce((m, e) => Math.max(m, markerMs(e, nowMs)), lastSeen);
   const merged = [...feedEpisodes.map((e) => e.guid), ...state.seenGuids];
   const seenGuids = [...new Set(merged)].slice(0, MAX_SEEN_GUIDS);
   return { toAdd, state: { ...state, lastSeenPubMs: newest, seenGuids } };
