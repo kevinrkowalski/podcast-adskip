@@ -4,7 +4,7 @@ jest.mock('@/src/player/androidAutoCatalog', () => ({}));
 jest.mock('@/src/queue/queueStore', () => ({}));
 const mockFetchWithTimeout = jest.fn();
 jest.mock('./http', () => ({ fetchWithTimeout: (...args: unknown[]) => mockFetchWithTimeout(...args) }));
-import { clearCachedRssXml, fetchRssXml, findEpisodeNotes } from './rss';
+import { clearCachedRssXml, fetchRssXml, findEpisodeDetails, findEpisodeNotes } from './rss';
 
 const item = (guid: string, notes: string) =>
   `<item><guid>${guid}</guid><title>${guid}</title><description>${notes}</description></item>`;
@@ -61,4 +61,19 @@ test('falls back to the title when neither guid nor audio URL match', async () =
 test('prefers an exact guid match over fallbacks', async () => {
   serve(`<rss><channel>${item('Same title', 'Wrong')}${item('g1', 'Right')}</channel></rss>`);
   expect(await findEpisodeNotes('https://feed', 'g1', { title: 'Same title' })).toBe('Right');
+});
+
+test('returns the show description along with the episode notes', async () => {
+  serve(
+    '<rss><channel><title>Show</title><description><![CDATA[<p>A show about <b>things</b>.</p><p>Weekly.</p>]]></description>' +
+      `${item('g1', 'Episode notes')}</channel></rss>`,
+  );
+  const details = await findEpisodeDetails('https://feed', 'g1');
+  expect(details.notes).toBe('Episode notes');
+  expect(details.podcastDescription).toBe('<p>A show about <b>things</b>.</p><p>Weekly.</p>');
+});
+
+test('falls back to itunes:summary for the show description', async () => {
+  serve(`<rss><channel><itunes:summary>Summary only</itunes:summary>${item('g1', 'n')}</channel></rss>`);
+  expect((await findEpisodeDetails('https://feed', 'g1')).podcastDescription).toBe('Summary only');
 });

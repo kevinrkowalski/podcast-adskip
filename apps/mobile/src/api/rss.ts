@@ -202,21 +202,53 @@ function notesForEpisode(xml: string, guid: string, hints?: EpisodeMatchHints): 
   return fallback ? pickEpisodeNotes(fallback) : undefined;
 }
 
+/** The part of a feed before its first item (title, description, artwork). */
+function channelHeadOf(xml: string): string {
+  const channelEnd = xml.search(/<item\b/i);
+  return channelEnd >= 0 ? xml.slice(0, channelEnd) : xml.slice(0, 80_000);
+}
+
+/** The show's description with its HTML kept (formatted for display later). */
+function channelDescription(channelHead: string): string | undefined {
+  const value = rawBetween(channelHead, 'description') || rawBetween(channelHead, 'itunes:summary');
+  return value?.trim() ? value : undefined;
+}
+
+export interface EpisodeDetails {
+  /** The episode's show notes (HTML). */
+  notes?: string;
+  /** The show's description (HTML). */
+  podcastDescription?: string;
+}
+
 /**
- * Show notes for one episode, searched across the whole feed (only the matching item's
- * notes are parsed). Uses the in-memory feed when it has the episode; otherwise fetches
- * the feed, e.g. for an episode newer than the cached copy. Matches by guid, falling back
- * to the audio URL / title in `hints` when the guid is no longer in the feed.
+ * Show notes for one episode plus the show's description, searched across the whole
+ * feed (only the matching item's notes are parsed). Uses the in-memory feed when it has
+ * the episode; otherwise fetches the feed, e.g. for an episode newer than the cached
+ * copy. Matches by guid, falling back to the audio URL / title in `hints` when the guid
+ * is no longer in the feed.
  */
+export async function findEpisodeDetails(
+  feedUrl: string,
+  guid: string,
+  hints?: EpisodeMatchHints,
+): Promise<EpisodeDetails> {
+  const cached = recallXml(feedUrl);
+  const fromCache = cached ? notesForEpisode(cached, guid, hints) : undefined;
+  const xml = fromCache?.trim() ? cached! : await fetchRssXml(feedUrl, { force: cached !== undefined });
+  return {
+    notes: xml === cached ? fromCache : notesForEpisode(xml, guid, hints),
+    podcastDescription: channelDescription(channelHeadOf(xml)),
+  };
+}
+
+/** Show notes only (see findEpisodeDetails). */
 export async function findEpisodeNotes(
   feedUrl: string,
   guid: string,
   hints?: EpisodeMatchHints,
 ): Promise<string | undefined> {
-  const cached = recallXml(feedUrl);
-  const fromCache = cached ? notesForEpisode(cached, guid, hints) : undefined;
-  if (fromCache?.trim()) return fromCache;
-  return notesForEpisode(await fetchRssXml(feedUrl, { force: cached !== undefined }), guid, hints);
+  return (await findEpisodeDetails(feedUrl, guid, hints)).notes;
 }
 
 function extractChannelImage(channelHead: string): string | undefined {
@@ -244,11 +276,10 @@ export function parseRssXml(
   options?: ParseRssOptions,
 ): ParsedFeed {
   // Prefer channel header only — avoid /<channel>…<\/channel>/ over multi‑MB archives.
-  const channelEnd = xml.search(/<item\b/i);
-  const channelHead = channelEnd >= 0 ? xml.slice(0, channelEnd) : xml.slice(0, 80_000);
+  const channelHead = channelHeadOf(xml);
   const title = textBetween(channelHead, 'title');
-  const description =
-    textBetween(channelHead, 'description') || textBetween(channelHead, 'itunes:summary');
+  // HTML kept like episode notes; screens format it, the API strips it.
+  const description = channelDescription(channelHead);
   const imageUrl = extractChannelImage(channelHead) || meta?.artworkUrl;
 
   const episodes: Episode[] = [];

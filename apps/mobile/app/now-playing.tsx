@@ -21,6 +21,7 @@ import { showQueueActions } from '@/src/queue/queueActions';
 import { ReportSkipSheet } from '@/components/ReportSkipSheet';
 import { useUpNextCount } from '@/src/queue/queueStore';
 import { filterSkippableSegments, formatMs, normalizeSegment, segmentTypeLabel } from '@/src/player/skipLogic';
+import { htmlToPlainText } from '@/src/ui/htmlText';
 import { streamCacheNotice } from '@/src/player/streamCache';
 import { Scrubber } from '@/components/Scrubber';
 import { theme } from '@/constants/Colors';
@@ -29,29 +30,6 @@ import { displayFontFamily, monoFontFamily } from '@/constants/Typography';
 const { width: SCREEN_W } = Dimensions.get('window');
 const ART_SIZE = Math.min(SCREEN_W - 56, 340);
 type PlayerTab = 'playing' | 'details';
-
-function formatShowNotes(raw?: string): string {
-  return (raw ?? '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li|h[1-6])>/gi, '\n\n')
-    .replace(/<li[^>]*>/gi, '• ')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&#(\d+);/g, (m, n) => (Number(n) > 0 && Number(n) < 0x110000 ? String.fromCodePoint(Number(n)) : m))
-    .replace(/&#x([0-9a-f]+);/gi, (m, h) => {
-      const c = parseInt(h, 16);
-      return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : m;
-    })
-    // Last, so "&amp;lt;" decodes once to the text "&lt;" (not on to "<").
-    .replace(/&amp;/gi, '&')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
 
 /** Media-style timestamps: m:ss, mm:ss, or h:mm:ss (not bare years / integers). */
 const TIMESTAMP_RE = /(?<!\d)(?:\d{1,2}:\d{2}:\d{2}|\d{1,2}:\d{2})(?!\d)/g;
@@ -200,8 +178,15 @@ export default function PlayerScreen() {
   }, [segs, loadedSkipSettings]);
   const displayPos = scrubPreview != null ? scrubPreview : positionMs;
   const remainingMs = Math.max(0, durationMs - displayPos);
-  const showNotes = useMemo(() => formatShowNotes(episode?.description), [episode?.description]);
+  const showNotes = useMemo(() => htmlToPlainText(episode?.description), [episode?.description]);
   const showNotesParts = useMemo(() => parseShowNotesParts(showNotes), [showNotes]);
+  const aboutShow = useMemo(() => htmlToPlainText(episode?.podcastDescription), [episode?.podcastDescription]);
+  const [aboutExpanded, setAboutExpanded] = useState(false);
+  // ~4 lines of the details text; shorter descriptions show in full with no toggle.
+  const aboutIsLong = aboutShow.length > 240 || aboutShow.split('\n').length > 4;
+  useEffect(() => setAboutExpanded(false), [episode?.guid]);
+  const notesStatus =
+    playback.showNotesStatus?.guid === episode?.guid ? playback.showNotesStatus?.status : null;
 
   const episodeGuid = episode?.guid;
   useEffect(() => {
@@ -711,10 +696,43 @@ export default function PlayerScreen() {
                   ),
                 )}
               </Text>
+            ) : notesStatus === 'loading' ? (
+              <Text style={styles.detailsText}>Loading show notes…</Text>
+            ) : notesStatus === 'failed' ? (
+              <View>
+                <Text style={styles.detailsText}>
+                  Couldn’t load show notes (the podcast’s feed didn’t respond).
+                </Text>
+                <Pressable
+                  onPress={playback.retryShowNotes}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  style={({ pressed }) => [styles.retryNotes, pressed && styles.showLinkPressed]}>
+                  <Text style={styles.timestampLink}>Try again</Text>
+                </Pressable>
+              </View>
             ) : (
               <Text style={styles.detailsText}>
                 No show notes are available for this episode.
               </Text>
+            )}
+            {!!aboutShow && (
+              <>
+                <View style={styles.detailsDivider} />
+                <Text style={styles.detailsHeading}>About the show</Text>
+                <Text style={styles.detailsText} numberOfLines={aboutExpanded || !aboutIsLong ? undefined : 4}>
+                  {aboutShow}
+                </Text>
+                {aboutIsLong && (
+                  <Pressable
+                    onPress={() => setAboutExpanded((v) => !v)}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    style={({ pressed }) => [styles.retryNotes, pressed && styles.showLinkPressed]}>
+                    <Text style={styles.timestampLink}>{aboutExpanded ? 'Less' : 'More'}</Text>
+                  </Pressable>
+                )}
+              </>
             )}
           </View>
         )}
@@ -1025,6 +1043,7 @@ const styles = StyleSheet.create({
     borderTopColor: theme.border,
     marginVertical: 24,
   },
+  retryNotes: { alignSelf: 'flex-start', marginTop: 8 },
   detailsHeading: {
     color: theme.text,
     fontSize: 18,
