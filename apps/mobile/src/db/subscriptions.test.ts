@@ -1,6 +1,12 @@
 /// <reference types="jest" />
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { SUBSCRIPTIONS_BACKUP_KEY, getSubscriptions, subscribe } from './storage';
+import {
+  SUBSCRIPTIONS_BACKUP_KEY,
+  getEpisodeListPrefs,
+  getSubscriptions,
+  setEpisodeListPrefs,
+  subscribe,
+} from './storage';
 
 const KEY = '@podcast-adskip/subscriptions';
 const sub = (collectionId: number) => ({
@@ -30,4 +36,12 @@ test('drops malformed entries but keeps valid ones', async () => {
   await AsyncStorage.setItem(KEY, JSON.stringify([sub(1), null, { foo: 1 }, sub(3)]));
   expect((await getSubscriptions()).map((s) => s.collectionId)).toEqual([1, 3]);
   expect(await AsyncStorage.getItem(SUBSCRIPTIONS_BACKUP_KEY)).toBeNull();
+});
+
+test('episode list toggles are remembered per show', async () => {
+  expect(await getEpisodeListPrefs({ collectionId: 1 })).toEqual({ hidePlayed: false, oldestFirst: false });
+  await setEpisodeListPrefs({ collectionId: 1 }, { oldestFirst: true });
+  await setEpisodeListPrefs({ collectionId: 1 }, { hidePlayed: true });
+  expect(await getEpisodeListPrefs({ collectionId: 1 })).toEqual({ hidePlayed: true, oldestFirst: true });
+  expect(await getEpisodeListPrefs({ collectionId: 2 })).toEqual({ hidePlayed: false, oldestFirst: false });
 });

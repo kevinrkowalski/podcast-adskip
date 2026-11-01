@@ -115,6 +115,9 @@ class PodcastAutoModule : Module() {
     Function("pause") {
       if (hasCurrentEpisode()) startService(startCommand(PodcastAutoPlaybackService.ACTION_PAUSE))
     }
+    Function("stop") {
+      if (hasCurrentEpisode()) startService(startCommand(PodcastAutoPlaybackService.ACTION_STOP))
+    }
     Function("seekTo") { positionMs: Double ->
       if (hasCurrentEpisode()) {
         startCommand(PodcastAutoPlaybackService.ACTION_SEEK).apply {

@@ -22,7 +22,10 @@ import {
   getSubscriptions,
   isPodcastAdDetectionEnabled,
   getPodcastSkipSettings,
+  getEpisodeListPrefs,
   isMeaningfulPosition,
+  setEpisodeListPrefs,
+  type EpisodeListPrefs,
   subscribe,
   unsubscribe,
   type PlaybackPosition,
@@ -37,6 +40,7 @@ import { isPlayed, usePlayedVersion } from '@/src/played/playedStore';
 import { ShowSettingsCard } from '@/components/ShowSettingsCard';
 import type { Episode, PodcastSearchResult } from '@/src/types';
 import { theme } from '@/constants/Colors';
+import { listEpisodes } from '@/src/ui/episodeList';
 import { htmlToPlainText } from '@/src/ui/htmlText';
 import { displayFontFamily } from '@/constants/Typography';
 
@@ -89,6 +93,7 @@ export default function PodcastDetailScreen() {
   const [aboutExpanded, setAboutExpanded] = useState(false);
   const [positions, setPositions] = useState<Record<string, PlaybackPosition>>({});
   const [rssHasMore, setRssHasMore] = useState(false);
+  const [listPrefs, setListPrefs] = useState<EpisodeListPrefs>({ hidePlayed: false, oldestFirst: false });
   // Each load gets its own generation; anything from an older load (or after
   // unmount) is stale and must not write state.
   const loadGen = useRef(0);
@@ -145,6 +150,7 @@ export default function PodcastDetailScreen() {
     setAbout(null);
     setAboutExpanded(false);
     setAutoQueue(false);
+    setListPrefs({ hidePlayed: false, oldestFirst: false });
     setRssHasMore(false);
     setPositions({});
     rssMaxItems.current = RSS_INITIAL_ITEMS;
@@ -231,6 +237,9 @@ export default function PodcastDetailScreen() {
       const aq = await isAutoQueueEnabled(meta);
       if (isStale()) return;
       setAutoQueue(aq);
+      const prefs = await getEpisodeListPrefs(meta);
+      if (isStale()) return;
+      setListPrefs(prefs);
 
       if (itunesEps.length) {
         applyEpisodes(mergeEpisodes(itunesEps, []));
@@ -370,14 +379,45 @@ export default function PodcastDetailScreen() {
     }
   };
 
+  const playedVersion = usePlayedVersion();
+  // What the list shows: played episodes left out when asked, oldest first when asked
+  // (`episodes` itself is always newest first).
+  const listedEpisodes = useMemo(
+    () => listEpisodes(episodes, listPrefs, isPlayed),
+    // playedVersion: re-filter when episodes are marked played/unplayed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [episodes, listPrefs, playedVersion],
+  );
+
+  // Oldest first needs the whole archive (the page reads the newest items first): parse
+  // the rest of the already-downloaded feed once it's in memory.
+  useEffect(() => {
+    if (!listPrefs.oldestFirst || !rssHasMore) return;
+    const meta = feedMeta.current;
+    if (!meta?.feedUrl || !getCachedRssXml(meta.feedUrl)) return;
+    const parsed = parseMoreFromCachedXml(meta.feedUrl, meta);
+    if (!parsed) return;
+    rssMaxItems.current = parsed.episodes.length;
+    setRssHasMore(false);
+    applyEpisodes(mergeEpisodes(parsed.episodes, episodesRef.current));
+    setSourceHint(`${parsed.episodes.length} episodes from RSS`);
+  }, [listPrefs.oldestFirst, rssHasMore, applyEpisodes]);
+
+  const onListPrefChange = (patch: Partial<EpisodeListPrefs>) => {
+    setListPrefs((cur) => ({ ...cur, ...patch }));
+    setVisibleCount(EPISODES_PAGE_SIZE);
+    const meta = feedMeta.current;
+    if (meta) void setEpisodeListPrefs(meta, patch);
+  };
+
   const loadMore = useCallback(async () => {
     if (expandingLock.current || unmounted.current) return;
     const gen = loadGen.current;
     const isStale = () => gen !== loadGen.current || unmounted.current;
 
     // First page more from what we already have in memory.
-    if (visibleCount < episodes.length) {
-      setVisibleCount((count) => Math.min(count + EPISODES_PAGE_SIZE, episodes.length));
+    if (visibleCount < listedEpisodes.length) {
+      setVisibleCount((count) => Math.min(count + EPISODES_PAGE_SIZE, listedEpisodes.length));
       return;
     }
 
@@ -403,9 +443,8 @@ export default function PodcastDetailScreen() {
       expandingLock.current = false;
       if (!isStale()) setExpanding(false);
     }
-  }, [episodes.length, applyEpisodes, rssHasMore, visibleCount]);
+  }, [listedEpisodes.length, applyEpisodes, rssHasMore, visibleCount]);
 
-  usePlayedVersion();
   // Progress bars: re-read saved positions when coming back from the player.
   useFocusEffect(
     useCallback(() => {
@@ -417,10 +456,10 @@ export default function PodcastDetailScreen() {
     void refreshPositions(episodesRef.current);
   };
 
-  const displayedEpisodes = episodes.slice(0, visibleCount);
+  const displayedEpisodes = listedEpisodes.slice(0, visibleCount);
   const queuedGuids = new Set(queue.map((e) => e.guid));
   const hasMoreEpisodes =
-    displayedEpisodes.length < episodes.length || (rssHasMore && !!getCachedRssXml(feedMeta.current?.feedUrl ?? ''));
+    displayedEpisodes.length < listedEpisodes.length || (rssHasMore && !!getCachedRssXml(feedMeta.current?.feedUrl ?? ''));
 
   const aboutText = useMemo(() => htmlToPlainText(about ?? undefined), [about]);
   // ~3 lines; shorter descriptions show in full with no toggle.
@@ -496,13 +535,29 @@ export default function PodcastDetailScreen() {
               <View style={styles.epHeadingRow}>
                 <Text style={styles.epHeading}>Episodes</Text>
               </View>
+              <View style={styles.listToggles}>
+                <ListToggle
+                  label="Hide played"
+                  on={listPrefs.hidePlayed}
+                  onPress={() => onListPrefChange({ hidePlayed: !listPrefs.hidePlayed })}
+                />
+                <ListToggle
+                  label="Oldest first"
+                  on={listPrefs.oldestFirst}
+                  onPress={() => onListPrefChange({ oldestFirst: !listPrefs.oldestFirst })}
+                />
+              </View>
               {!!sourceHint && <Text style={styles.sourceHint}>{sourceHint}</Text>}
             </View>
           ) : null
         }
         ListEmptyComponent={
           !loading && !error && show ? (
-            <Text style={styles.empty}>No episodes found yet.</Text>
+            <Text style={styles.empty}>
+              {listPrefs.hidePlayed && episodes.length
+                ? 'Every episode loaded so far is played. Turn off “Hide played” to see them.'
+                : 'No episodes found yet.'}
+            </Text>
           ) : null
         }
         ListFooterComponent={
@@ -581,7 +636,32 @@ export default function PodcastDetailScreen() {
   );
 }
 
+/** A pill toggle for the episode list (Hide played / Oldest first). */
+function ListToggle({ label, on, onPress }: { label: string; on: boolean; onPress: () => void }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={6}
+      accessibilityRole="switch"
+      accessibilityState={{ checked: on }}
+      style={({ pressed }) => [styles.toggle, on && styles.toggleOn, pressed && { opacity: 0.7 }]}>
+      <Text style={[styles.toggleText, on && styles.toggleTextOn]}>{label}</Text>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
+  listToggles: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  toggle: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  toggleOn: { backgroundColor: theme.accent, borderColor: theme.accent },
+  toggleText: { color: theme.textSecondary, fontSize: 13, fontWeight: '600' },
+  toggleTextOn: { color: theme.text },
   container: {
     flex: 1,
     backgroundColor: theme.background,
