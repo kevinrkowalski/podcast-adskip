@@ -19,6 +19,33 @@ import {
 } from '@/src/db/storage';
 import { resolveAudioUrl } from '@/src/api/backend';
 
+/** Fallback wait when a 429 has no usable Retry-After header. */
+const DEFAULT_RATE_LIMIT_WAIT_MS = 10 * 60_000;
+
+/** The API refused to start another analysis right now (HTTP 429); try again later. */
+export class RateLimitedError extends Error {
+  constructor(message: string, readonly retryAfterMs: number) {
+    super(message);
+    this.name = 'RateLimitedError';
+  }
+}
+
+/** Retry-After as milliseconds (seconds or an HTTP date); a default when missing/invalid. */
+export function parseRetryAfterMs(header: string | null | undefined, now = Date.now()): number {
+  const raw = header?.trim();
+  if (raw) {
+    if (/^\d+$/.test(raw)) return Number(raw) * 1000;
+    const at = Date.parse(raw);
+    if (Number.isFinite(at)) return Math.max(0, at - now);
+  }
+  return DEFAULT_RATE_LIMIT_WAIT_MS;
+}
+
+function uploadError(status: number, detail: string, retryAfter: string | null): Error {
+  const message = `Upload failed: ${status}${detail ? ` — ${detail}` : ''}`;
+  return status === 429 ? new RateLimitedError(message, parseRetryAfterMs(retryAfter)) : new Error(message);
+}
+
 export function isRedirectError(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
   return /follow-up requests|too many redirects|redirect/i.test(msg);
@@ -26,6 +53,11 @@ export function isRedirectError(error: unknown): boolean {
 
 const AUDIO_CACHE_DIR = `${FileSystem.cacheDirectory}podcast-audio/`;
 const AUDIO_CACHE_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+/**
+ * Background downloads (queue analysis / prefetch) stop once the cache holds this much,
+ * so a long Up Next queue can't fill the phone. Playing an episode still downloads it.
+ */
+export const AUDIO_CACHE_BUDGET_BYTES = 3 * 1024 * 1024 * 1024;
 /** Leftover partial downloads (.part / .stream.part) are removed after this long. */
 const PARTIAL_DOWNLOAD_RETENTION_MS = 6 * 60 * 60 * 1000;
 
@@ -475,8 +507,8 @@ export async function uploadAudioForAnalysis(
             resolve({ status: 'queued' });
           }
         } else {
-          const detail = xhr.responseText?.trim().slice(0, 300);
-          reject(new Error(`Upload failed: ${xhr.status}${detail ? ` — ${detail}` : ''}`));
+          const detail = xhr.responseText?.trim().slice(0, 300) ?? '';
+          reject(uploadError(xhr.status, detail, xhr.getResponseHeader('Retry-After')));
         }
       });
 
@@ -519,7 +551,7 @@ export async function uploadAudioForAnalysis(
 
   if (!response.ok) {
     const detail = (await response.text()).trim().slice(0, 300);
-    throw new Error(`Upload failed: ${response.status}${detail ? ` — ${detail}` : ''}`);
+    throw uploadError(response.status, detail, response.headers.get('Retry-After'));
   }
 
   return response.json();
@@ -624,6 +656,41 @@ export async function deleteCachedEpisodeAudio(
     await removeCachedSkipMap(map.episodeGuid, map.audioUrl);
   }
   await removeCachedSkipMap(episodeGuid, audioUrl);
+}
+
+/**
+ * Delete downloads of played episodes (and their local skip maps), except `keepGuids`
+ * (e.g. the episode still loaded in the player). Replaying one downloads it again; the
+ * server recognizes the same bytes and returns its stored analysis.
+ */
+export async function deletePlayedEpisodeAudio(
+  isPlayed: (guid: string) => boolean,
+  keepGuids: Iterable<string | null | undefined> = [],
+): Promise<number> {
+  const keep = new Set([...keepGuids].filter((g): g is string => !!g));
+  let removed = 0;
+  try {
+    for (const entry of await getAllAudioCacheMetadata()) {
+      if (keep.has(entry.episodeGuid) || !isPlayed(entry.episodeGuid)) continue;
+      if (isAudioDownloadInFlight(entry.episodeGuid, entry.audioUrl)) continue;
+      await deleteCachedEpisodeAudio(entry.episodeGuid, entry.audioUrl);
+      removed += 1;
+    }
+  } catch (error) {
+    console.warn('[audio-cache] Played-episode cleanup failed:', error);
+  }
+  return removed;
+}
+
+/** True when background downloads should wait (cache at or over its budget). */
+export async function isAudioCacheOverBudget(
+  budgetBytes = AUDIO_CACHE_BUDGET_BYTES,
+): Promise<boolean> {
+  try {
+    return (await getAudioCacheSize()) >= budgetBytes;
+  } catch {
+    return false;
+  }
 }
 
 /**

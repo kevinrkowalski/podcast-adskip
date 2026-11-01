@@ -3,6 +3,7 @@ import {
   RETRY_DELAY_MS,
   SERVER_POLL_MS,
   STARTUP_DELAY_MS,
+  CACHE_FULL_RECHECK_MS,
   __resetForTesting,
   startQueueAnalyzer,
   triggerQueueAnalysis,
@@ -21,6 +22,7 @@ jest.mock('@/src/db/storage', () => ({
 jest.mock('@/src/api/audioUpload', () => ({
   getCachedAudioPath: jest.fn(),
   getCachedAudioMd5: jest.fn(),
+  isAudioCacheOverBudget: jest.fn(),
 }));
 jest.mock('@/src/api/backend', () => ({
   getSkipMap: jest.fn(),
@@ -66,6 +68,7 @@ describe('queueAnalyzer', () => {
     storage.getCachedSkipMap.mockResolvedValue(null);
     audio.getCachedAudioPath.mockResolvedValue(null);
     audio.getCachedAudioMd5.mockResolvedValue(null);
+    audio.isAudioCacheOverBudget.mockResolvedValue(false);
     backend.getSkipMap.mockResolvedValue({ status: 'missing', episode_guid: 'x', segments: [] });
   });
 
@@ -251,6 +254,52 @@ describe('queueAnalyzer', () => {
 
     backend.getSkipMap.mockResolvedValue({ status: 'missing', episode_guid: 'x', segments: [] });
     await advance(RETRY_DELAY_MS);
+    expect(analyze).toHaveBeenCalledWith(queue[0]);
+  });
+
+  it('pauses for the rate limit without counting it as a failure', async () => {
+    queue = [ep('a'), ep('b')];
+    analyze.mockResolvedValueOnce({ status: 'rate_limited', retry_after_ms: 20 * 60_000 });
+    start();
+    await advance(STARTUP_DELAY_MS);
+    expect(analyze).toHaveBeenCalledTimes(1);
+
+    // Triggers and retries don't hammer the API during the pause.
+    triggerQueueAnalysis();
+    await advance(19 * 60_000);
+    expect(analyze).toHaveBeenCalledTimes(1);
+
+    await advance(60_000);
+    expect(analyze).toHaveBeenCalledTimes(2);
+    expect(analyze).toHaveBeenLastCalledWith(queue[0]); // same episode, not skipped
+  });
+
+  it(`a rate limit never uses up an episode's ${MAX_RETRIES} retries`, async () => {
+    queue = [ep('a')];
+    for (let i = 0; i < MAX_RETRIES + 1; i += 1) {
+      analyze.mockResolvedValueOnce({ status: 'rate_limited', retry_after_ms: 60_000 });
+    }
+    start();
+    await advance(STARTUP_DELAY_MS);
+    await advance((MAX_RETRIES + 2) * 61_000);
+    expect(analyze).toHaveBeenCalledTimes(MAX_RETRIES + 2);
+    expect(analyze).toHaveBeenLastCalledWith(queue[0]);
+  });
+
+  it('stops downloading ahead while the audio cache is full, but uploads downloaded ones', async () => {
+    queue = [ep('a'), ep('local'), ep('c')];
+    audio.isAudioCacheOverBudget.mockResolvedValue(true);
+    audio.getCachedAudioPath.mockImplementation(async (g: string) => (g === 'local' ? '/cache/local.mp3' : null));
+    start();
+    await advance(STARTUP_DELAY_MS);
+    expect(analyze).toHaveBeenCalledTimes(1);
+    expect(analyze).toHaveBeenCalledWith(queue[1]);
+
+    await advance(5_000);
+    expect(analyze).toHaveBeenCalledTimes(1); // a and c would need downloads
+
+    audio.isAudioCacheOverBudget.mockResolvedValue(false); // played downloads were deleted
+    await advance(CACHE_FULL_RECHECK_MS);
     expect(analyze).toHaveBeenCalledWith(queue[0]);
   });
 
