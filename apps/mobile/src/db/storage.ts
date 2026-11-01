@@ -696,16 +696,14 @@ export async function getPlaybackPositions(
   return out;
 }
 
-/** Clear episode, skip-map, audio metadata, and saved-position caches. */
+/**
+ * Clear cached episode lists and skip maps. Saved play positions are kept (tiny, and
+ * losing them loses your place everywhere); downloaded-audio records are cleared with
+ * the files by clearAudioCache, which keeps the ones still in use.
+ */
 export async function clearCaches(): Promise<number> {
   const keys = await AsyncStorage.getAllKeys();
-  const toRemove = keys.filter(
-    (k) =>
-      k.startsWith(KEYS.episodes) ||
-      k.startsWith(KEYS.skipMaps) ||
-      k.startsWith(KEYS.audioCache) ||
-      k.startsWith(KEYS.positions),
-  );
+  const toRemove = keys.filter((k) => k.startsWith(KEYS.episodes) || k.startsWith(KEYS.skipMaps));
   if (toRemove.length) await AsyncStorage.multiRemove(toRemove);
   return toRemove.length;
 }

@@ -4,6 +4,29 @@ import { DEFAULT_API_URL, getApiUrl, getAppKey } from '@/src/db/storage';
 import { fetchWithTimeout } from './http';
 
 /**
+ * True for a plain-http API URL whose host is not on the home network, this device, or a
+ * private VPN: the X-App-Key would cross the internet unencrypted.
+ */
+export function isInsecureRemoteApiUrl(url: string): boolean {
+  const m = url.trim().match(/^http:\/\/(\[[^\]]+\]|[^/:?#]+)/i);
+  if (!m) return false;
+  const host = m[1].toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.ts.net')) return false;
+  if (host === '::1' || /^f[cd][0-9a-f]{2}:/.test(host) || host.startsWith('fe80:')) return false;
+  const ip = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!ip) return true;
+  const [a, b] = [Number(ip[1]), Number(ip[2])];
+  return !(
+    a === 10 ||
+    a === 127 ||
+    (a === 192 && b === 168) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 169 && b === 254) ||
+    (a === 100 && b >= 64 && b <= 127) // carrier-grade NAT range used by Tailscale
+  );
+}
+
+/**
  * Backend base URL.
  * Priority: in-memory override (Settings) → AsyncStorage → EXPO_PUBLIC_API_URL /
  * DEFAULT_API_URL (192.168.0.124:8000) → Expo hostUri:8000 → 10.0.2.2:8000.

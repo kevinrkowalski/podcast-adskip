@@ -251,7 +251,11 @@ class StreamCacheSession(
           } catch (e: IOException) {
             // Includes read timeouts (SocketTimeoutException is an InterruptedIOException).
             if (state != State.DOWNLOADING) break
-            if (e is HttpDataSource.InvalidResponseCodeException && e.responseCode < 500) {
+            // Other 4xx answers won't change on retry; 408 (timeout) and 429 (rate limited)
+            // are temporary, so they get the normal backoff like a 5xx.
+            if (e is HttpDataSource.InvalidResponseCodeException &&
+              e.responseCode < 500 && e.responseCode != 408 && e.responseCode != 429
+            ) {
               return fail("HTTP ${e.responseCode}")
             }
             if (bytesWritten == 0L && isRedirectFailure(e)) {
