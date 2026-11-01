@@ -22,6 +22,7 @@ import { ReportSkipSheet } from '@/components/ReportSkipSheet';
 import { useUpNextCount } from '@/src/queue/queueStore';
 import { filterSkippableSegments, formatMs, normalizeSegment, segmentTypeLabel } from '@/src/player/skipLogic';
 import { htmlToPlainText } from '@/src/ui/htmlText';
+import { currentChapterIndex, useChapters } from '@/src/player/chapters';
 import { streamCacheNotice } from '@/src/player/streamCache';
 import { Scrubber } from '@/components/Scrubber';
 import { theme } from '@/constants/Colors';
@@ -178,6 +179,8 @@ export default function PlayerScreen() {
   }, [segs, loadedSkipSettings]);
   const displayPos = scrubPreview != null ? scrubPreview : positionMs;
   const remainingMs = Math.max(0, durationMs - displayPos);
+  const { chapters } = useChapters(episode ?? null);
+  const chapterIdx = currentChapterIndex(chapters, displayPos);
   const showNotes = useMemo(() => htmlToPlainText(episode?.description), [episode?.description]);
   const showNotesParts = useMemo(() => parseShowNotesParts(showNotes), [showNotes]);
   const aboutShow = useMemo(() => htmlToPlainText(episode?.podcastDescription), [episode?.podcastDescription]);
@@ -331,7 +334,11 @@ export default function PlayerScreen() {
     showQueueActions(episode, {
       isCurrent: !opened,
       onOpenQueue: () => router.push('/queue' as Href),
-      onSetPlayed: (ep, v) => void playback.setEpisodePlayed(ep, v),
+      onSetPlayed: (ep, v) => {
+        void playback.setEpisodePlayed(ep, v);
+        // Marking the playing episode played unloads it: leave the (now empty) player.
+        if (v && !opened) minimize();
+      },
       onReportSkip: opened ? undefined : () => setReportVisible(true),
     });
   };
@@ -400,10 +407,22 @@ export default function PlayerScreen() {
               accessibilityRole="link"
               accessibilityLabel={`Open ${episode.podcastTitle ?? 'show'} episodes`}
               style={({ pressed }) => [styles.showLink, pressed && styles.showLinkPressed]}>
-              <Text style={[styles.show, styles.showLinkText]} numberOfLines={1}>
+              <Text style={[styles.show, styles.showLinkText, chapterIdx >= 0 && styles.showWithChapter]} numberOfLines={1}>
                 {episode.podcastTitle ?? 'Podcast'}
               </Text>
             </Pressable>
+            {chapterIdx >= 0 && (
+              <Pressable
+                onPress={() => setActiveTab('details')}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={`Chapter ${chapterIdx + 1} of ${chapters.length}: ${chapters[chapterIdx].title}. Show chapters`}
+                style={styles.chapterLine}>
+                <Text style={styles.chapterLineText} numberOfLines={1}>
+                  Chapter {chapterIdx + 1} of {chapters.length} · {chapters[chapterIdx].title}
+                </Text>
+              </Pressable>
+            )}
 
             <View style={styles.scrubBlock}>
               <Scrubber
@@ -678,6 +697,32 @@ export default function PlayerScreen() {
               <Text style={[styles.detailsShow, styles.showLinkText]}>{episode.podcastTitle ?? 'Podcast'}</Text>
             </Pressable>
             <View style={styles.detailsDivider} />
+            {chapters.length > 0 && (
+              <>
+                <Text style={styles.detailsHeading}>Chapters</Text>
+                {chapters.map((chapter, idx) => (
+                  <Pressable
+                    key={`${chapter.startMs}-${idx}`}
+                    onPress={() => seekToTimestamp(chapter.startMs)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Play chapter ${idx + 1}: ${chapter.title}, at ${formatMs(chapter.startMs)}`}
+                    accessibilityState={{ selected: idx === chapterIdx }}
+                    style={({ pressed }) => [
+                      styles.chapterRow,
+                      idx === chapterIdx && styles.chapterRowCurrent,
+                      pressed && styles.showLinkPressed,
+                    ]}>
+                    <Text style={styles.chapterTime}>{formatMs(chapter.startMs)}</Text>
+                    <Text
+                      style={[styles.chapterTitle, idx === chapterIdx && styles.chapterTitleCurrent]}
+                      numberOfLines={2}>
+                      {chapter.title}
+                    </Text>
+                  </Pressable>
+                ))}
+                <View style={styles.detailsDivider} />
+              </>
+            )}
             <Text style={styles.detailsHeading}>Show notes</Text>
             {showNotes ? (
               <Text style={styles.detailsText}>
@@ -1050,6 +1095,27 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginBottom: 10,
   },
+  showWithChapter: { marginBottom: 6 },
+  chapterLine: { alignSelf: 'center', maxWidth: '90%', marginBottom: 26 },
+  chapterLineText: { color: theme.textSecondary, fontSize: 13, textAlign: 'center' },
+  chapterRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+  },
+  chapterRowCurrent: { backgroundColor: theme.border },
+  chapterTime: {
+    color: theme.accentSoft,
+    fontSize: 14,
+    fontVariant: ['tabular-nums'],
+    minWidth: 56,
+    paddingTop: 1,
+  },
+  chapterTitle: { flex: 1, color: theme.textSecondary, fontSize: 15, lineHeight: 21 },
+  chapterTitleCurrent: { color: theme.text, fontWeight: '600' },
   detailsText: {
     color: theme.textSecondary,
     fontSize: 16,

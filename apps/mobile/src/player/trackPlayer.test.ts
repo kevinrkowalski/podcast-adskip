@@ -99,6 +99,36 @@ describe('show notes', () => {
   });
 });
 
+describe('stopAndUnload', () => {
+  it('unloads the episode and ignores late reports for it until the next load', async () => {
+    mockNative.available = true;
+    const a = episode('A', { enclosureUrl: 'https://cdn/a.mp3' });
+    await player.loadAndPlay(a);
+    mockNative.listener?.(nativeStatus(a, 5_000));
+    expect(player.getStatus().episode?.guid).toBe('A');
+
+    const androidAuto = jest.requireMock('./androidAuto');
+    await player.stopAndUnload();
+    expect(androidAuto.controlAndroidAutoPlayer).toHaveBeenCalledWith('stop');
+    expect(player.getStatus()).toMatchObject({ episode: null, isPlaying: false, positionMs: 0 });
+
+    // The service's heartbeat from before it processed the stop must not bring A back.
+    mockNative.listener?.(nativeStatus(a, 6_000));
+    expect(player.getStatus().episode).toBeNull();
+
+    const b = episode('B', { enclosureUrl: 'https://cdn/b.mp3' });
+    await player.loadAndPlay(b);
+    mockNative.listener?.(nativeStatus(b, 1_000));
+    expect(player.getStatus().episode?.guid).toBe('B');
+  });
+
+  it('unloads with the stub backend too', async () => {
+    await player.loadAndPlay(episode('S'));
+    await player.stopAndUnload();
+    expect(player.getStatus().episode).toBeNull();
+  });
+});
+
 describe('setSkipSegments', () => {
   it('ignores segments meant for an episode that is not loaded', async () => {
     mockNative.available = true;

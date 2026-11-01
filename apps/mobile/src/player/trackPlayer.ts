@@ -208,6 +208,12 @@ function applyStreamCacheStatus(
   });
 }
 let pendingLoadAt = 0;
+/**
+ * The episode the app just stopped and unloaded. Status reports the service sent (or
+ * saved) before it processed the stop still name it; they're ignored so the episode
+ * doesn't reappear. Cleared by the next load.
+ */
+let stoppedGuid: string | null = null;
 let audioModeReady = false;
 let player: ExpoAudioPlayer | null = null;
 let statusSub: { remove: () => void } | null = null;
@@ -235,6 +241,7 @@ function applyAndroidAutoStatus(nativeStatus: AndroidAutoStatus, fallbackEpisode
       return false;
     }
   }
+  if (stoppedGuid && nativeEpisode?.guid === stoppedGuid) return false;
   lastNativeStatusAt = Date.now();
   if (nativeEpisode) {
     // Started natively (Android Auto pick, restore): the catalog says whether it's local.
@@ -597,6 +604,7 @@ export async function loadAndPlay(
   endedReportedFor = null;
   suppressedSegment = null;
   pendingLoadGuid = null;
+  stoppedGuid = null;
   const startMs =
     opts?.startPositionMs != null && opts.startPositionMs > 0
       ? Math.floor(opts.startPositionMs)
@@ -823,6 +831,38 @@ export function setPlaybackRate(rate: number): void {
   status.playbackRate = rate;
   if (backend === 'android-auto') controlAndroidAutoPlayer('rate', playbackRate);
   applyPlaybackRate();
+  emit();
+}
+
+/**
+ * Stop and unload the current episode (e.g. it was marked played): nothing is loaded
+ * afterwards, the media notification goes away, and it isn't restored as the current
+ * episode on the next app start.
+ */
+export async function stopAndUnload(): Promise<void> {
+  stoppedGuid = status.episode?.guid ?? null;
+  clearPendingSeek();
+  pendingLoadGuid = null;
+  endedReportedFor = null;
+  suppressedSegment = null;
+  segments = [];
+  if (backend === 'android-auto') {
+    // Keep listening: later reports (episode-less) still flow, stale ones are ignored.
+    controlAndroidAutoPlayer('stop');
+  } else {
+    stopTick();
+    releasePlayer();
+  }
+  loadedLocalFilePath = null;
+  streamCacheTarget = null;
+  status = {
+    ...status,
+    isPlaying: false,
+    isBuffering: false,
+    positionMs: 0,
+    durationMs: 0,
+    episode: null,
+  };
   emit();
 }
 

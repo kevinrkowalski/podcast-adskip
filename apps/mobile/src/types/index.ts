@@ -93,6 +93,15 @@ export interface Subscription {
   subscribedAt: string;
 }
 
+/** A chapter marker from the episode's feed. */
+export interface Chapter {
+  startMs: number;
+  title: string;
+  /** Link the publisher attached to the chapter. */
+  url?: string;
+  imageUrl?: string;
+}
+
 export interface Episode {
   guid: string;
   title: string;

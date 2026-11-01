@@ -29,6 +29,7 @@ const KEYS = {
   adDetectionDisabled: '@podcast-adskip/adDetectionDisabled',
   /** Per-show skip settings (master + 3 kind toggles). */
   podcastSkipSettings: '@podcast-adskip/podcastSkipSettings',
+  episodeListPrefs: '@podcast-adskip/episodeListPrefs',
   apiUrl: '@podcast-adskip/apiUrl',
   appKey: '@podcast-adskip/appKey',
 } as const;
@@ -72,6 +73,25 @@ export async function getSubscriptions(): Promise<Subscription[]> {
     }
     return [];
   }
+}
+
+/**
+ * An episode's feed URL; entries saved without one (older queue items) find it through
+ * the subscription they came from (by show id, then title).
+ */
+export async function resolveFeedUrl(ep: {
+  feedUrl?: string;
+  collectionId?: number;
+  podcastTitle?: string;
+}): Promise<string | undefined> {
+  const direct = ep.feedUrl?.trim();
+  if (direct) return direct;
+  const subs = await getSubscriptions();
+  return subs.find(
+    (s) =>
+      (ep.collectionId != null && s.collectionId === ep.collectionId) ||
+      (!!ep.podcastTitle && s.collectionName === ep.podcastTitle),
+  )?.feedUrl;
 }
 
 export async function saveSubscriptions(subs: Subscription[]): Promise<void> {
@@ -537,6 +557,59 @@ export async function setPodcastSkipSettings(
     await AsyncStorage.setItem(KEYS.podcastSkipSettings, JSON.stringify(all));
   } catch (error) {
     console.warn('[storage] Failed to save podcast skip settings:', error);
+  }
+}
+
+/** How a show's episode list is shown (show page toggles). */
+export type EpisodeListPrefs = {
+  /** Leave played episodes out of the list. */
+  hidePlayed: boolean;
+  /** Oldest episode first (for shows you listen to in order). */
+  oldestFirst: boolean;
+};
+
+const DEFAULT_EPISODE_LIST_PREFS: EpisodeListPrefs = { hidePlayed: false, oldestFirst: false };
+
+async function readEpisodeListPrefs(): Promise<Record<string, Partial<EpisodeListPrefs>>> {
+  const raw = await AsyncStorage.getItem(KEYS.episodeListPrefs);
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, Partial<EpisodeListPrefs>>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/** A show's episode-list toggles (both off by default). */
+export async function getEpisodeListPrefs(target: AdDetectionTarget): Promise<EpisodeListPrefs> {
+  const key = skipSettingsKey(target);
+  if (!key) return { ...DEFAULT_EPISODE_LIST_PREFS };
+  try {
+    const stored = (await readEpisodeListPrefs())[key] ?? {};
+    return {
+      hidePlayed: stored.hidePlayed === true,
+      oldestFirst: stored.oldestFirst === true,
+    };
+  } catch {
+    return { ...DEFAULT_EPISODE_LIST_PREFS };
+  }
+}
+
+export async function setEpisodeListPrefs(
+  target: AdDetectionTarget,
+  patch: Partial<EpisodeListPrefs>,
+): Promise<void> {
+  const key = skipSettingsKey(target);
+  if (!key) return;
+  try {
+    const all = await readEpisodeListPrefs();
+    all[key] = { ...DEFAULT_EPISODE_LIST_PREFS, ...all[key], ...patch };
+    await AsyncStorage.setItem(KEYS.episodeListPrefs, JSON.stringify(all));
+  } catch (error) {
+    console.warn('[storage] Failed to save episode list preferences:', error);
   }
 }
 

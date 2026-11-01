@@ -251,6 +251,25 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
         preferences.edit().putFloat(KEY_PLAYBACK_RATE, rate).apply()
         publishStatus()
       }
+      ACTION_STOP -> {
+        // The app finished with this episode (e.g. marked it played): stop, drop it from
+        // the player (which removes the media notification) and forget it, so it isn't
+        // restored as the current episode the next time the app starts.
+        log("command: stop (from app)")
+        dropStreamSession()
+        activeEpisodeJson = null
+        player?.let { p ->
+          p.stop()
+          p.clearMediaItems()
+        }
+        preferences.edit()
+          .remove(KEY_CURRENT_EPISODE)
+          .putLong(KEY_POSITION_MS, 0L)
+          .putLong(KEY_DURATION_MS, 0L)
+          .putBoolean(KEY_IS_PLAYING, false)
+          .apply()
+        publishStatus()
+      }
     }
     return super.onStartCommand(intent, flags, startId)
   }
@@ -869,6 +888,7 @@ class PodcastAutoPlaybackService : MediaLibraryService() {
     const val ACTION_PAUSE = "expo.modules.podcastauto.PAUSE"
     const val ACTION_SEEK = "expo.modules.podcastauto.SEEK"
     const val ACTION_RATE = "expo.modules.podcastauto.RATE"
+    const val ACTION_STOP = "expo.modules.podcastauto.STOP"
 
     const val EXTRA_EPISODE_JSON = "episodeJson"
     const val EXTRA_POSITION_MS = "positionMs"

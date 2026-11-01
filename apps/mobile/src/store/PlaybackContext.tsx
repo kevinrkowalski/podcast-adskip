@@ -24,7 +24,7 @@ import {
   isPodcastAdDetectionEnabled,
   setPodcastAdDetectionEnabled,
   getPodcastSkipSettings,
-  getSubscriptions,
+  resolveFeedUrl,
   setPodcastSkipSettings,
   type AdDetectionTarget,
   type PodcastSkipSettings,
@@ -52,6 +52,7 @@ import {
   hydrateQueue,
   markPlaying,
   popNext,
+  setCurrentQueueGuid,
 } from '@/src/queue/queueStore';
 import { startAutoQueueRefresh } from '@/src/queue/autoQueueRefresh';
 import { syncBackgroundRefreshRegistration } from '@/src/queue/backgroundRefresh';
@@ -741,15 +742,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     void (async () => {
       // Entries saved without a feed link (older queue items) can still be found
       // through the subscription they came from.
-      let feedUrl: string | undefined = target.feedUrl?.trim();
-      if (!feedUrl) {
-        const subs = await getSubscriptions();
-        feedUrl = subs.find(
-          (s) =>
-            (target.collectionId != null && s.collectionId === target.collectionId) ||
-            (!!target.podcastTitle && s.collectionName === target.podcastTitle),
-        )?.feedUrl;
-      }
+      const feedUrl = await resolveFeedUrl(target);
       if (!feedUrl) throw new NoFeedError();
       return findEpisodeDetails(feedUrl, target.guid, {
         enclosureUrl: target.enclosureUrl,
@@ -1476,19 +1469,52 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     });
   }, [playEpisode, updateOpened]);
 
+  /**
+   * Done with the loaded episode (the user marked it played): stop and unload it, so the
+   * mini player, media notification and next app start no longer show it. Up Next is
+   * not started; the queue simply drops the played episode.
+   */
+  const unloadCurrentEpisode = useCallback(async () => {
+    playGenRef.current += 1; // a start still in progress (e.g. downloading) gives up
+    switchingToGuidRef.current = null;
+    abandonStreamCacheDownloads(null);
+    skipLoadGen.current += 1;
+    setSkipMap(null);
+    skipMapRef.current = null;
+    setAnalyzeStatus(null);
+    setAnalyzeError(null);
+    setAudioMismatchWarning(null);
+    setUploadProgress(null);
+    setPlaybackDownload(null);
+    await player.stopAndUnload();
+    // The player's report clears `episode`; set it here too so nothing waits on it.
+    episodeRef.current = null;
+    positionRef.current = 0;
+    durationRef.current = 0;
+    isPlayingRef.current = false;
+    setEpisode(null);
+    setIsPlaying(false);
+    setPositionMs(0);
+    setDurationMs(0);
+    setCurrentQueueGuid(null);
+  }, [setPlaybackDownload]);
+
   const setEpisodePlayed = useCallback(async (ep: Episode, value: boolean) => {
     await setPlayed(ep.guid, value);
     const isCurrent = episodeRef.current?.guid === ep.guid;
     if (value) {
       // Played: next open starts from the beginning; stop re-saving the old spot.
-      if (isCurrent) clearedPositionGuid.current = ep.guid;
+      if (isCurrent) {
+        clearedPositionGuid.current = ep.guid;
+        await unloadCurrentEpisode();
+      }
       await clearPlaybackPosition(ep.guid);
-      cleanupPlayedDownloads();
+      cleanupPlayedDownloads(); // after unloading, so its download goes too
     } else if (!isCurrent) {
       // Unplayed: fresh start. (The loaded episode keeps its live position.)
       await clearPlaybackPosition(ep.guid);
     }
-  }, [cleanupPlayedDownloads]);
+  }, [cleanupPlayedDownloads, unloadCurrentEpisode]);
 
   const togglePlay = useCallback(async () => {
     if (isAwaitingDownload()) {

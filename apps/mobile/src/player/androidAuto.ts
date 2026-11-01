@@ -34,6 +34,8 @@ declare class PodcastAutoNativeModule extends NativeModule<AndroidAutoEvents> {
   ) => void;
   play: () => void;
   pause: () => void;
+  /** Missing in builds from before it was added. */
+  stop?: () => void;
   seekTo: (positionMs: number) => void;
   setPlaybackRate: (rate: number) => void;
   setAutoSkip: (enabled: boolean) => void;
@@ -104,13 +106,15 @@ export function loadAndroidAutoEpisode(
 }
 
 export function controlAndroidAutoPlayer(
-  action: 'play' | 'pause' | 'seek' | 'rate',
+  action: 'play' | 'pause' | 'stop' | 'seek' | 'rate',
   value?: number,
 ): void {
   const native = getNativeModule();
   if (!native) return;
   if (action === 'play') native.play();
   else if (action === 'pause') native.pause();
+  // Older native builds can't unload; pausing at least stops the audio.
+  else if (action === 'stop') (native.stop ?? native.pause)();
   else if (action === 'seek') native.seekTo(Math.max(0, Math.floor(value ?? 0)));
   else if (action === 'rate' && value != null) native.setPlaybackRate(value);
 }

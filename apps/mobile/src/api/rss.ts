@@ -1,4 +1,4 @@
-import type { Episode } from '@/src/types';
+import type { Chapter, Episode } from '@/src/types';
 import { cacheEpisodes, getCachedEpisodes } from '@/src/db/storage';
 import { syncAndroidAutoCatalog } from '@/src/player/androidAutoCatalog';
 import { processFeedForAutoQueue } from '@/src/queue/queueStore';
@@ -181,13 +181,14 @@ function enclosureKey(url?: string): string | undefined {
   return base ? base.toLowerCase() : undefined;
 }
 
-function notesForEpisode(xml: string, guid: string, hints?: EpisodeMatchHints): string | undefined {
+/** The feed item for an episode: by guid, else the same audio file, else the same title. */
+function findItem(xml: string, guid: string, hints?: EpisodeMatchHints): string | undefined {
   const wantEnclosure = enclosureKey(hints?.enclosureUrl);
   const wantTitle = hints?.title?.trim();
   let byEnclosure: string | undefined;
   let byTitle: string | undefined;
   for (const item of iterateItems(xml)) {
-    if (itemGuid(item) === guid) return pickEpisodeNotes(item);
+    if (itemGuid(item) === guid) return item;
     // Publishers sometimes re-key items (or add a <guid> to an enclosure-keyed feed):
     // fall back to the same audio file, then the same title.
     if (wantEnclosure && byEnclosure === undefined) {
@@ -198,8 +199,108 @@ function notesForEpisode(xml: string, guid: string, hints?: EpisodeMatchHints): 
       byTitle = item;
     }
   }
-  const fallback = byEnclosure ?? byTitle;
-  return fallback ? pickEpisodeNotes(fallback) : undefined;
+  return byEnclosure ?? byTitle;
+}
+
+function notesForEpisode(xml: string, guid: string, hints?: EpisodeMatchHints): string | undefined {
+  const item = findItem(xml, guid, hints);
+  return item ? pickEpisodeNotes(item) : undefined;
+}
+
+/** "HH:MM:SS(.mmm)", "MM:SS" or plain seconds (Podlove normal play time) as ms. */
+export function parseNptMs(raw: string | undefined): number | undefined {
+  const text = raw?.trim();
+  if (!text) return undefined;
+  const parts = text.split(':').map(Number);
+  if (parts.length > 3 || parts.some((n) => !Number.isFinite(n) || n < 0)) return undefined;
+  const seconds = parts.reduce((total, n) => total * 60 + n, 0);
+  return Math.round(seconds * 1000);
+}
+
+/** Where an episode's chapters come from, as found in its feed item. */
+export type ChapterSource = {
+  /** Podcasting 2.0 <podcast:chapters url="…"> JSON file. */
+  url?: string;
+  /** Podlove Simple Chapters listed in the item itself. */
+  inline?: Chapter[];
+};
+
+function chapterSourceForItem(item: string): ChapterSource | undefined {
+  const tag = item.match(/<podcast:chapters\b[^>]*\/?>/i)?.[0];
+  const url = tag ? attr(tag, 'url') : undefined;
+  if (url) return { url };
+  const inline: Chapter[] = [];
+  for (const m of item.matchAll(/<psc:chapter\b[^>]*\/?>/gi)) {
+    const startMs = parseNptMs(attr(m[0], 'start'));
+    const title = attr(m[0], 'title')?.trim();
+    if (startMs == null || !title) continue;
+    inline.push({ startMs, title, url: attr(m[0], 'href'), imageUrl: attr(m[0], 'image') });
+  }
+  return inline.length ? { inline: sortChapters(inline) } : undefined;
+}
+
+/** Chapters in start order, without duplicates of the same start. */
+export function sortChapters(chapters: Chapter[]): Chapter[] {
+  const seen = new Set<number>();
+  return [...chapters]
+    .sort((a, b) => a.startMs - b.startMs)
+    .filter((c) => !seen.has(c.startMs) && !!seen.add(c.startMs));
+}
+
+/** Chapters from a Podcasting 2.0 JSON chapters file ({chapters: [{startTime, title, …}]}). */
+export function parseJsonChapters(data: unknown): Chapter[] {
+  const list = (data as { chapters?: unknown } | null)?.chapters;
+  if (!Array.isArray(list)) return [];
+  const out: Chapter[] = [];
+  for (const raw of list) {
+    const c = raw as { startTime?: unknown; title?: unknown; url?: unknown; img?: unknown; toc?: unknown };
+    const start = typeof c.startTime === 'number' ? c.startTime : Number(c.startTime);
+    const title = typeof c.title === 'string' ? c.title.trim() : '';
+    // toc: false marks a chapter meant only for artwork/links, not the chapter list.
+    if (!Number.isFinite(start) || start < 0 || !title || c.toc === false) continue;
+    out.push({
+      startMs: Math.round(start * 1000),
+      title,
+      url: typeof c.url === 'string' ? c.url : undefined,
+      imageUrl: typeof c.img === 'string' ? c.img : undefined,
+    });
+  }
+  return sortChapters(out);
+}
+
+const chaptersByUrl = new Map<string, Promise<Chapter[]>>();
+const MAX_CACHED_CHAPTER_FILES = 20;
+
+/**
+ * An episode's chapters (empty when the feed has none). Looks the item up in the
+ * in-memory feed, fetching the feed only when the episode isn't in it, then fetches
+ * (and remembers) a linked JSON chapters file.
+ */
+export async function findEpisodeChapters(
+  feedUrl: string,
+  guid: string,
+  hints?: EpisodeMatchHints,
+): Promise<Chapter[]> {
+  const cached = recallXml(feedUrl);
+  let item = cached ? findItem(cached, guid, hints) : undefined;
+  if (!item) item = findItem(await fetchRssXml(feedUrl, { force: cached !== undefined }), guid, hints);
+  const source = item ? chapterSourceForItem(item) : undefined;
+  if (!source) return [];
+  if (source.inline) return source.inline;
+  const url = source.url!;
+  let pending = chaptersByUrl.get(url);
+  if (!pending) {
+    pending = fetchWithTimeout(url, undefined, RSS_FETCH_TIMEOUT_MS, async (res) => {
+      if (!res.ok) throw new Error(`Chapters fetch failed: ${res.status}`);
+      return parseJsonChapters(await res.json());
+    });
+    chaptersByUrl.set(url, pending);
+    pending.catch(() => chaptersByUrl.delete(url)); // retry next time
+    while (chaptersByUrl.size > MAX_CACHED_CHAPTER_FILES) {
+      chaptersByUrl.delete(chaptersByUrl.keys().next().value!);
+    }
+  }
+  return pending;
 }
 
 /** The part of a feed before its first item (title, description, artwork). */
