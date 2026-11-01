@@ -340,3 +340,60 @@ def test_feedback_api_exposes_review_fields(db):
         assert client.post("/v1/feedback/999999/review", headers=key).status_code == 404
         assert client.get("/v1/show-notes", headers=key).json() == []
         assert client.get("/v1/show-notes").status_code == 401
+
+
+def test_retry_after_a_labeling_failure_reuses_the_saved_transcript(db, monkeypatch, tmp_path):
+    from app.services.detect_ads import LabelingError
+
+    transcriptions = []
+    labels = iter([LabelingError("window 3/40: reply was cut off"), []])
+
+    async def fake_transcribe(path, settings):
+        transcriptions.append(path)
+        return _transcript()
+
+    async def fake_label(transcript, settings, duration_ms=None, **kw):
+        outcome = next(labels)
+        if isinstance(outcome, Exception):
+            raise outcome
+        assert len(transcript["segments"]) == 40
+        return outcome
+
+    monkeypatch.setattr(analyze_pipeline, "transcribe_audio", fake_transcribe)
+    monkeypatch.setattr(analyze_pipeline, "label_ads_llm", fake_label)
+
+    async def scenario():
+        audio = tmp_path / "a.mp3"
+        results = []
+        for _ in range(2):
+            audio.write_bytes(b"same audio bytes")  # the pipeline deletes its input
+            results.append(await analyze_pipeline.run_analyze_from_file(
+                episode_guid="ep-retry", audio_path=audio, feed_url=FEED, settings=LLM,
+            ))
+        audio.write_bytes(b"different ad variant")
+        await analyze_pipeline.run_analyze_from_file(
+            episode_guid="ep-retry", audio_path=audio, feed_url=FEED, settings=LLM,
+        )
+        return results
+
+    first, second = asyncio.run(scenario())
+    assert first["status"] == "error" and "cut off" in (first.get("error") or first.get("message") or "")
+    assert second["status"] == "ready"
+    # Transcribed once for the first bytes (reused on retry), once for the new bytes.
+    assert len(transcriptions) == 2
+
+
+def test_learned_hints_expire_after_a_year_without_being_seen_again():
+    old = "2025-01-01T00:00:00+00:00"
+    notes = merge_learning(None, sponsors=["Old Sponsor"], break_phrases=["old phrase"],
+                           ad_position={"start_ms": 60_000, "end_ms": 90_000}, now=old)
+    notes = merge_learning(notes, sponsors=["New Sponsor"], now="2026-06-01T00:00:00+00:00")
+
+    block = notes_prompt_block(notes, now="2026-06-02T00:00:00+00:00")
+    assert "New Sponsor" in block
+    assert "Old Sponsor" not in block and "old phrase" not in block and "1:00-1:30" not in block
+    # Merging prunes them from storage too; recent ones are untouched.
+    assert [s["value"] for s in notes["sponsors"]] == ["New Sponsor"]
+    assert notes["ad_positions"] == [] and notes["break_phrases"] == []
+    # Seen again recently: still used.
+    assert "Old Sponsor" in notes_prompt_block(merge_learning(None, sponsors=["Old Sponsor"]))

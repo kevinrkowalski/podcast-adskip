@@ -7,6 +7,8 @@ import json
 import logging
 import math
 import re
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from html import unescape
 from typing import Any
 
@@ -14,6 +16,28 @@ from app.config import Settings
 from app.models.schemas import AdSegment
 
 logger = logging.getLogger(__name__)
+
+# Labeling calls: deterministic answers (the same episode should get the same skips),
+# a few transcript windows in flight at once, and one retry per window.
+LABEL_TEMPERATURE = 0.0
+LABEL_WINDOW_CONCURRENCY = 4
+LABEL_WINDOW_ATTEMPTS = 2
+LABEL_RETRY_DELAY_S = 2.0
+# A segment the model returns without a confidence stays visible in the app but is not
+# auto-skipped (the app skips from 0.8; anything below MIN_SEGMENT_CONFIDENCE is dropped).
+DEFAULT_SEGMENT_CONFIDENCE = 0.6
+
+
+class LabelingError(RuntimeError):
+    """A transcript window got no usable answer: fail the analysis rather than save a
+    map that silently has no ads for that stretch (a ready map is never re-analyzed)."""
+
+
+@dataclass
+class _Reply:
+    content: str
+    truncated: bool = False  # cut off (max tokens): the JSON can't be trusted
+    blocked: bool = False  # provider refused this window (e.g. safety filter)
 
 AD_KEYWORDS = re.compile(
     r"\b(sponsored\s+by|brought to you by|paid partnership|ad break|"
@@ -567,6 +591,59 @@ def _finish_labeling(
     return _validated_segments(segments, transcript, duration_ms)
 
 
+async def _label_windows(
+    transcript: dict[str, Any], call: Callable[[str], Awaitable[_Reply]]
+) -> list[AdSegment]:
+    """Label every transcript window (a few at a time); retry a window once on an error,
+    an unusable reply or a cut-off reply, then raise LabelingError."""
+    chunks = _windows(transcript)
+    sem = asyncio.Semaphore(LABEL_WINDOW_CONCURRENCY)
+
+    async def one(index: int, chunk: str) -> list[AdSegment]:
+        problem = "no reply"
+        async with sem:
+            for attempt in range(LABEL_WINDOW_ATTEMPTS):
+                if attempt:
+                    await asyncio.sleep(LABEL_RETRY_DELAY_S)
+                try:
+                    reply = await call(chunk)
+                except Exception as exc:  # noqa: BLE001 - any provider failure is retried once
+                    problem = f"{exc.__class__.__name__}: {exc}"[:300]
+                    logger.warning("Labeling window %d/%d failed: %s", index + 1, len(chunks), problem)
+                    continue
+                if reply.blocked:
+                    logger.warning("Labeling window %d/%d was refused by the provider; no labels for it",
+                                   index + 1, len(chunks))
+                    return []
+                if reply.truncated:
+                    problem = "reply was cut off"
+                else:
+                    parsed = _parse_llm_json(reply.content)
+                    if parsed is not None:
+                        return parsed
+                    problem = f"unusable reply: {reply.content[:200]!r}"
+                logger.warning("Labeling window %d/%d: %s", index + 1, len(chunks), problem)
+        raise LabelingError(f"Ad labeling failed for transcript window {index + 1}/{len(chunks)}: {problem}")
+
+    tasks = [asyncio.create_task(one(i, chunk)) for i, chunk in enumerate(chunks)]
+    try:
+        results = await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+    return [segment for window in results for segment in window]
+
+
+def _openai_reply(completion: Any) -> _Reply:
+    choice = completion.choices[0]
+    return _Reply(
+        content=choice.message.content or "",
+        truncated=getattr(choice, "finish_reason", None) == "length",
+    )
+
+
 async def _label_openrouter(
     transcript: dict[str, Any],
     settings: Settings,
@@ -583,8 +660,8 @@ async def _label_openrouter(
         api_key=api_key,
         default_headers=_openrouter_headers(settings) or None,
     )
-    all_segs: list[AdSegment] = []
-    for chunk in _windows(transcript):
+
+    async def call(chunk: str) -> _Reply:
         completion = await asyncio.to_thread(
             client.chat.completions.create,
             model=settings.openrouter_llm_model,
@@ -593,10 +670,11 @@ async def _label_openrouter(
                 {"role": "user", "content": _user_content(chunk, context_block, show_notes)},
             ],
             response_format={"type": "json_object"},
+            temperature=LABEL_TEMPERATURE,
         )
-        content = completion.choices[0].message.content or "{}"
-        all_segs.extend(_parse_llm_json(content))
-    return _finish_labeling(all_segs, transcript, duration_ms)
+        return _openai_reply(completion)
+
+    return _finish_labeling(await _label_windows(transcript, call), transcript, duration_ms)
 
 
 async def _label_groq_llm(
@@ -610,8 +688,8 @@ async def _label_groq_llm(
     from groq import Groq
 
     client = Groq(api_key=settings.llm_api_key or settings.groq_api_key)
-    all_segs: list[AdSegment] = []
-    for chunk in _windows(transcript):
+
+    async def call(chunk: str) -> _Reply:
         completion = await asyncio.to_thread(
             client.chat.completions.create,
             model=settings.groq_llm_model,
@@ -620,10 +698,11 @@ async def _label_groq_llm(
                 {"role": "user", "content": _user_content(chunk, context_block, show_notes)},
             ],
             response_format={"type": "json_object"},
+            temperature=LABEL_TEMPERATURE,
         )
-        content = completion.choices[0].message.content or "{}"
-        all_segs.extend(_parse_llm_json(content))
-    return _finish_labeling(all_segs, transcript, duration_ms)
+        return _openai_reply(completion)
+
+    return _finish_labeling(await _label_windows(transcript, call), transcript, duration_ms)
 
 
 async def _label_gemini(
@@ -639,37 +718,50 @@ async def _label_gemini(
     key = settings.gemini_api_key or settings.llm_api_key
     model = settings.gemini_model
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    all_segs: list[AdSegment] = []
     async with httpx.AsyncClient(timeout=60.0) as client:
-        for chunk in _windows(transcript):
+
+        async def call(chunk: str) -> _Reply:
             body = {
                 "contents": [{"parts": [{"text": _system_prompt(show_notes) + "\n\n" + _user_content(chunk, context_block, show_notes)}]}],
-                "generationConfig": {"temperature": 0.1, "responseMimeType": "application/json"},
+                "generationConfig": {"temperature": LABEL_TEMPERATURE, "responseMimeType": "application/json"},
             }
             resp = await client.post(url, params={"key": key}, json=body)
             resp.raise_for_status()
             data = resp.json()
-            candidates = data.get("candidates") or [{}]
-            parts = (candidates[0].get("content") or {}).get("parts") or [{}]
-            text = parts[0].get("text") or "{}"
-            all_segs.extend(_parse_llm_json(text))
-    return _finish_labeling(all_segs, transcript, duration_ms)
+            candidates = data.get("candidates") or []
+            if not candidates:
+                if (data.get("promptFeedback") or {}).get("blockReason"):
+                    return _Reply("", blocked=True)
+                return _Reply("")
+            candidate = candidates[0] or {}
+            finish = candidate.get("finishReason")
+            if finish in ("SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "RECITATION"):
+                return _Reply("", blocked=True)
+            parts = (candidate.get("content") or {}).get("parts") or [{}]
+            return _Reply(parts[0].get("text") or "", truncated=finish == "MAX_TOKENS")
+
+        segments = await _label_windows(transcript, call)
+    return _finish_labeling(segments, transcript, duration_ms)
 
 
-def _parse_llm_json(content: str) -> list[AdSegment]:
+def _parse_llm_json(content: str) -> list[AdSegment] | None:
+    """Segments from a labeling reply; [] when it says "no ads", None when it is unusable
+    (empty, not JSON, or no segments list), so the window can be retried."""
+    if not content or not content.strip():
+        return None
     try:
         data = json.loads(content)
     except json.JSONDecodeError:
         m = re.search(r"\{[\s\S]*\}", content)
         if not m:
-            return []
+            return None
         try:
             data = json.loads(m.group(0))
         except json.JSONDecodeError:
-            return []
+            return None
     segs = data.get("segments") if isinstance(data, dict) else data
     if not isinstance(segs, list):
-        return []
+        return None
     out: list[AdSegment] = []
     for segment in segs:
         if not isinstance(segment, dict):
@@ -681,7 +773,8 @@ def _parse_llm_json(content: str) -> list[AdSegment]:
             else:
                 start_value = float(segment.get("start_s", 0)) * 1000
                 end_value = float(segment.get("end_s", 0)) * 1000
-            confidence = float(segment.get("confidence", 0.8))
+            raw_confidence = segment.get("confidence")
+            confidence = DEFAULT_SEGMENT_CONFIDENCE if raw_confidence is None else float(raw_confidence)
             if not all(math.isfinite(value) for value in (start_value, end_value, confidence)):
                 continue
             if start_value < 0 or end_value <= start_value or not 0 <= confidence <= 1:

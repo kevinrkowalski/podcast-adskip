@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import shutil
 import subprocess
 import tempfile
@@ -29,6 +30,14 @@ logger = logging.getLogger(__name__)
 
 # Allow larger downloads than the Whisper per-file cap; we chunk before upload.
 DEFAULT_DOWNLOAD_CAP_MB = 500
+
+# Whisper works at 16 kHz mono, so this is lossless for transcription. At 48 kbps an
+# hour is ~21 MB: most episodes fit in one STT upload, and longer ones are cut from a
+# constant-bitrate file, where seeking is exact. Cutting the original instead (often
+# VBR MP3 without a seek index) lands chunks at estimated positions, so every
+# timestamp after a cut can be off by seconds.
+STT_SAMPLE_RATE = 16_000
+STT_BITRATE = "48k"
 
 
 async def download_audio(
@@ -348,8 +357,41 @@ def _transcribe_file_sync(audio_path: Path, settings: Settings) -> dict[str, Any
     raise RuntimeError("No OPENROUTER_API_KEY or GROQ_API_KEY configured for transcription")
 
 
+def prepare_for_stt(audio_path: Path) -> Path | None:
+    """Re-encode to 16 kHz mono constant-bitrate MP3 for transcription (a new temp file
+    the caller deletes), or None when ffmpeg is missing or fails (use the original)."""
+    if not shutil.which("ffmpeg"):
+        return None
+    fd, name = tempfile.mkstemp(prefix="adskip-stt-", suffix=".mp3")
+    os.close(fd)
+    out = Path(name)
+    cmd = [
+        "ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(audio_path),
+        "-vn", "-ac", "1", "-ar", str(STT_SAMPLE_RATE),
+        "-acodec", "libmp3lame", "-b:a", STT_BITRATE, str(out),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=900)
+        if out.stat().st_size == 0:
+            raise ValueError("empty output")
+        return out
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        logger.warning("STT re-encode failed for %s (%s); transcribing the original", audio_path, exc)
+        out.unlink(missing_ok=True)
+        return None
+
+
 async def transcribe_audio(audio_path: Path, settings: Settings) -> dict[str, Any]:
     """Whisper verbose_json via OpenRouter (preferred) or legacy Groq; chunk if over max_audio_mb."""
+    prepared = await asyncio.to_thread(prepare_for_stt, audio_path)
+    try:
+        return await _transcribe_prepared(prepared or audio_path, settings)
+    finally:
+        if prepared is not None:
+            prepared.unlink(missing_ok=True)
+
+
+async def _transcribe_prepared(audio_path: Path, settings: Settings) -> dict[str, Any]:
     chunks = await asyncio.to_thread(split_audio_chunks, audio_path, settings.max_audio_mb)
     owned_dirs: set[Path] = set()
     try:

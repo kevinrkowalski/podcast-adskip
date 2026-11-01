@@ -359,6 +359,10 @@ def judge(
     if overlap < need:
         v.reason = f"overlaps gap {max(0.0, overlap):.1f}s < {need:.1f}s"
         return v
+    # Only the quiet stretch: the speech around it (in the clip's padding) was transcribed
+    # and already judged by the main pass, so a loose boundary here would skip content.
+    # Merging still joins the addition to the neighbouring main-pass ad.
+    v.start_s, v.end_s = max(a, ga), min(b, gb)
     v.accepted = True
     v.reason = "accepted"
     return v

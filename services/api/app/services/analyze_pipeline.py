@@ -11,7 +11,7 @@ from typing import Any
 
 from app.config import Settings, get_settings
 from app.db import RunSuperseded, get_skip_map, save_skip_map, set_status
-from app.db.learning import get_show_notes, save_transcript
+from app.db.learning import get_show_notes, get_transcript_for_audio, save_transcript
 from app.services.audio_fingerprint import file_fingerprints
 from app.services.show_notes import notes_prompt_block, show_key
 from app.services.detect_ads import heuristic_segments, label_ads_llm
@@ -82,6 +82,23 @@ async def _learned_notes(feed_url: str | None, podcast_title: str | None) -> str
     except Exception:
         logger.exception("Could not load learned show notes; analyzing without them")
         return None
+
+
+async def _transcript_for(
+    episode_guid: str, audio_path: Path, audio_sha256: str | None, settings: Settings
+) -> tuple[dict[str, Any], bool]:
+    """(transcript, reused): the saved transcript of these exact bytes when there is one
+    (retry after a labeling failure, forced re-analysis), else a fresh transcription."""
+    if audio_sha256:
+        try:
+            saved = await get_transcript_for_audio(episode_guid, audio_sha256)
+        except Exception:
+            logger.exception("Could not look up a saved transcript for %s", episode_guid)
+            saved = None
+        if saved is not None:
+            logger.info("Reusing saved transcript for %s (same audio)", episode_guid)
+            return saved, True
+    return await transcribe_audio(audio_path, settings), False
 
 
 async def _cache_transcript(
@@ -232,9 +249,10 @@ async def run_analyze(
                 duration_ms=duration_ms,
                 run_id=run_id,
             )
-            transcript = await transcribe_audio(audio_path, settings)
+            transcript, reused = await _transcript_for(episode_guid, audio_path, audio_sha256, settings)
             analyzed_audio_size_bytes = audio_path.stat().st_size
-            await _cache_transcript(episode_guid, transcript, audio_sha256, audio_md5)
+            if not reused:
+                await _cache_transcript(episode_guid, transcript, audio_sha256, audio_md5)
             analyzed_audio_duration_ms = _transcript_duration_ms(transcript, duration_ms)
             model_parts = [settings.whisper_model]
 
@@ -383,9 +401,10 @@ async def run_analyze_from_file(
         audio_size_bytes = audio_path.stat().st_size
         if settings.has_real_stt:
             await _stage(episode_guid, "transcribing", duration_ms=duration_ms, run_id=run_id)
-            transcript = await transcribe_audio(audio_path, settings)
+            transcript, reused = await _transcript_for(episode_guid, audio_path, audio_sha256, settings)
             analyzed_audio_duration_ms = _transcript_duration_ms(transcript, duration_ms)
-            await _cache_transcript(episode_guid, transcript, audio_sha256, audio_md5)
+            if not reused:
+                await _cache_transcript(episode_guid, transcript, audio_sha256, audio_md5)
             model_parts = [settings.whisper_model]
             await _stage(episode_guid, "labeling", duration_ms=duration_ms, run_id=run_id)
             if settings.has_llm:

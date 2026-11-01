@@ -189,12 +189,14 @@ def test_judge_requires_overlap_with_the_gap():
     assert v.accepted
 
 
-def test_judge_clamps_to_padded_clip():
+def test_judge_clamps_to_the_quiet_gap_not_the_padding():
+    # The padding around the gap is transcribed speech the main pass already judged:
+    # an Omni boundary that runs into it must not skip that content.
     v = judge(
         {"start_s": -10, "end_s": 999, "type": "midroll", "confidence": 0.9},
         gap=GAP, clip=CLIP, main_segments=MAIN,
     )
-    assert v.accepted and (v.start_s, v.end_s) == CLIP
+    assert v.accepted and (v.start_s, v.end_s) == GAP
 
 
 def test_judge_malformed_answer():
