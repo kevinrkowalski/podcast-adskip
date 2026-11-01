@@ -30,6 +30,9 @@ const NUM_COLUMNS = 3;
 const H_PAD = 16;
 const GAP = 10;
 
+/** Apple's chart is one request with no paging; 200 is its maximum, so show it all. */
+const CHART_LIMIT = 200;
+
 export default function SearchScreen() {
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
@@ -69,7 +72,7 @@ export default function SearchScreen() {
     setChartLoading(true);
     setChartError(null);
     try {
-      const items = await fetchTopPodcasts(id, 25);
+      const items = await fetchTopPodcasts(id, CHART_LIMIT);
       if (req !== chartReqId.current) return;
       setChartItems(items);
     } catch (e) {
