@@ -12,12 +12,17 @@
  *   comes back queued/pending, the next episode waits until that job finishes (polled
  *   every SERVER_POLL_MS, given up after SERVER_WAIT_MAX_MS).
  * - Failed episodes are retried at most MAX_RETRIES times, RETRY_DELAY_MS apart.
+ * - No new downloads while the audio cache is over its budget (already-downloaded
+ *   episodes can still be uploaded); checked again within CACHE_FULL_RECHECK_MS, or
+ *   sooner on the next trigger (e.g. after played episodes' downloads are deleted).
+ * - When the API rate-limits new analyses (HTTP 429), everything pauses for the time it
+ *   asks for; that doesn't count as the episode failing.
  * - The currently loaded / playing episode is left to the player's own flow.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Episode, SkipMap } from '@/src/types';
 import { getAutoSkipEnabled, getCachedSkipMap, isPodcastAdDetectionEnabled } from '@/src/db/storage';
-import { getCachedAudioMd5, getCachedAudioPath } from '@/src/api/audioUpload';
+import { getCachedAudioMd5, getCachedAudioPath, isAudioCacheOverBudget } from '@/src/api/audioUpload';
 import { getSkipMap } from '@/src/api/backend';
 
 const ANALYZER_STATE_KEY = '@podcast-adskip/queueAnalyzerState';
@@ -27,6 +32,10 @@ export const RETRY_DELAY_MS = 30_000;
 export const MAX_RETRIES = 3;
 export const SERVER_POLL_MS = 30_000;
 export const SERVER_WAIT_MAX_MS = 30 * 60_000;
+/** How often to look again while the audio cache is full. */
+export const CACHE_FULL_RECHECK_MS = 30 * 60_000;
+/** Pause when a rate-limit result carries no wait time. */
+export const RATE_LIMIT_FALLBACK_MS = 10 * 60_000;
 
 type AnalyzerState = {
   /** guid → failed attempts. */
@@ -46,12 +55,18 @@ let rerunRequested = false;
 let started = false;
 let earliestRunMs = 0;
 let serverJob: ServerJob | null = null;
+/** The API asked us not to start another analysis before this time (ms). */
+let rateLimitedUntilMs = 0;
 /** Guids whose analysis succeeded this session: never re-uploaded by the analyzer. */
 const analyzedThisSession = new Set<string>();
 let scheduleTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Same analyze flow as Prepare/play (download, fingerprint, upload). Injected by PlaybackContext. */
-export type AnalyzeFunction = (ep: Episode) => Promise<SkipMap | { status: string; audio_md5?: string | null } | null>;
+export type AnalyzeResult =
+  | SkipMap
+  | { status: string; audio_md5?: string | null; retry_after_ms?: number }
+  | null;
+export type AnalyzeFunction = (ep: Episode) => Promise<AnalyzeResult>;
 export type GetQueueFunction = () => Episode[];
 /** Guids the player owns right now (loaded / playing episode); never analyzed here. */
 export type GetCurrentGuidsFunction = () => (string | null | undefined)[];
@@ -150,6 +165,8 @@ async function findNextEpisode(): Promise<Pick> {
 
   const current = new Set(getCurrentGuidsFunction().filter((g): g is string => !!g));
   let retryInMs: number | null = null;
+  /** Looked up once per pass, only when an episode would need a download. */
+  let cacheFull: boolean | undefined;
   for (const ep of getQueueFunction()) {
     if (!started) return none;
     if (current.has(ep.guid) || analyzedThisSession.has(ep.guid)) continue;
@@ -178,6 +195,15 @@ async function findNextEpisode(): Promise<Pick> {
       // Probably offline: stop this pass (don't hit the API once per queued episode)
       // and look again later instead of waiting for the next queue change.
       return { episode: null, retryInMs: RETRY_DELAY_MS };
+    }
+    if (!(await getCachedAudioPath(ep.guid, ep.enclosureUrl ?? ''))) {
+      // Analyzing it means downloading it first: skip while the cache is full (played
+      // episodes free space), but keep looking for queued episodes already downloaded.
+      cacheFull ??= await isAudioCacheOverBudget();
+      if (cacheFull) {
+        retryInMs = Math.min(retryInMs ?? CACHE_FULL_RECHECK_MS, CACHE_FULL_RECHECK_MS);
+        continue;
+      }
     }
     return { episode: ep, retryInMs: null };
   }
@@ -215,6 +241,11 @@ async function analyzeNext(): Promise<void> {
   let nextDelay: number | null = null;
   try {
     await hydrateState();
+    const rateLimitWait = rateLimitedUntilMs - Date.now();
+    if (rateLimitWait > 0) {
+      nextDelay = rateLimitWait;
+      return;
+    }
     if (await waitingOnServer()) {
       nextDelay = SERVER_POLL_MS;
       return;
@@ -229,7 +260,13 @@ async function analyzeNext(): Promise<void> {
     console.log('[queueAnalyzer] Background analysis for queued episode:', episode.guid);
     try {
       const result = await analyzeFunction(episode);
-      if (!result || result.status === 'error' || result.status === 'missing') {
+      if (result?.status === 'rate_limited') {
+        const wait = 'retry_after_ms' in result && typeof result.retry_after_ms === 'number'
+          ? result.retry_after_ms
+          : RATE_LIMIT_FALLBACK_MS;
+        rateLimitedUntilMs = Date.now() + Math.max(wait, TRIGGER_DEBOUNCE_MS);
+        console.log('[queueAnalyzer] API rate limit reached; pausing for', Math.round(wait / 1000), 's');
+      } else if (!result || result.status === 'error' || result.status === 'missing') {
         recordFailure(episode.guid);
         console.warn('[queueAnalyzer] Analysis failed:', episode.guid, 'attempts:', state.failed[episode.guid]);
       } else {
@@ -248,7 +285,8 @@ async function analyzeNext(): Promise<void> {
     }
     await persistState();
     // Look for the next one (waitingOnServer() holds it back while the server works).
-    nextDelay = serverJob ? SERVER_POLL_MS : TRIGGER_DEBOUNCE_MS;
+    const pause = rateLimitedUntilMs - Date.now();
+    nextDelay = pause > 0 ? pause : serverJob ? SERVER_POLL_MS : TRIGGER_DEBOUNCE_MS;
   } catch (e) {
     console.warn('[queueAnalyzer] Pass failed:', e);
   } finally {
@@ -266,8 +304,8 @@ export function triggerQueueAnalysis(): void {
     rerunRequested = true; // the running pass reschedules itself
     return;
   }
-  // Don't cut short a wait on the server job / retry with a sooner poll than needed.
-  if (serverJob) return;
+  // Don't cut short a wait on the server job / rate limit with a sooner poll than needed.
+  if (serverJob || rateLimitedUntilMs > Date.now()) return;
   schedule(TRIGGER_DEBOUNCE_MS);
 }
 
@@ -300,6 +338,7 @@ export function __resetForTesting(): void {
   rerunRequested = false;
   hydrated = false;
   serverJob = null;
+  rateLimitedUntilMs = 0;
   analyzedThisSession.clear();
   earliestRunMs = 0;
   analyzeFunction = null;

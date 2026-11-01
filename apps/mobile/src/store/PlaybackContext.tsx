@@ -39,6 +39,8 @@ import {
   prepareStreamCachePath,
   downloadAudioForAnalysis,
   uploadAudioForAnalysis,
+  RateLimitedError,
+  deletePlayedEpisodeAudio,
   getCachedAudioMd5,
   getCachedAudioPath,
   type DownloadProgress,
@@ -177,6 +179,8 @@ type AnalyzeObserver = (patch: {
   analyzeStatus?: string | null;
   analyzeError?: string | null;
   uploadProgress?: AnalyzeUploadProgress | null;
+  /** The API is rate-limiting new analyses: wait this long before asking again. */
+  rateLimitedForMs?: number;
 }) => void;
 
 const PlaybackContext = createContext<Ctx | null>(null);
@@ -231,6 +235,22 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const [openedEpisode, setOpenedEpisode] = useState<OpenedEpisode | null>(null);
   const openedEpisodeRef = useRef<OpenedEpisode | null>(null);
   const episodeRef = useRef<Episode | null>(null);
+  /**
+   * Played episodes' downloads are dead weight (the background analyzer downloads ahead
+   * through the whole queue). Keep whatever the player has loaded or open.
+   */
+  const cleanupPlayedDownloads = useCallback(() => {
+    void deletePlayedEpisodeAudio(isPlayed, [
+      episodeRef.current?.guid,
+      openedEpisodeRef.current?.episode.guid,
+      player.getStatus().episode?.guid,
+    ]).then((removed) => {
+      if (!removed) return;
+      console.log('[playback] Deleted downloads of', removed, 'played episode(s)');
+      void syncAndroidAutoCatalog();
+      triggerQueueAnalysis(); // space freed: it may download ahead again
+    });
+  }, []);
   const positionRef = useRef(0);
   const durationRef = useRef(0);
   const isPlayingRef = useRef(false);
@@ -260,7 +280,9 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   const switchingToGuidRef = useRef<string | null>(null);
   const manualReanalysisGuidRef = useRef<string | null>(null);
   const analyzeFingerprintRef = useRef<{ episodeGuid: string; audioMd5: string } | null>(null);
-  const requestAnalyzeForEpisodeRef = useRef<((target: Episode) => Promise<SkipMap | null>) | null>(null);
+  const requestAnalyzeForEpisodeRef = useRef<
+    ((target: Episode, observe?: AnalyzeObserver) => Promise<SkipMap | null>) | null
+  >(null);
   const playEpisodeRef = useRef<((target: Episode, opts?: PlayEpisodeOptions) => Promise<void>) | null>(null);
   const resolvePlaybackSourceRef = useRef<
     (ep: Episode, autoSkipOn: boolean, detectionEnabled: boolean) => Promise<{
@@ -891,6 +913,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       abandonStreamCacheDownloads(ep.guid);
       // Starting an episode puts it at index 0 of Up Next (no-op if already there).
       void markPlaying(ep);
+      cleanupPlayedDownloads();
       setSkipMap(null);
       skipMapRef.current = null;
       setSkipSettingsState(null);
@@ -1125,7 +1148,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         }
       })();
     },
-    [applyReadyMap, canUseAdDetection, loadSkipMap, prefetchNextQueued, resolvePlaybackSource, setPlaybackDownload],
+    [applyReadyMap, canUseAdDetection, cleanupPlayedDownloads, loadSkipMap, prefetchNextQueued, resolvePlaybackSource, setPlaybackDownload],
   );
 
   playEpisodeRef.current = (target, opts) => playEpisode(target, opts);
@@ -1349,15 +1372,24 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
   // (expo-audio didJustFinish, native service STATE_ENDED, or stub clock).
   useEffect(() => {
     void hydrateQueue();
-    void hydratePlayed();
+    void hydratePlayed().then(cleanupPlayedDownloads);
     void syncBackgroundRefreshRegistration();
     const stopFeedback = startFeedbackOutbox();
     const stopRefresh = startAutoQueueRefresh();
     
     // Start background queue analyzer (pass requestAnalyze via ref to avoid dependency)
-    const analyzeForQueue = (ep: Episode) => {
+    const analyzeForQueue = async (ep: Episode) => {
       const fn = requestAnalyzeForEpisodeRef.current;
-      return fn ? fn(ep) : Promise.resolve(null);
+      if (!fn) return null;
+      let rateLimitedForMs: number | undefined;
+      const result = await fn(ep, (patch) => {
+        if (patch.rateLimitedForMs != null) rateLimitedForMs = patch.rateLimitedForMs;
+      });
+      // Not this episode's fault: the analyzer waits instead of counting a failure.
+      if (!result && rateLimitedForMs != null) {
+        return { status: 'rate_limited', retry_after_ms: rateLimitedForMs };
+      }
+      return result;
     };
     // The loaded/playing episode is handled by the player's own auto-analyze flow.
     const stopAnalyzer = startQueueAnalyzer(analyzeForQueue, getQueue, () => [
@@ -1400,11 +1432,12 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       // Played: next open starts from the beginning; stop re-saving the old spot.
       if (isCurrent) clearedPositionGuid.current = ep.guid;
       await clearPlaybackPosition(ep.guid);
+      cleanupPlayedDownloads();
     } else if (!isCurrent) {
       // Unplayed: fresh start. (The loaded episode keeps its live position.)
       await clearPlaybackPosition(ep.guid);
     }
-  }, []);
+  }, [cleanupPlayedDownloads]);
 
   const togglePlay = useCallback(async () => {
     if (isAwaitingDownload()) {
@@ -1796,7 +1829,12 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
         if (manualReanalysisGuidRef.current === guid) {
           manualReanalysisGuidRef.current = null;
         }
-        observe?.({ analyzeStatus: 'error', analyzeError: errorMsg, uploadProgress: null });
+        observe?.({
+          analyzeStatus: 'error',
+          analyzeError: errorMsg,
+          uploadProgress: null,
+          rateLimitedForMs: err instanceof RateLimitedError ? err.retryAfterMs : undefined,
+        });
         if (isCurrent()) {
           setAnalyzeStatus('error');
           setAnalyzeError(errorMsg);
@@ -1831,7 +1869,7 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     },
     [episode, runAnalyze],
   );
-  requestAnalyzeForEpisodeRef.current = (target) => requestAnalyze(false, target);
+  requestAnalyzeForEpisodeRef.current = (target, observe) => requestAnalyze(false, target, observe);
 
   const prepareOpenedEpisode = useCallback(
     async (force = false) => {

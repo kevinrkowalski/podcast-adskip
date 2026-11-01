@@ -49,12 +49,27 @@ export const DEFAULT_API_URL =
     ? process.env.EXPO_PUBLIC_API_URL.replace(/\/$/, '')
     : '') || 'http://192.168.0.124:8000';
 
+/** Where an unreadable subscription list is copied before anything overwrites it. */
+export const SUBSCRIPTIONS_BACKUP_KEY = `${KEYS.subscriptions}:corrupt-backup`;
+
 export async function getSubscriptions(): Promise<Subscription[]> {
   const raw = await AsyncStorage.getItem(KEYS.subscriptions);
   if (!raw) return [];
   try {
-    return JSON.parse(raw) as Subscription[];
-  } catch {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error('not a list');
+    return parsed.filter(
+      (s): s is Subscription => !!s && typeof s === 'object' && typeof s.collectionId === 'number',
+    );
+  } catch (error) {
+    // Treated as empty so the app still works, but the next subscribe/unsubscribe would
+    // overwrite the stored list: keep a copy of it first.
+    console.warn('[storage] Subscription list is unreadable; backing it up:', error);
+    try {
+      await AsyncStorage.setItem(SUBSCRIPTIONS_BACKUP_KEY, raw);
+    } catch (backupError) {
+      console.warn('[storage] Could not back up the subscription list:', backupError);
+    }
     return [];
   }
 }
