@@ -12,7 +12,7 @@ import * as player from '@/src/player/trackPlayer';
 import { resolveAdDetectionEnabled } from '../player/autoSkipGate';
 import { syncAndroidAutoCatalog } from '@/src/player/androidAutoCatalog';
 import { getSkipMap, hydrateApiBaseUrl, hydrateAppKey, resolveAudioUrl } from '@/src/api/backend';
-import { findEpisodeNotes } from '@/src/api/rss';
+import { findEpisodeDetails } from '@/src/api/rss';
 import {
   cacheSkipMap,
   getAutoSkipEnabled,
@@ -24,6 +24,7 @@ import {
   isPodcastAdDetectionEnabled,
   setPodcastAdDetectionEnabled,
   getPodcastSkipSettings,
+  getSubscriptions,
   setPodcastSkipSettings,
   type AdDetectionTarget,
   type PodcastSkipSettings,
@@ -104,6 +105,12 @@ export type PlayEpisodeOptions = {
 /** Don't hold up streaming an episode with detection off for longer than this. */
 const PREPARED_CHECK_TIMEOUT_MS = 5_000;
 
+/** Show-notes fetch for an episode on screen: still loading, or gave up (offer a retry). */
+export type ShowNotesStatus = { guid: string; status: 'loading' | 'failed' };
+
+/** The episode has no feed link and no subscription to find one through. */
+class NoFeedError extends Error {}
+
 type Ctx = {
   episode: Episode | null;
   isPlaying: boolean;
@@ -130,6 +137,10 @@ type Ctx = {
    * loaded `episode`). Nothing is loaded/played/analyzed until startOpenedEpisode.
    */
   openedEpisode: OpenedEpisode | null;
+  /** Show-notes fetch state for the loaded/opened episode (null: idle or done). */
+  showNotesStatus: ShowNotesStatus | null;
+  /** Try fetching the shown episode's show notes again. */
+  retryShowNotes: () => void;
   /** Show `ep` on the player screen without loading audio or starting analysis. */
   openEpisode: (ep: Episode) => void;
   /** First Play on the opened episode: switch playback to it (runs auto-analyze rules). */
@@ -366,13 +377,15 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       // The player can report a copy captured before show notes were restored (queue
       // items carry none); keep the restored notes rather than blanking them.
       const prevEp = episodeRef.current;
-      if (
-        st.episode &&
-        prevEp?.guid === st.episode.guid &&
-        !st.episode.description?.trim() &&
-        prevEp.description?.trim()
-      ) {
-        st = { ...st, episode: { ...st.episode, description: prevEp.description } };
+      if (st.episode && prevEp?.guid === st.episode.guid) {
+        const kept: Partial<Episode> = {};
+        if (!st.episode.description?.trim() && prevEp.description?.trim()) {
+          kept.description = prevEp.description;
+        }
+        if (!st.episode.podcastDescription?.trim() && prevEp.podcastDescription?.trim()) {
+          kept.podcastDescription = prevEp.podcastDescription;
+        }
+        if (Object.keys(kept).length) st = { ...st, episode: { ...st.episode, ...kept } };
       }
       episodeRef.current = st.episode;
       positionRef.current = st.positionMs;
@@ -385,6 +398,10 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       setPlaybackRateState(st.playbackRate);
       if (previousGuid && nextGuid && previousGuid !== nextGuid) {
         externalEpisodeChangeRef.current?.(st.episode!);
+      } else if (!previousGuid && st.episode) {
+        // First episode seen since the app started (restored from the playback service,
+        // which carries no show notes): fill them in.
+        restoreShowNotesRef.current(st.episode);
       }
 
       // Auto-mark played near the end (finish is handled by subscribeEnded too).
@@ -704,45 +721,81 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
     }
   }, [abortLoadKeepCache, applyReadyMap, canUseAdDetection, clearAdDetection, getMatchingLocalSkipMap]);
 
-  // Queue items and Android Auto picks carry no show notes (kept small in storage);
-  // fill them in from the cached/fetched feed once the episode is loaded. A failed fetch
-  // (offline, timeout) is retried a few times while the episode is still shown.
+  // Queue items and Android Auto picks carry no show notes or show description (kept
+  // small in storage); fill them in from the cached/fetched feed once the episode is
+  // loaded or opened. A failed fetch (offline, timeout) is retried a few times while the
+  // episode is still shown, then reported to the player screen (which offers a retry).
+  const [showNotesStatus, setShowNotesStatus] = useState<ShowNotesStatus | null>(null);
   const restoreShowNotesRef = useRef((target: Episode, attempt = 0) => {
-    if (target.description?.trim() || !target.feedUrl) return;
-    const stillShown = () =>
+    const needsNotes = !target.description?.trim();
+    const needsAbout = !target.podcastDescription?.trim();
+    if (!needsNotes && !needsAbout) return;
+    const isShown = () =>
       episodeRef.current?.guid === target.guid ||
       openedEpisodeRef.current?.episode.guid === target.guid;
-    void findEpisodeNotes(target.feedUrl, target.guid, {
-      enclosureUrl: target.enclosureUrl,
-      title: target.title,
-    })
-      .then((description) => {
-        if (!description?.trim()) return;
+    const report = (status: ShowNotesStatus['status'] | null) =>
+      setShowNotesStatus((cur) =>
+        status ? { guid: target.guid, status } : cur?.guid === target.guid ? null : cur,
+      );
+    if (needsNotes) report('loading');
+    void (async () => {
+      // Entries saved without a feed link (older queue items) can still be found
+      // through the subscription they came from.
+      let feedUrl: string | undefined = target.feedUrl?.trim();
+      if (!feedUrl) {
+        const subs = await getSubscriptions();
+        feedUrl = subs.find(
+          (s) =>
+            (target.collectionId != null && s.collectionId === target.collectionId) ||
+            (!!target.podcastTitle && s.collectionName === target.podcastTitle),
+        )?.feedUrl;
+      }
+      if (!feedUrl) throw new NoFeedError();
+      return findEpisodeDetails(feedUrl, target.guid, {
+        enclosureUrl: target.enclosureUrl,
+        title: target.title,
+      });
+    })()
+      .then(({ notes, podcastDescription }) => {
+        const patch: Partial<Episode> = {};
+        if (needsNotes && notes?.trim()) patch.description = notes;
+        if (needsAbout && podcastDescription?.trim()) patch.podcastDescription = podcastDescription;
+        report(null); // done (the screen says "no show notes" if there were none)
+        if (!Object.keys(patch).length) return;
         // The loaded episode, or one opened but not started yet (or both, briefly).
         if (episodeRef.current?.guid === target.guid) {
-          const enriched = { ...episodeRef.current, description };
+          const enriched = { ...episodeRef.current, ...patch };
           episodeRef.current = enriched;
           setEpisode(enriched);
           player.updateEpisodeMetadata(enriched);
         }
         const opened = openedEpisodeRef.current;
         if (opened?.episode.guid === target.guid) {
-          const next = { ...opened, episode: { ...opened.episode, description } };
+          const next = { ...opened, episode: { ...opened.episode, ...patch } };
           openedEpisodeRef.current = next;
           setOpenedEpisode(next);
         }
       })
       .catch((error) => {
-        const delay = SHOW_NOTES_RETRY_DELAYS_MS[attempt];
+        const delay = error instanceof NoFeedError ? undefined : SHOW_NOTES_RETRY_DELAYS_MS[attempt];
         if (delay == null) {
           console.warn('[playback] Could not restore show notes:', error);
+          if (needsNotes) report(error instanceof NoFeedError ? null : 'failed');
           return;
         }
         setTimeout(() => {
-          if (stillShown()) restoreShowNotesRef.current(target, attempt + 1);
+          if (isShown()) restoreShowNotesRef.current(target, attempt + 1);
         }, delay);
       });
   });
+
+  const retryShowNotes = useCallback(() => {
+    const target =
+      openedEpisodeRef.current?.episode.guid && openedEpisodeRef.current.episode.guid !== episodeRef.current?.guid
+        ? openedEpisodeRef.current.episode
+        : episodeRef.current;
+    if (target) restoreShowNotesRef.current(target);
+  }, []);
 
   useEffect(() => {
     externalEpisodeChangeRef.current = (target) => {
@@ -2028,6 +2081,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       retryPlaybackDownload,
       streamWithoutSkipping,
       openedEpisode,
+      showNotesStatus,
+      retryShowNotes,
       openEpisode,
       startOpenedEpisode,
       seekOpenedEpisode,
@@ -2063,6 +2118,8 @@ export function PlaybackProvider({ children }: { children: React.ReactNode }) {
       retryPlaybackDownload,
       streamWithoutSkipping,
       openedEpisode,
+      showNotesStatus,
+      retryShowNotes,
       openEpisode,
       startOpenedEpisode,
       seekOpenedEpisode,

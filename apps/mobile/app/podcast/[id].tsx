@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -37,6 +37,7 @@ import { isPlayed, usePlayedVersion } from '@/src/played/playedStore';
 import { ShowSettingsCard } from '@/components/ShowSettingsCard';
 import type { Episode, PodcastSearchResult } from '@/src/types';
 import { theme } from '@/constants/Colors';
+import { htmlToPlainText } from '@/src/ui/htmlText';
 import { displayFontFamily } from '@/constants/Typography';
 
 const EPISODES_PAGE_SIZE = 20;
@@ -83,6 +84,9 @@ export default function PodcastDetailScreen() {
   const [autoQueue, setAutoQueue] = useState(false);
   const queue = useQueue();
   const [sourceHint, setSourceHint] = useState<string | null>(null);
+  /** The show's description from its feed (HTML), shown as "About". */
+  const [about, setAbout] = useState<string | null>(null);
+  const [aboutExpanded, setAboutExpanded] = useState(false);
   const [positions, setPositions] = useState<Record<string, PlaybackPosition>>({});
   const [rssHasMore, setRssHasMore] = useState(false);
   // Each load gets its own generation; anything from an older load (or after
@@ -138,6 +142,8 @@ export default function PodcastDetailScreen() {
     setExpanding(false);
     setError(null);
     setSourceHint(null);
+    setAbout(null);
+    setAboutExpanded(false);
     setAutoQueue(false);
     setRssHasMore(false);
     setPositions({});
@@ -237,6 +243,7 @@ export default function PodcastDetailScreen() {
         maxItems: RSS_INITIAL_ITEMS,
         onUpdate: (parsed) => {
           if (isStale()) return;
+          if (parsed.description?.trim()) setAbout(parsed.description);
           applyEpisodes(mergeEpisodes(parsed.episodes, episodesRef.current));
           setRssHasMore(!!parsed.truncated);
           setSourceHint(
@@ -250,6 +257,9 @@ export default function PodcastDetailScreen() {
       if (isStale()) return;
 
       if (cached.length) {
+        // Saved copies keep a shortened description; the feed refresh fills in the rest.
+        const savedAbout = cached.find((e) => e.podcastDescription?.trim())?.podcastDescription;
+        if (savedAbout) setAbout((cur) => cur ?? savedAbout);
         applyEpisodes(mergeEpisodes(cached, episodesRef.current));
         if (!itunesEps.length) {
           setSourceHint(`${cached.length} cached episodes`);
@@ -412,6 +422,10 @@ export default function PodcastDetailScreen() {
   const hasMoreEpisodes =
     displayedEpisodes.length < episodes.length || (rssHasMore && !!getCachedRssXml(feedMeta.current?.feedUrl ?? ''));
 
+  const aboutText = useMemo(() => htmlToPlainText(about ?? undefined), [about]);
+  // ~3 lines; shorter descriptions show in full with no toggle.
+  const aboutIsLong = aboutText.length > 180 || aboutText.split('\n').length > 3;
+
   return (
     <View style={styles.container}>
       <Stack.Screen
@@ -455,6 +469,22 @@ export default function PodcastDetailScreen() {
                   </Text>
                 </Pressable>
               </View>
+              {!!aboutText && (
+                <View style={styles.about}>
+                  <Text style={styles.aboutText} numberOfLines={aboutExpanded || !aboutIsLong ? undefined : 3}>
+                    {aboutText}
+                  </Text>
+                  {aboutIsLong && (
+                    <Pressable
+                      onPress={() => setAboutExpanded((v) => !v)}
+                      hitSlop={8}
+                      accessibilityRole="button"
+                      accessibilityLabel={aboutExpanded ? 'Show less of the description' : 'Show the full description'}>
+                      <Text style={styles.aboutToggle}>{aboutExpanded ? 'Less' : 'More'}</Text>
+                    </Pressable>
+                  )}
+                </View>
+              )}
               <ShowSettingsCard
                 autoQueue={autoQueue}
                 onAutoQueueChange={onToggleAutoQueue}
@@ -574,6 +604,9 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   headerMeta: { alignItems: 'center', marginBottom: 20 },
+  about: { marginBottom: 20 },
+  aboutText: { color: theme.textSecondary, fontSize: 14, lineHeight: 20 },
+  aboutToggle: { color: theme.accentSoft, fontWeight: '600', fontSize: 14, marginTop: 6 },
   showEyebrow: {
     color: theme.accentSoft,
     fontSize: 10,
