@@ -99,6 +99,30 @@ async def save_transcript(
         await db.close()
 
 
+async def get_transcript_for_audio(episode_guid: str, audio_sha256: str) -> dict[str, Any] | None:
+    """The saved transcript of exactly these audio bytes, or None (a retry or forced
+    re-analysis of the same file then skips paying for transcription again)."""
+    if not audio_sha256:
+        return None
+    db = await _connect()
+    try:
+        cur = await db.execute(
+            "SELECT transcript_z FROM transcripts WHERE episode_guid = ? AND audio_sha256 = ?",
+            (episode_guid, audio_sha256),
+        )
+        row = await cur.fetchone()
+    finally:
+        await db.close()
+    if not row:
+        return None
+    try:
+        transcript = json.loads(zlib.decompress(row[0]).decode("utf-8"))
+    except (zlib.error, ValueError):
+        logger.warning("Ignoring unreadable cached transcript for %s", episode_guid)
+        return None
+    return transcript if isinstance(transcript, dict) and transcript.get("segments") else None
+
+
 async def get_transcript(
     episode_guid: str, *, prefer_md5: str | None = None
 ) -> tuple[dict[str, Any], str | None] | None:

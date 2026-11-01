@@ -3,8 +3,11 @@
 import asyncio
 import hashlib
 import os
+import shutil
 import subprocess
+import tempfile
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -269,12 +272,13 @@ def test_openrouter_llm_call_runs_off_the_event_loop(monkeypatch):
     assert call_threads and all(t != loop_thread for t in call_threads)
 
 
-def test_gemini_empty_candidates_or_parts_are_treated_as_no_segments(monkeypatch):
+def _fake_gemini(monkeypatch, replies):
     import httpx
 
     from app.services import detect_ads
 
-    responses = iter([{"candidates": []}, {"candidates": [{"content": {"parts": []}}]}, {}])
+    monkeypatch.setattr(detect_ads, "LABEL_RETRY_DELAY_S", 0)
+    responses = iter(replies)
 
     class _FakeResponse:
         def __init__(self, data):
@@ -300,11 +304,94 @@ def test_gemini_empty_candidates_or_parts_are_treated_as_no_segments(monkeypatch
             return _FakeResponse(next(responses))
 
     monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
-    transcript = {
-        "duration": 400,
-        "segments": [{"start": float(s), "end": float(s + 5), "text": "talk"} for s in (0, 150, 300)],
-    }
-    assert asyncio.run(detect_ads._label_gemini(transcript, get_settings())) == []
+
+
+_ONE_WINDOW = {"duration": 30, "segments": [{"start": 0.0, "end": 10.0, "text": "talk"}]}
+
+
+def _gemini_text(text, finish="STOP"):
+    return {"candidates": [{"content": {"parts": [{"text": text}]}, "finishReason": finish}]}
+
+
+def test_gemini_window_refused_by_the_provider_counts_as_no_segments(monkeypatch):
+    from app.services import detect_ads
+
+    _fake_gemini(monkeypatch, [{"promptFeedback": {"blockReason": "SAFETY"}}])
+    assert asyncio.run(detect_ads._label_gemini(_ONE_WINDOW, get_settings())) == []
+
+
+def test_empty_or_cut_off_labeling_reply_is_retried_then_fails_the_analysis(monkeypatch):
+    from app.services import detect_ads
+
+    # Empty parts, then a reply cut off at max tokens: neither may become "no ads".
+    _fake_gemini(monkeypatch, [{"candidates": [{"content": {"parts": []}}]},
+                               _gemini_text('{"segments":[{"start_s":0', "MAX_TOKENS")])
+    with pytest.raises(detect_ads.LabelingError):
+        asyncio.run(detect_ads._label_gemini(_ONE_WINDOW, get_settings()))
+
+
+def test_unusable_labeling_reply_is_retried(monkeypatch):
+    from app.services import detect_ads
+
+    good = '{"segments":[{"start_s":0,"end_s":10,"type":"sponsor","confidence":0.95}]}'
+    _fake_gemini(monkeypatch, [_gemini_text("Sure! Here are the ads"), _gemini_text(good)])
+    result = asyncio.run(detect_ads._label_gemini(_ONE_WINDOW, get_settings()))
+    assert [(s.start_ms, s.end_ms, s.type) for s in result] == [(0, 10_000, "sponsor")]
+
+
+def test_parse_llm_json_separates_no_ads_from_unusable():
+    from app.services.detect_ads import _parse_llm_json
+
+    assert _parse_llm_json('{"segments":[]}') == []
+    for unusable in ("", "   ", "not json", '{"ads":[]}', '{"segments":"none"}'):
+        assert _parse_llm_json(unusable) is None
+
+
+def test_missing_confidence_is_shown_but_not_auto_skipped():
+    from app.services.detect_ads import DEFAULT_SEGMENT_CONFIDENCE, _parse_llm_json
+
+    parsed = _parse_llm_json('{"segments":[{"start_s":0,"end_s":30,"type":"sponsor"}]}')
+    assert parsed and parsed[0].confidence == DEFAULT_SEGMENT_CONFIDENCE < 0.8
+
+
+def test_openrouter_labeling_is_deterministic(monkeypatch):
+    import openai
+
+    from app.services import detect_ads
+
+    seen = []
+
+    class _FakeOpenAI:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+        def _create(self, **kwargs):
+            seen.append(kwargs.get("temperature"))
+            message = SimpleNamespace(content='{"segments":[]}')
+            return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
+
+    monkeypatch.setattr(openai, "OpenAI", _FakeOpenAI)
+    asyncio.run(detect_ads._label_openrouter(_ONE_WINDOW, get_settings()))
+    assert seen == [0.0]
+
+
+def test_windows_are_labeled_concurrently_but_bounded(monkeypatch):
+    from app.services import detect_ads
+
+    active = peak = 0
+
+    async def call(_chunk):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return detect_ads._Reply('{"segments":[]}')
+
+    transcript = {"segments": [{"start": float(s), "end": float(s + 5), "text": "talk"}
+                               for s in range(0, 3000, 150)]}
+    assert asyncio.run(detect_ads._label_windows(transcript, call)) == []
+    assert 1 < peak <= detect_ads.LABEL_WINDOW_CONCURRENCY
 
 
 def test_merge_never_combines_unknown_with_ad_segments():
@@ -362,3 +449,54 @@ def test_windows_overlap_previous_window_tail():
     # Every transcript line still appears in at least one window.
     joined = "\n".join(chunks)
     assert all(f"line {t}" in joined for t in range(0, 300, 10))
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
+def test_stt_audio_is_16khz_mono_cbr_and_keeps_its_timeline(tmp_path):
+    import json as _json
+
+    from app.services import transcribe
+
+    src = tmp_path / "episode.mp3"
+    # 60 s stereo 44.1 kHz VBR MP3: a beep at 40 s marks a known position.
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo:d=40",
+         "-f", "lavfi", "-i", "sine=f=1000:r=44100:d=20",
+         "-filter_complex", "[1]aformat=channel_layouts=stereo[b];[0][b]concat=n=2:v=0:a=1",
+         "-c:a", "libmp3lame", "-q:a", "4", str(src)],
+        check=True, capture_output=True,
+    )
+    out = transcribe.prepare_for_stt(src)
+    assert out is not None
+    try:
+        info = _json.loads(subprocess.run(
+            ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(out)],
+            check=True, capture_output=True, text=True,
+        ).stdout)
+        stream = info["streams"][0]
+        assert stream["sample_rate"] == "16000" and stream["channels"] == 1
+        assert abs(float(info["format"]["duration"]) - 60.0) < 0.2
+        # The beep still starts at 40 s: silencedetect reports where the silence ends.
+        detect = subprocess.run(
+            ["ffmpeg", "-v", "info", "-i", str(out), "-af", "silencedetect=n=-40dB:d=1", "-f", "null", "-"],
+            capture_output=True, text=True,
+        ).stderr
+        ends = [float(line.split("silence_end: ")[1].split()[0]) for line in detect.splitlines() if "silence_end" in line]
+        assert ends and abs(ends[0] - 40.0) < 0.1
+    finally:
+        out.unlink(missing_ok=True)
+
+
+def test_stt_prep_falls_back_to_the_original_when_ffmpeg_fails(tmp_path, monkeypatch):
+    from app.services import transcribe
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("needs ffmpeg")
+    bad = tmp_path / "not-audio.mp3"
+    bad.write_bytes(b"definitely not audio")
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    real_mkstemp = tempfile.mkstemp
+    monkeypatch.setattr(transcribe.tempfile, "mkstemp", lambda **kw: real_mkstemp(dir=scratch, **kw))
+    assert transcribe.prepare_for_stt(bad) is None
+    assert list(Path(scratch).iterdir()) == []  # the failed output was removed

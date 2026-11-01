@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -17,6 +17,8 @@ PROMPT_SPONSORS = 20
 PROMPT_PHRASES = 10
 PROMPT_NOT_ADS = 8
 PROMPT_POSITIONS = 6
+# Hints not seen again for this long stop being used (sponsors change, shows move breaks).
+LEARNED_MAX_AGE_DAYS = 365
 
 _LIST_LIMITS = {
     "sponsors": MAX_SPONSORS,
@@ -63,6 +65,30 @@ def empty_notes() -> dict[str, Any]:
     }
 
 
+def _as_utc(value: str) -> datetime:
+    dt = datetime.fromisoformat(value)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _fresh(items: list[Any], now: str) -> list[dict[str, Any]]:
+    """Entries seen within LEARNED_MAX_AGE_DAYS of `now` (entries without a date are kept)."""
+    try:
+        cutoff = _as_utc(now) - timedelta(days=LEARNED_MAX_AGE_DAYS)
+    except ValueError:
+        cutoff = None
+    out = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            stale = cutoff is not None and _as_utc(str(item["last_seen"])) < cutoff
+        except (KeyError, ValueError):
+            stale = False
+        if not stale:
+            out.append(item)
+    return out
+
+
 def _rank(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(items, key=lambda i: (i.get("count", 1), i.get("last_seen", "")), reverse=True)
 
@@ -98,9 +124,9 @@ def merge_learning(
     if isinstance(notes, dict):
         for key in _LIST_LIMITS:
             if isinstance(notes.get(key), list):
-                out[key] = [i for i in notes[key] if isinstance(i, dict) and i.get("value")]
+                out[key] = [i for i in _fresh(notes[key], now) if i.get("value")]
         if isinstance(notes.get("ad_positions"), list):
-            out["ad_positions"] = [p for p in notes["ad_positions"] if isinstance(p, dict)]
+            out["ad_positions"] = _fresh(notes["ad_positions"], now)
         out["confirmed_reports"] = int(notes.get("confirmed_reports") or 0)
         out["rejected_reports"] = int(notes.get("rejected_reports") or 0)
     out["sponsors"] = _add_values(out["sponsors"], list(sponsors or []), MAX_SPONSORS, now)
@@ -137,15 +163,17 @@ def _fmt(ms: int) -> str:
     return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
 
 
-def notes_prompt_block(notes: dict[str, Any] | None) -> str | None:
-    """Short hint block for the labeling prompt, or None when nothing useful was learned."""
+def notes_prompt_block(notes: dict[str, Any] | None, *, now: str | None = None) -> str | None:
+    """Short hint block for the labeling prompt, or None when nothing useful was learned.
+    Hints not seen for LEARNED_MAX_AGE_DAYS are left out."""
     if not isinstance(notes, dict):
         return None
+    now = now or datetime.now(timezone.utc).isoformat()
     lines: list[str] = []
 
     def values(key: str, limit: int) -> list[str]:
         items = notes.get(key) if isinstance(notes.get(key), list) else []
-        return [str(i["value"]) for i in _rank([i for i in items if isinstance(i, dict) and i.get("value")])[:limit]]
+        return [str(i["value"]) for i in _rank([i for i in _fresh(items, now) if i.get("value")])[:limit]]
 
     sponsors = values("sponsors", PROMPT_SPONSORS)
     if sponsors:
@@ -153,7 +181,7 @@ def notes_prompt_block(notes: dict[str, Any] | None) -> str | None:
     phrases = values("break_phrases", PROMPT_PHRASES)
     if phrases:
         lines.append("- Phrases this show uses going into or out of ad breaks: " + "; ".join(f'"{p}"' for p in phrases))
-    positions = [p for p in notes.get("ad_positions") or [] if isinstance(p, dict)][-PROMPT_POSITIONS:]
+    positions = _fresh(notes.get("ad_positions") or [], now)[-PROMPT_POSITIONS:]
     if positions:
         spots = ", ".join(
             f"{_fmt(int(p['start_ms']))}-{_fmt(int(p['end_ms']))}"
