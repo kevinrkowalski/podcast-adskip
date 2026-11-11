@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
-import { Link, useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getSubscriptions } from '@/src/db/storage';
 import type { Subscription } from '@/src/types';
@@ -44,17 +44,16 @@ export default function ShowsScreen() {
           </View>
         }
         renderItem={({ item }) => (
-          <Link href={{ pathname: '/podcast/[id]', params: { id: String(item.collectionId) } }} asChild>
-            <Pressable
-              style={({ pressed }) => [{ width: tileSize }, pressed && { opacity: 0.6 }]}
-              accessibilityRole="button"
-              accessibilityLabel={item.collectionName}>
-              <Cover uri={item.artworkUrl} size={tileSize} />
-              <Text style={styles.tileTitle} numberOfLines={1}>
-                {item.collectionName}
-              </Text>
-            </Pressable>
-          </Link>
+          <Pressable
+            onPress={() => router.push({ pathname: '/podcast/[id]', params: { id: String(item.collectionId) } })}
+            style={{ width: tileSize }}
+            accessibilityRole="button"
+            accessibilityLabel={item.collectionName}>
+            <Cover uri={item.artworkUrl} size={tileSize} />
+            <Text style={styles.tileTitle} numberOfLines={2}>
+              {item.collectionName}
+            </Text>
+          </Pressable>
         )}
         ListEmptyComponent={
           <View style={styles.empty}>
@@ -75,6 +74,6 @@ const styles = StyleSheet.create({
   flex: { flex: 1, minWidth: 0 },
   header: { flexDirection: 'row', alignItems: 'baseline', marginBottom: 18 },
   gridRow: { gap: GAP, marginBottom: 16 },
-  tileTitle: { fontFamily: font.medium, fontSize: 12.5, color: theme.text, marginTop: 7 },
+  tileTitle: { fontFamily: font.medium, fontSize: 12.5, lineHeight: 16, color: theme.text, marginTop: 7 },
   empty: { marginTop: 24 },
 });

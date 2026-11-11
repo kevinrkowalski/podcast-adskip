@@ -11,7 +11,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Link, useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { cleanFeedUrlInput, subscribeByFeedUrl } from '@/src/import/importOpml';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -238,19 +238,20 @@ export default function SearchScreen() {
     const isBusy = subBusyIds.has(item.collectionId);
     return (
       <View style={styles.row}>
-        <Link href={{ pathname: '/podcast/[id]', params: { id: String(item.collectionId) } }} asChild>
-          <Pressable style={({ pressed }) => [styles.rowMain, pressed && { opacity: 0.6 }]} accessibilityRole="button">
-            <Cover uri={item.artworkUrl600 || item.artworkUrl100} size={56} />
-            <View style={styles.flex}>
-              <Text style={type.title} numberOfLines={2}>
-                {item.collectionName}
-              </Text>
-              <Text style={type.metaMuted} numberOfLines={1}>
-                {item.artistName}
-              </Text>
-            </View>
-          </Pressable>
-        </Link>
+        <Pressable
+          onPress={() => router.push({ pathname: '/podcast/[id]', params: { id: String(item.collectionId) } })}
+          style={styles.rowMain}
+          accessibilityRole="button">
+          <Cover uri={item.artworkUrl600 || item.artworkUrl100} size={56} />
+          <View style={styles.flex}>
+            <Text style={type.title} numberOfLines={2}>
+              {item.collectionName}
+            </Text>
+            <Text style={type.metaMuted} numberOfLines={1}>
+              {item.artistName}
+            </Text>
+          </View>
+        </Pressable>
         {isSub ? (
           <Chip label="Subscribed" trailing="check" />
         ) : (
@@ -267,18 +268,17 @@ export default function SearchScreen() {
   };
 
   const renderChartItem = ({ item, index }: { item: PodcastSearchResult; index: number }) => (
-    <Link href={{ pathname: '/podcast/[id]', params: { id: String(item.collectionId) } }} asChild>
-      <Pressable
-        style={({ pressed }) => [{ width: tileSize }, pressed && { opacity: 0.6 }]}
-        accessibilityRole="button"
-        accessibilityLabel={`${index + 1}. ${item.collectionName}`}>
-        <Cover uri={item.artworkUrl600 || item.artworkUrl100} size={tileSize} />
-        <Text style={styles.chartTitle} numberOfLines={2}>
-          <Text style={styles.chartRank}>{index + 1} </Text>
-          {item.collectionName}
-        </Text>
-      </Pressable>
-    </Link>
+    <Pressable
+      onPress={() => router.push({ pathname: '/podcast/[id]', params: { id: String(item.collectionId) } })}
+      style={{ width: tileSize }}
+      accessibilityRole="button"
+      accessibilityLabel={`${index + 1}. ${item.collectionName}`}>
+      <Cover uri={item.artworkUrl600 || item.artworkUrl100} size={tileSize} />
+      <Text style={styles.chartTitle} numberOfLines={2}>
+        <Text style={styles.chartRank}>{index + 1} </Text>
+        {item.collectionName}
+      </Text>
+    </Pressable>
   );
 
   const discoverHeader = (

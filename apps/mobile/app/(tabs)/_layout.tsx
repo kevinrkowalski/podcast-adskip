@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { theme } from '@/constants/Colors';
 import { font } from '@/constants/Typography';
-import { MiniPlayer } from '@/components/MiniPlayer';
+import { DockBackdrop, MiniPlayer } from '@/components/MiniPlayer';
 import { Icon, type IconName } from '@/components/ui';
 
 export const unstable_settings = {
@@ -20,7 +20,9 @@ type TabBarProps = Parameters<NonNullable<React.ComponentProps<typeof Tabs>['tab
 function Dock({ state, descriptors, navigation }: TabBarProps) {
   const insets = useSafeAreaInsets();
   return (
-    <View pointerEvents="box-none" style={[styles.dock, { bottom: insets.bottom + 10 }]}>
+    <>
+      <DockBackdrop height={insets.bottom + 10 + 34} />
+      <View pointerEvents="box-none" style={[styles.dock, { bottom: insets.bottom + 10 }]}>
       <MiniPlayer />
       <View style={styles.tabs} accessibilityRole="tablist">
         {state.routes.map((route, index) => {
@@ -44,7 +46,8 @@ function Dock({ state, descriptors, navigation }: TabBarProps) {
           );
         })}
       </View>
-    </View>
+      </View>
+    </>
   );
 }
 
@@ -73,5 +76,6 @@ const styles = StyleSheet.create({
   },
   tab: { flex: 1, alignItems: 'center', gap: 2, paddingVertical: 7, borderRadius: 18 },
   tabOn: { backgroundColor: 'rgba(255,255,255,0.07)' },
-  tabLabel: { fontFamily: font.medium, fontSize: 11 },
+  // Full width and centred, so the label can never be measured narrower than its text.
+  tabLabel: { fontFamily: font.medium, fontSize: 11, alignSelf: 'stretch', textAlign: 'center' },
 });

@@ -86,13 +86,32 @@ export function MiniPlayer() {
   );
 }
 
+/**
+ * Solid ground under a floating dock: the screen's background from the bottom edge up to
+ * `height`, then a short stepped fade, so list content never shows below the dock or
+ * behind the system navigation bar.
+ */
+export function DockBackdrop({ height }: { height: number }) {
+  return (
+    <View pointerEvents="none" style={styles.backdrop}>
+      {[0.25, 0.5, 0.75, 0.9].map((opacity) => (
+        <View key={opacity} style={{ height: 10, backgroundColor: theme.background, opacity }} />
+      ))}
+      <View style={{ height, backgroundColor: theme.background }} />
+    </View>
+  );
+}
+
 /** The mini player floating by itself at the bottom of a screen that has no tab bar. */
 export function FloatingMiniPlayer() {
   const insets = useSafeAreaInsets();
   return (
-    <View pointerEvents="box-none" style={[styles.floating, { bottom: insets.bottom + 10 }]}>
-      <MiniPlayer />
-    </View>
+    <>
+      <DockBackdrop height={insets.bottom + 10} />
+      <View pointerEvents="box-none" style={[styles.floating, { bottom: insets.bottom + 10 }]}>
+        <MiniPlayer />
+      </View>
+    </>
   );
 }
 
@@ -105,6 +124,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   floating: { position: 'absolute', left: 10, right: 10 },
+  backdrop: { position: 'absolute', left: 0, right: 0, bottom: 0 },
   row: { flexDirection: 'row', alignItems: 'center', paddingLeft: 10, paddingRight: 6, paddingVertical: 9, gap: 4 },
   openArea: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 0 },
   meta: { flex: 1, minWidth: 0 },
