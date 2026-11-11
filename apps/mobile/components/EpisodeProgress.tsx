@@ -21,5 +21,5 @@ const styles = StyleSheet.create({
     marginTop: 8,
     overflow: 'hidden',
   },
-  fill: { height: 3, borderRadius: 2, backgroundColor: theme.progressFill },
+  fill: { height: 3, borderRadius: 2, backgroundColor: theme.textSecondary },
 });

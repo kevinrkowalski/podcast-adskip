@@ -1,43 +1,37 @@
-import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
-import { SymbolView } from 'expo-symbols';
-import { useRootNavigationState, useRouter, useSegments, type Href } from 'expo-router';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { usePathname, useRootNavigationState, useRouter, type Href } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePlayback } from '@/src/store/PlaybackContext';
+import { Cover, Icon } from '@/components/ui';
 import { theme } from '@/constants/Colors';
+import { font } from '@/constants/Typography';
 
 /**
- * Compact now-playing bar above the tab bar (Pocket Casts style).
- * Hidden on the full Now Playing screen so it does not stack.
+ * Compact now-playing card: part of the floating dock on tab screens, and floating on
+ * its own on show pages. Hidden on Listen (the episode is already at the top there) and
+ * on the player.
  */
 export function MiniPlayer() {
-  const {
-    episode,
-    isPlaying,
-    positionMs,
-    durationMs,
-    togglePlay,
-    seek,
-    restoreCurrentSkipMap,
-    playbackDownload,
-  } = usePlayback();
+  const { episode, isPlaying, positionMs, durationMs, togglePlay, seek, restoreCurrentSkipMap, playbackDownload } =
+    usePlayback();
   const router = useRouter();
   const rootNavigationState = useRootNavigationState();
   const navigationReady = rootNavigationState?.key != null;
-  const segments = useSegments() as string[];
+  const pathname = usePathname();
 
   if (!episode) return null;
-  // Hide on the full Now Playing screen.
-  const onFullPlayer = segments.some((s) => s === 'now-playing');
-  if (onFullPlayer) return null;
+  if (pathname === '/' || pathname.startsWith('/now-playing')) return null;
 
   const download = playbackDownload?.guid === episode.guid ? playbackDownload : null;
   const progress = durationMs > 0 ? Math.min(1, positionMs / durationMs) : 0;
 
   return (
     <View style={styles.wrap}>
-      <View style={[styles.progress, { width: `${progress * 100}%` as unknown as number }]} />
       <View style={styles.row}>
         <Pressable
           style={styles.openArea}
+          accessibilityRole="button"
+          accessibilityLabel={`Open player: ${episode.title}`}
           onPress={() => {
             if (!navigationReady) return;
             router.push('/now-playing' as Href);
@@ -45,11 +39,7 @@ export function MiniPlayer() {
               console.warn('[mini-player] Failed to restore skip map:', error);
             });
           }}>
-          {!!episode.artworkUrl ? (
-            <Image source={{ uri: episode.artworkUrl }} style={styles.art} />
-          ) : (
-            <View style={[styles.art, styles.artPlaceholder]} />
-          )}
+          <Cover uri={episode.artworkUrl} size={40} radius={5} />
           <View style={styles.meta}>
             <Text style={styles.title} numberOfLines={1}>
               {episode.title}
@@ -58,53 +48,50 @@ export function MiniPlayer() {
               {download?.state === 'downloading'
                 ? `Downloading…${download.progressPct != null ? ` ${download.progressPct}%` : ''}`
                 : download?.state === 'error'
-                  ? 'Download failed · tap to see options'
+                  ? 'Download failed · tap for options'
                   : (episode.podcastTitle ?? 'Podcast')}
             </Text>
           </View>
         </Pressable>
-        <View style={styles.controls}>
-          <Pressable
-            onPress={() => {
-              void seek(Math.max(0, positionMs - 15_000));
-            }}
-            hitSlop={10}
-            style={styles.skipBtn}
-            accessibilityLabel="Skip back 15 seconds">
-            <Text style={styles.skipLabel}>−15</Text>
-          </Pressable>
-          <Pressable
-            onPress={() => {
-              void togglePlay();
-            }}
-            hitSlop={10}
-            style={styles.playBtn}
-            accessibilityLabel={
-              download?.state === 'downloading' ? 'Downloading, plays when ready' : isPlaying ? 'Pause' : 'Play'
-            }>
-            {download?.state === 'downloading' ? (
-              <ActivityIndicator size="small" color={theme.text} />
-            ) : (
-              <SymbolView
-                name={isPlaying
-                  ? { ios: 'pause.fill', android: 'pause', web: 'pause' }
-                  : { ios: 'play.fill', android: 'play_arrow', web: 'play_arrow' }}
-                tintColor={theme.text}
-                size={19}
-              />
-            )}
-          </Pressable>
-          <Pressable
-            onPress={() => {
-              void seek(positionMs + 30_000);
-            }}
-            hitSlop={10}
-            style={styles.skipBtn}
-            accessibilityLabel="Skip forward 30 seconds">
-            <Text style={styles.skipLabel}>+30</Text>
-          </Pressable>
-        </View>
+        <Pressable
+          onPress={() => void seek(Math.max(0, positionMs - 15_000))}
+          hitSlop={8}
+          style={styles.skipBtn}
+          accessibilityLabel="Skip back 15 seconds">
+          <Text style={styles.skipLabel}>−15</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => void togglePlay()}
+          hitSlop={8}
+          style={styles.playBtn}
+          accessibilityLabel={
+            download?.state === 'downloading' ? 'Downloading, plays when ready' : isPlaying ? 'Pause' : 'Play'
+          }>
+          {download?.state === 'downloading' ? (
+            <ActivityIndicator size="small" color={theme.background} />
+          ) : (
+            <Icon name={isPlaying ? 'pause' : 'play'} size={20} color={theme.background} />
+          )}
+        </Pressable>
+        <Pressable
+          onPress={() => void seek(positionMs + 30_000)}
+          hitSlop={8}
+          style={styles.skipBtn}
+          accessibilityLabel="Skip forward 30 seconds">
+          <Text style={styles.skipLabel}>+30</Text>
+        </Pressable>
       </View>
+      <View style={[styles.progress, { width: `${progress * 100}%` as unknown as number }]} />
+    </View>
+  );
+}
+
+/** The mini player floating by itself at the bottom of a screen that has no tab bar. */
+export function FloatingMiniPlayer() {
+  const insets = useSafeAreaInsets();
+  return (
+    <View pointerEvents="box-none" style={[styles.floating, { bottom: insets.bottom + 10 }]}>
+      <MiniPlayer />
     </View>
   );
 }
@@ -112,71 +99,26 @@ export function MiniPlayer() {
 const styles = StyleSheet.create({
   wrap: {
     backgroundColor: theme.miniBar,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.border,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.border,
     overflow: 'hidden',
   },
-  progress: {
-    height: 3,
-    backgroundColor: theme.accent,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 8,
-  },
-  openArea: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    minWidth: 0,
-  },
-  art: {
-    width: 44,
-    height: 44,
-    borderRadius: 10,
-    backgroundColor: theme.surfaceElevated,
-  },
-  artPlaceholder: {
-    backgroundColor: theme.border,
-  },
+  floating: { position: 'absolute', left: 10, right: 10 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingLeft: 10, paddingRight: 6, paddingVertical: 9, gap: 4 },
+  openArea: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 0 },
   meta: { flex: 1, minWidth: 0 },
-  title: {
-    color: theme.text,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  show: {
-    color: theme.textSecondary,
-    fontSize: 12,
-    marginTop: 2,
-  },
-  controls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-  },
-  skipBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  skipLabel: {
-    color: theme.textSecondary,
-    fontSize: 12,
-    fontWeight: '700',
-  },
+  title: { fontFamily: font.semi, fontSize: 14, color: theme.text },
+  show: { fontFamily: font.body, fontSize: 12.5, color: theme.textSecondary, marginTop: 1 },
+  skipBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+  skipLabel: { fontFamily: font.monoMedium, fontSize: 12.5, color: theme.textSecondary },
   playBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: theme.accent,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: theme.text,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  progress: { height: 2, backgroundColor: theme.text },
 });

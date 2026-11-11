@@ -14,6 +14,7 @@ import {
   detectNewEpisodes,
   enableAutoQueueState,
   moveInQueue,
+  moveToIndex,
   normalizeQueue,
   playNext as playNextPure,
   removeFromQueue as removePure,
@@ -171,6 +172,12 @@ export async function removeFromQueue(guid: string) {
 export async function moveQueueItem(index: number, delta: number) {
   await hydrateQueue();
   setQueue(moveInQueue(queue, index, delta, currentGuid));
+}
+
+/** Drag and drop: move the item at queue index `from` to index `to`. */
+export async function moveQueueItemTo(from: number, to: number) {
+  await hydrateQueue();
+  setQueue(moveToIndex(queue, from, to, currentGuid));
 }
 
 /** Clear Up Next; the playing episode at index 0 stays. */

@@ -1,1357 +1,477 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
-  Dimensions,
-  Image,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { useNavigation, useRouter, type Href } from 'expo-router';
-import { openShowForEpisode } from '@/src/navigation/openShow';
-import { SymbolView } from 'expo-symbols';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { usePlayback } from '@/src/store/PlaybackContext';
-import { showQueueActions } from '@/src/queue/queueActions';
-import { ReportSkipSheet } from '@/components/ReportSkipSheet';
-import { useUpNextCount } from '@/src/queue/queueStore';
-import { filterSkippableSegments, formatMs, normalizeSegment, segmentTypeLabel } from '@/src/player/skipLogic';
-import { htmlToPlainText } from '@/src/ui/htmlText';
+import { openShowForEpisode } from '@/src/navigation/openShow';
+import { isPlayed } from '@/src/played/playedStore';
+import { adSkipLine, isAnalyzing, type AdLineActionKind } from '@/src/player/adSkipLine';
 import { currentChapterIndex, useChapters } from '@/src/player/chapters';
-import { streamCacheNotice } from '@/src/player/streamCache';
+import { formatMs } from '@/src/player/skipLogic';
+import { useUpNextCount } from '@/src/queue/queueStore';
+import { usePlayback } from '@/src/store/PlaybackContext';
+import { htmlToPlainText } from '@/src/ui/htmlText';
+import { showActionSheet } from '@/src/ui/overlayBus';
+import { parseShowNotesParts } from '@/src/ui/showNotesParts';
+import { AdSkipLine } from '@/components/AdSkipLine';
+import { AdSkipSheet } from '@/components/AdSkipSheet';
+import { ReportSkipSheet } from '@/components/ReportSkipSheet';
 import { Scrubber } from '@/components/Scrubber';
+import { ShowSettingsSheet } from '@/components/ShowSettingsSheet';
+import { Cover, Divider, Icon, Label, type } from '@/components/ui';
 import { theme } from '@/constants/Colors';
-import { displayFontFamily, monoFontFamily } from '@/constants/Typography';
+import { font } from '@/constants/Typography';
 
-const { width: SCREEN_W } = Dimensions.get('window');
-const ART_SIZE = Math.min(SCREEN_W - 56, 340);
-type PlayerTab = 'playing' | 'details';
-
-/** Media-style timestamps: m:ss, mm:ss, or h:mm:ss (not bare years / integers). */
-const TIMESTAMP_RE = /(?<!\d)(?:\d{1,2}:\d{2}:\d{2}|\d{1,2}:\d{2})(?!\d)/g;
-
-type ShowNotesPart =
-  | { type: 'text'; text: string }
-  | { type: 'timestamp'; raw: string; ms: number };
-
-function parseTimestampToMs(raw: string): number | null {
-  const bits = raw.split(':').map((p) => Number(p));
-  if (bits.some((n) => !Number.isFinite(n) || n < 0)) return null;
-  let hours = 0;
-  let minutes = 0;
-  let seconds = 0;
-  if (bits.length === 3) {
-    [hours, minutes, seconds] = bits;
-    if (minutes > 59 || seconds > 59) return null;
-  } else if (bits.length === 2) {
-    [minutes, seconds] = bits;
-    // Allow minutes >= 60 (e.g. 75:30) when hours are omitted.
-    if (seconds > 59) return null;
-  } else {
-    return null;
-  }
-  const totalSec = hours * 3600 + minutes * 60 + seconds;
-  // Reject absurd lengths that are unlikely to be episode cues.
-  if (totalSec > 24 * 3600) return null;
-  return totalSec * 1000;
-}
-
-function parseShowNotesParts(notes: string): ShowNotesPart[] {
-  if (!notes) return [];
-  const parts: ShowNotesPart[] = [];
-  let last = 0;
-  TIMESTAMP_RE.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = TIMESTAMP_RE.exec(notes)) != null) {
-    const raw = match[0];
-    const ms = parseTimestampToMs(raw);
-    if (ms == null) continue;
-    if (match.index > last) {
-      parts.push({ type: 'text', text: notes.slice(last, match.index) });
-    }
-    parts.push({ type: 'timestamp', raw, ms });
-    last = match.index + raw.length;
-  }
-  if (last < notes.length) {
-    parts.push({ type: 'text', text: notes.slice(last) });
-  }
-  return parts;
-}
-
-
-function formatEtaSeconds(sec: number | null | undefined): string | null {
-  if (sec == null || !Number.isFinite(sec) || sec < 0) return null;
-  if (sec < 60) return `~${Math.max(5, Math.round(sec / 5) * 5)} sec left`;
-  const mins = Math.max(1, Math.round(sec / 60));
-  return mins === 1 ? '~1 min left' : `~${mins} min left`;
-}
-
-// Module-level so remounting the player doesn't re-alert the same error.
-let lastAlertedAnalyzeErrorKey: string | null = null;
-
+/**
+ * The player: one scrolling page. Cover, scrubber, five controls and the ad-skip line on
+ * top; chapters, show notes and about the show underneath. A slim bar with play/pause
+ * stays pinned once the controls scroll away.
+ */
 export default function PlayerScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const navigation = useNavigation();
+  const { width, height } = useWindowDimensions();
   const playback = usePlayback();
   const queueLength = useUpNextCount();
-  const {
-    playbackRate,
-    autoSkip,
-    adDetectionEnabled,
-    setAutoSkip,
-    cyclePlaybackRate,
-    openedEpisode,
-    closeOpenedEpisode,
-  } = playback;
-  // An episode opened from a show but not started yet: same screen, paused at
-  // its saved position. The loaded episode keeps playing until Play is tapped.
-  const opened =
-    openedEpisode && openedEpisode.episode.guid !== playback.episode?.guid
-      ? openedEpisode
-      : null;
-  const episode = opened ? opened.episode : playback.episode;
-  const isPlaying = opened ? false : playback.isPlaying;
-  const positionMs = opened ? opened.positionMs : playback.positionMs;
-  const durationMs = opened ? opened.durationMs : playback.durationMs;
-  // An unstarted episode shows the map already prepared for its download (if any).
-  // An unstarted episode shows the map already prepared for its download (if any), or
-  // the progress of a Prepare started on it.
-  const skipMap = opened ? (opened.skipMap ?? null) : playback.skipMap;
-  const analyzeStatus = opened
-    ? (opened.analyzeStatus ?? (opened.skipMap?.status === 'ready' ? 'ready' : null))
-    : playback.analyzeStatus;
-  const analyzeError = opened ? (opened.analyzeError ?? null) : playback.analyzeError;
-  const audioMismatchWarning = opened ? null : playback.audioMismatchWarning;
-  const uploadProgress = opened ? (opened.uploadProgress ?? null) : playback.uploadProgress;
-  // Download-before-play (episodes that use ad skipping never stream).
-  const playbackDownload =
-    !opened && playback.playbackDownload?.guid === playback.episode?.guid
-      ? playback.playbackDownload
-      : null;
-  // Guards Play / Prepare on an unstarted episode against double taps.
-  const startingOpenedRef = useRef(false);
-  const runOpenedStart = async (fn: () => Promise<void>) => {
-    if (startingOpenedRef.current) return;
-    startingOpenedRef.current = true;
-    try {
-      await fn();
-    } finally {
-      startingOpenedRef.current = false;
-    }
-  };
-  const togglePlay = opened
-    ? () => runOpenedStart(() => playback.startOpenedEpisode())
-    : playback.togglePlay;
-  const seek = opened ? playback.seekOpenedEpisode : playback.seek;
-  // Prepare on an unstarted episode gets it ready without starting it; Play still works
-  // (and picks up the prepared download) while it runs.
-  const requestAnalyze = opened ? playback.prepareOpenedEpisode : playback.requestAnalyze;
-  // An opened (unstarted) episode may be from a different show than the one
-  // playing, so the live per-show adDetectionEnabled doesn't apply to it.
-  const showAdDetectionEnabled = opened ? true : adDetectionEnabled;
-  const autoSkipActive = autoSkip && showAdDetectionEnabled;
+  const { episode, isPlaying, positionMs, durationMs, playbackRate, skipMap, seek } = playback;
 
-  // Leaving the player drops an unstarted episode so the mini-player / next
-  // open reflect the live one.
-  useEffect(() => closeOpenedEpisode, [closeOpenedEpisode]);
+  const playbackDownload = playback.playbackDownload?.guid === episode?.guid ? playback.playbackDownload : null;
   const [scrubPreview, setScrubPreview] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<PlayerTab>('playing');
-  const [skipSheetVisible, setSkipSheetVisible] = useState(false);
+  const [adSheet, setAdSheet] = useState(false);
+  const [settingsSheet, setSettingsSheet] = useState(false);
   const [reportVisible, setReportVisible] = useState(false);
+  const [aboutExpanded, setAboutExpanded] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
+  const controlsBottom = useRef(0);
+  const chaptersTop = useRef(0);
 
   const segs = skipMap?.segments ?? [];
-  // What will actually be skipped: confident segments of kinds this show skips (an
-  // unstarted episode's show settings aren't loaded, so all kinds count for it).
-  const loadedSkipSettings = opened ? null : playback.skipSettings;
-  const skipCount = useMemo(() => {
-    if (loadedSkipSettings && !loadedSkipSettings.skipEnabled) return 0;
-    return filterSkippableSegments(segs.map(normalizeSegment), {
-      skipAdvertisement: loadedSkipSettings?.skipAdvertisement ?? true,
-      skipIntroOutro: loadedSkipSettings?.skipIntroOutro ?? true,
-      skipSelfPromotion: loadedSkipSettings?.skipSelfPromotion ?? true,
-    }).length;
-  }, [segs, loadedSkipSettings]);
   const displayPos = scrubPreview != null ? scrubPreview : positionMs;
   const remainingMs = Math.max(0, durationMs - displayPos);
   const { chapters } = useChapters(episode ?? null);
   const chapterIdx = currentChapterIndex(chapters, displayPos);
+  const chapterStarts = useMemo(() => chapters.map((c) => c.startMs), [chapters]);
   const showNotes = useMemo(() => htmlToPlainText(episode?.description), [episode?.description]);
   const showNotesParts = useMemo(() => parseShowNotesParts(showNotes), [showNotes]);
   const aboutShow = useMemo(() => htmlToPlainText(episode?.podcastDescription), [episode?.podcastDescription]);
-  const [aboutExpanded, setAboutExpanded] = useState(false);
-  // ~4 lines of the details text; shorter descriptions show in full with no toggle.
   const aboutIsLong = aboutShow.length > 240 || aboutShow.split('\n').length > 4;
-  useEffect(() => setAboutExpanded(false), [episode?.guid]);
-  const notesStatus =
-    playback.showNotesStatus?.guid === episode?.guid ? playback.showNotesStatus?.status : null;
-
-  const episodeGuid = episode?.guid;
+  const guid = episode?.guid;
   useEffect(() => {
-    if (!analyzeError) return;
-    const key = `${episodeGuid ?? ''}:${analyzeError}`;
-    if (key === lastAlertedAnalyzeErrorKey) return;
-    lastAlertedAnalyzeErrorKey = key;
-    Alert.alert('Analysis failed', analyzeError);
-  }, [analyzeError, episodeGuid]);
+    setAboutExpanded(false);
+    setPinned(false);
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [guid]);
 
-  const seekToTimestamp = (ms: number) => {
-    const max = durationMs > 0 ? durationMs : ms;
-    const clamped = Math.max(0, Math.min(ms, max));
-    void seek(clamped);
-  };
-
-  const isAnalyzing =
-    analyzeStatus === 'queued' || analyzeStatus === 'pending' || 
-    analyzeStatus === 'downloading' || analyzeStatus === 'uploading';
-
-  const analyzeEtaLabel = useMemo(
-    () => formatEtaSeconds(skipMap?.eta_seconds),
-    [skipMap?.eta_seconds],
+  const line = useMemo(
+    () =>
+      adSkipLine({
+        hasAudio: !!episode?.enclosureUrl,
+        autoSkip: playback.autoSkip,
+        adDetectionEnabled: playback.adDetectionEnabled,
+        skipSettings: playback.skipSettings,
+        skipMap,
+        analyzeStatus: playback.analyzeStatus,
+        analyzeError: playback.analyzeError,
+        uploadProgress: playback.uploadProgress,
+        playbackDownload,
+        audioMismatchWarning: playback.audioMismatchWarning,
+      }),
+    [episode?.enclosureUrl, playback.autoSkip, playback.adDetectionEnabled, playback.skipSettings, skipMap, playback.analyzeStatus, playback.analyzeError, playback.uploadProgress, playbackDownload, playback.audioMismatchWarning],
   );
 
-  const analyzeStageLabel =
-    skipMap?.stage_label?.trim() ||
-    (analyzeStatus === 'downloading' ? 'Downloading audio' : null) ||
-    (analyzeStatus === 'uploading' ? 'Uploading for analysis' : null) ||
-    (isAnalyzing ? 'Analyzing' : null);
-
-  const analyzeProgressPct =
-    uploadProgress
-      ? uploadProgress.downloaded + uploadProgress.uploaded
-      : typeof skipMap?.progress_pct === 'number' && Number.isFinite(skipMap.progress_pct)
-        ? Math.max(0, Math.min(100, skipMap.progress_pct))
-        : null;
-
-  const prepareCaption = isAnalyzing
-    ? 'Preparing…'
-    : segs.length > 0
-      ? 'Re-prepare'
-      : 'Prepare';
-
-  const adSkipHint = useMemo(() => {
-    // Show current analysis state if in progress or completed
-    if (isAnalyzing) {
-      if (analyzeEtaLabel) {
-        // Compact strip label: "~2m"
-        const m = analyzeEtaLabel.match(/~(\d+)\s*min/);
-        if (m) return `~${m[1]}m`;
-        const s = analyzeEtaLabel.match(/~(\d+)\s*sec/);
-        if (s) return `~${s[1]}s`;
-      }
-      return '…';
-    }
-    if (analyzeStatus === 'ready') {
-      if (!segs.length) return 'Clean';
-      return skipCount === 1 ? '1 skip' : `${skipCount} skips`;
-    }
-    if (analyzeStatus === 'offline') return 'Offline';
-    if (analyzeStatus === 'error') {
-      if (analyzeError && analyzeError.length <= 20) {
-        return analyzeError;
-      }
-      return 'Error';
-    }
-    
-    // Show state when not analyzing
-    if (!autoSkip) return 'Manual';
-    if (!showAdDetectionEnabled) {
-      // Per-show OFF but global ON: Prepare is still available
-      return 'Prep';
-    }
-    return 'Prep';
-  }, [showAdDetectionEnabled, autoSkip, analyzeStatus, analyzeError, segs.length, skipCount, isAnalyzing, analyzeEtaLabel]);
+  const minimize = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace('/' as Href);
+  };
 
   if (!episode) {
     return (
       <View style={[styles.container, styles.emptyWrap, { paddingTop: insets.top + 24 }]}>
-        <Text style={styles.emptyTitle}>Nothing playing</Text>
-        <Text style={styles.emptySub}>
-          Pick an episode from Library or Search to start listening.
+        <Text style={type.heading}>Nothing playing</Text>
+        <Text style={[type.meta, { textAlign: 'center', marginTop: 8 }]}>
+          Pick an episode from Shows or Search to start listening.
         </Text>
+        <Pressable onPress={minimize} hitSlop={10} accessibilityRole="button" style={{ marginTop: 20 }}>
+          <Text style={type.link}>Close</Text>
+        </Pressable>
       </View>
     );
   }
 
+  const onAction = (kind: AdLineActionKind) => {
+    if (kind === 'check') void playback.requestAnalyze(true);
+    else if (kind === 'turnOn') void playback.setAutoSkip(true);
+    else if (kind === 'showSettings') setSettingsSheet(true);
+    else if (kind === 'retryDownload') void playback.retryPlaybackDownload();
+    else if (kind === 'streamWithoutSkipping') void playback.streamWithoutSkipping();
+  };
+
+  const seekTo = (ms: number) => {
+    const max = durationMs > 0 ? durationMs : ms;
+    void seek(Math.max(0, Math.min(ms, max)));
+  };
+
   const openShow = () => {
-    void openShowForEpisode(router, episode, {
-      fromPlayer: true,
-      navigation: navigation as never,
-    }).catch((e) => console.warn('[now-playing] open show failed:', e));
+    void openShowForEpisode(router, episode, { fromPlayer: true, navigation: navigation as never }).catch((e) =>
+      console.warn('[player] open show failed:', e),
+    );
   };
 
-  const minimize = () => {
-    if (router.canGoBack()) router.back();
-    else router.replace('/(tabs)');
+  const openQueue = () => {
+    // The queue lives on Listen (the first tab).
+    router.dismissTo('/' as Href);
   };
 
-  // Open the sheet whenever we have segments cached for this episode, even if
-  // auto-skip was briefly turned off (map must not be destroyed on toggle-off).
-  const hasCachedSegments = segs.length > 0;
-
-  const toggleAutoSkip = () => {
-    // Toggle the global switch only; per-show detection is managed on the show
-    // page. Keying off adDetectionEnabled here made turning auto-skip off a no-op.
-    if (autoSkip) {
-      void setAutoSkip(false);
-      return;
-    }
-    // setAutoSkip(true) restores from cache / GET; analyzes only if missing/error.
-    void setAutoSkip(true);
-  };
-
-  const onAdSkipPress = () => {
-    if (hasCachedSegments) {
-      setSkipSheetVisible(true);
-      return;
-    }
-    toggleAutoSkip();
-  };
-
-  const onSegmentPress = (startMs: number) => {
-    setSkipSheetVisible(false);
-    void seek(startMs);
-  };
-
-  const onSheetAutoSkipChange = (enabled: boolean) => {
-    if (enabled === !!autoSkipActive) return;
-    // Keep the sheet open while toggling — closing it on turn-off made rapid
-    // toggles feel broken, and a load race could wipe segments before reopen.
-    if (enabled) {
-      // Restore cached skip map; do not force requestAnalyze(true).
-      void setAutoSkip(true);
-    } else {
-      void setAutoSkip(false);
-    }
-  };
-
-  const onMorePress = () => {
-    showQueueActions(episode, {
-      isCurrent: !opened,
-      onOpenQueue: () => router.push('/queue' as Href),
-      onSetPlayed: (ep, v) => {
-        void playback.setEpisodePlayed(ep, v);
-        // Marking the playing episode played unloads it: leave the (now empty) player.
-        if (v && !opened) minimize();
-      },
-      onReportSkip: opened ? undefined : () => setReportVisible(true),
+  const onMore = () => {
+    const played = isPlayed(episode.guid);
+    showActionSheet({
+      title: episode.title,
+      message: episode.podcastTitle,
+      actions: [
+        {
+          label: played ? 'Mark as unplayed' : 'Mark as played',
+          onPress: () => {
+            void playback.setEpisodePlayed(episode, !played);
+            // Marking the playing episode played unloads it: leave the (now empty) player.
+            if (!played) minimize();
+          },
+        },
+        { label: 'Report a bad skip', onPress: () => setReportVisible(true) },
+        { label: `Go to ${episode.podcastTitle ?? 'the show'}`, onPress: openShow },
+      ],
     });
   };
+
+  const downloading = playbackDownload?.state === 'downloading';
+  const coverSize = Math.round(Math.min(width - 48, height * 0.36, 380));
+  const notesStatus = playback.showNotesStatus?.guid === episode.guid ? playback.showNotesStatus.status : null;
+  const playLabel = downloading
+    ? 'Downloading, plays when ready'
+    : playbackDownload?.state === 'error'
+      ? 'Retry download'
+      : isPlaying
+        ? 'Pause'
+        : 'Play';
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.topBar}>
-        <Pressable
-          onPress={minimize}
-          hitSlop={12}
-          style={styles.chevronBtn}
-          accessibilityLabel="Minimize player">
-          <SymbolView
-            name={{ ios: 'chevron.down', android: 'keyboard_arrow_down', web: 'keyboard_arrow_down' }}
-            tintColor={theme.textSecondary}
-            size={28}
-          />
+        <Pressable onPress={minimize} hitSlop={12} style={styles.topBtn} accessibilityLabel="Close player">
+          <Icon name="down" size={26} />
         </Pressable>
-        <View style={styles.topTabs} accessibilityRole="tablist">
-          <Pressable
-            onPress={() => setActiveTab('playing')}
-            style={[styles.topTab, activeTab === 'playing' && styles.topTabActive]}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: activeTab === 'playing' }}>
-            <Text style={[styles.topTabLabel, activeTab === 'playing' && styles.topTabLabelActive]}>
-              Playing
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setActiveTab('details')}
-            style={[styles.topTab, activeTab === 'details' && styles.topTabActive]}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: activeTab === 'details' }}>
-            <Text style={[styles.topTabLabel, activeTab === 'details' && styles.topTabLabelActive]}>
-              Details
-            </Text>
-          </Pressable>
-        </View>
-        <View style={styles.topBarFiller} />
+        {pinned ? (
+          <View style={styles.pinned}>
+            <Cover uri={episode.artworkUrl} size={34} radius={4} />
+            <View style={styles.flex}>
+              <Text style={styles.pinnedTitle} numberOfLines={1}>
+                {episode.title}
+              </Text>
+              <Text style={type.mono}>
+                {formatMs(positionMs)} · −{formatMs(Math.max(0, durationMs - positionMs))}
+              </Text>
+            </View>
+            <Pressable
+              onPress={() => void playback.togglePlay()}
+              hitSlop={8}
+              accessibilityLabel={playLabel}
+              style={styles.pinnedPlay}>
+              {downloading ? (
+                <ActivityIndicator size="small" color={theme.background} />
+              ) : (
+                <Icon name={isPlaying ? 'pause' : 'play'} size={20} color={theme.background} />
+              )}
+            </Pressable>
+          </View>
+        ) : (
+          <>
+            <View style={styles.flex} />
+            <Pressable onPress={onMore} hitSlop={12} style={styles.topBtn} accessibilityLabel="More actions">
+              <Icon name="more" size={24} />
+            </Pressable>
+          </>
+        )}
       </View>
 
       <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={[
-          styles.content,
-          { paddingBottom: Math.max(insets.bottom, 12) + 8 },
-        ]}
+        ref={scrollRef}
+        style={styles.flex}
+        contentContainerStyle={{ paddingHorizontal: 24, paddingBottom: Math.max(insets.bottom, 16) + 24 }}
         showsVerticalScrollIndicator={false}
-        bounces={false}>
-        {activeTab === 'playing' ? (
-          <>
-            <View style={styles.artWrap}>
-              {!!episode.artworkUrl ? (
-                <Image source={{ uri: episode.artworkUrl }} style={styles.art} />
-              ) : (
-                <View style={[styles.art, styles.artPlaceholder]} />
-              )}
-            </View>
+        scrollEventThrottle={32}
+        onScroll={(e) => {
+          const next = controlsBottom.current > 0 && e.nativeEvent.contentOffset.y > controlsBottom.current - 56;
+          if (next !== pinned) setPinned(next);
+        }}>
+        <Cover uri={episode.artworkUrl} size={coverSize} radius={8} style={styles.cover} />
 
-            <Text style={styles.title} numberOfLines={2}>
-              {episode.title}
+        <Text style={styles.title} numberOfLines={3}>
+          {episode.title}
+        </Text>
+        <View style={styles.subline}>
+          <Pressable
+            onPress={openShow}
+            hitSlop={8}
+            accessibilityRole="link"
+            accessibilityLabel={`Open ${episode.podcastTitle ?? 'show'}`}
+            style={({ pressed }) => [{ flexShrink: 1 }, pressed && { opacity: 0.55 }]}>
+            <Text style={styles.showName} numberOfLines={1}>
+              {episode.podcastTitle ?? 'Podcast'}
             </Text>
+          </Pressable>
+          {chapterIdx >= 0 && (
             <Pressable
-              onPress={openShow}
+              onPress={() => scrollRef.current?.scrollTo({ y: Math.max(0, chaptersTop.current - 60), animated: true })}
               hitSlop={8}
-              accessibilityRole="link"
-              accessibilityLabel={`Open ${episode.podcastTitle ?? 'show'} episodes`}
-              style={({ pressed }) => [styles.showLink, pressed && styles.showLinkPressed]}>
-              <Text style={[styles.show, styles.showLinkText, chapterIdx >= 0 && styles.showWithChapter]} numberOfLines={1}>
-                {episode.podcastTitle ?? 'Podcast'}
+              accessibilityRole="button"
+              accessibilityLabel={`Chapter ${chapterIdx + 1} of ${chapters.length}: ${chapters[chapterIdx].title}. Show chapters`}
+              style={styles.flex}>
+              <Text style={type.meta} numberOfLines={1}>
+                {' · '}
+                {chapters[chapterIdx].title}
               </Text>
             </Pressable>
-            {chapterIdx >= 0 && (
+          )}
+        </View>
+
+        <View style={styles.scrubBlock}>
+          <Scrubber
+            positionMs={positionMs}
+            durationMs={durationMs}
+            segments={segs}
+            chapterStartsMs={chapterStarts}
+            onSeek={(ms) => seek(ms)}
+            onScrubbingChange={setScrubPreview}
+          />
+          <View style={styles.times}>
+            <Text style={type.mono}>{formatMs(displayPos)}</Text>
+            <Text style={type.mono}>−{formatMs(remainingMs)}</Text>
+          </View>
+        </View>
+
+        <View
+          style={styles.transport}
+          onLayout={(e) => {
+            // Once the play button has scrolled away, the slim bar takes over.
+            controlsBottom.current = e.nativeEvent.layout.y + e.nativeEvent.layout.height;
+          }}>
+          <Pressable
+            onPress={playback.cyclePlaybackRate}
+            hitSlop={6}
+            style={styles.side}
+            accessibilityLabel={`Playback speed ${playbackRate} times. Tap to change`}>
+            <Text style={styles.sideValue}>{playbackRate}×</Text>
+            <Text style={styles.sideCaption}>Speed</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => seek(Math.max(0, positionMs - 15_000))}
+            hitSlop={8}
+            style={styles.skip}
+            accessibilityLabel="Skip back 15 seconds">
+            <Text style={styles.skipText}>−15</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => void playback.togglePlay()}
+            style={({ pressed }) => [styles.play, pressed && { opacity: 0.8 }]}
+            accessibilityLabel={playLabel}>
+            {downloading ? (
+              <ActivityIndicator size="large" color={theme.background} />
+            ) : (
+              <Icon name={isPlaying ? 'pause' : 'play'} size={34} color={theme.background} />
+            )}
+          </Pressable>
+          <Pressable
+            onPress={() => seek(positionMs + 30_000)}
+            hitSlop={8}
+            style={styles.skip}
+            accessibilityLabel="Skip forward 30 seconds">
+            <Text style={styles.skipText}>+30</Text>
+          </Pressable>
+          <Pressable
+            onPress={openQueue}
+            hitSlop={6}
+            style={styles.side}
+            accessibilityLabel={`Queue, ${queueLength} up next`}>
+            <View style={styles.sideIcon}>
+              <Icon name="queue" size={22} color={theme.text} />
+            </View>
+            <Text style={styles.sideCaption}>{queueLength > 0 ? `Queue · ${queueLength}` : 'Queue'}</Text>
+          </Pressable>
+        </View>
+
+        <AdSkipLine line={line} onPress={() => setAdSheet(true)} onAction={onAction} />
+
+        {chapters.length > 0 && (
+          <View
+            style={styles.section}
+            onLayout={(e) => {
+              chaptersTop.current = e.nativeEvent.layout.y;
+            }}>
+            <Label style={styles.sectionLabel}>Chapters</Label>
+            {chapters.map((chapter, idx) => (
               <Pressable
-                onPress={() => setActiveTab('details')}
+                key={`${chapter.startMs}-${idx}`}
+                onPress={() => seekTo(chapter.startMs)}
+                accessibilityRole="button"
+                accessibilityLabel={`Play chapter ${idx + 1}: ${chapter.title}, at ${formatMs(chapter.startMs)}`}
+                accessibilityState={{ selected: idx === chapterIdx }}
+                style={({ pressed }) => [styles.chapter, idx === chapterIdx && styles.chapterOn, pressed && { opacity: 0.55 }]}>
+                <Text style={[styles.chapterTime, idx === chapterIdx && { color: theme.text }]}>
+                  {formatMs(chapter.startMs)}
+                </Text>
+                <Text style={[styles.chapterTitle, idx === chapterIdx && styles.chapterTitleOn]} numberOfLines={2}>
+                  {chapter.title}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
+
+        <View style={styles.section}>
+          {chapters.length > 0 && <Divider style={styles.sectionRule} />}
+          <Label style={styles.sectionLabel}>Show notes</Label>
+          {showNotes ? (
+            <Text style={type.body}>
+              {showNotesParts.map((part, idx) =>
+                part.type === 'timestamp' ? (
+                  <Text
+                    key={`ts-${idx}-${part.raw}`}
+                    style={styles.timestamp}
+                    onPress={() => seekTo(part.ms)}
+                    accessibilityRole="link"
+                    accessibilityLabel={`Seek to ${part.raw}`}>
+                    {part.raw}
+                  </Text>
+                ) : (
+                  part.text
+                ),
+              )}
+            </Text>
+          ) : notesStatus === 'loading' ? (
+            <Text style={type.body}>Loading show notes…</Text>
+          ) : notesStatus === 'failed' ? (
+            <View>
+              <Text style={type.body}>Couldn’t load show notes. The podcast’s feed didn’t respond.</Text>
+              <Pressable onPress={playback.retryShowNotes} hitSlop={8} accessibilityRole="button" style={styles.inlineLink}>
+                <Text style={type.link}>Try again</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <Text style={type.body}>No show notes are available for this episode.</Text>
+          )}
+        </View>
+
+        {!!aboutShow && (
+          <View style={styles.section}>
+            <Divider style={styles.sectionRule} />
+            <Label style={styles.sectionLabel}>About the show</Label>
+            <Text style={type.body} numberOfLines={aboutExpanded || !aboutIsLong ? undefined : 4}>
+              {aboutShow}
+            </Text>
+            {aboutIsLong && (
+              <Pressable
+                onPress={() => setAboutExpanded((v) => !v)}
                 hitSlop={8}
                 accessibilityRole="button"
-                accessibilityLabel={`Chapter ${chapterIdx + 1} of ${chapters.length}: ${chapters[chapterIdx].title}. Show chapters`}
-                style={styles.chapterLine}>
-                <Text style={styles.chapterLineText} numberOfLines={1}>
-                  Chapter {chapterIdx + 1} of {chapters.length} · {chapters[chapterIdx].title}
-                </Text>
+                style={styles.inlineLink}>
+                <Text style={type.link}>{aboutExpanded ? 'Less' : 'More'}</Text>
               </Pressable>
-            )}
-
-            <View style={styles.scrubBlock}>
-              <Scrubber
-                positionMs={positionMs}
-                durationMs={durationMs}
-                segments={segs}
-                onSeek={(ms) => seek(ms)}
-                onScrubbingChange={setScrubPreview}
-              />
-              <View style={styles.times}>
-                <Text style={styles.time}>{formatMs(displayPos)}</Text>
-                <Text style={styles.time}>−{formatMs(remainingMs)}</Text>
-              </View>
-            </View>
-
-            <View style={styles.controls}>
-              <Pressable
-                onPress={() => seek(Math.max(0, positionMs - 10_000))}
-                style={styles.skipBtn}
-                hitSlop={8}
-                accessibilityLabel="Skip back 10 seconds">
-                <SymbolView
-                  name={{ ios: 'gobackward.10', android: 'replay_10', web: 'replay_10' }}
-                  tintColor={theme.text}
-                  size={50}
-                />
-              </Pressable>
-
-              <Pressable
-                onPress={togglePlay}
-                style={styles.playBtn}
-                accessibilityLabel={
-                  playbackDownload?.state === 'downloading'
-                    ? 'Downloading, plays when ready'
-                    : isPlaying
-                      ? 'Pause'
-                      : 'Play'
-                }>
-                {playbackDownload?.state === 'downloading' ? (
-                  <ActivityIndicator size="large" color={theme.text} />
-                ) : (
-                  <SymbolView
-                    name={
-                      isPlaying
-                        ? { ios: 'pause.fill', android: 'pause', web: 'pause' }
-                        : { ios: 'play.fill', android: 'play_arrow', web: 'play_arrow' }
-                    }
-                    tintColor={theme.text}
-                    size={32}
-                  />
-                )}
-              </Pressable>
-
-              <Pressable
-                onPress={() => seek(positionMs + 30_000)}
-                style={styles.skipBtn}
-                hitSlop={8}
-                accessibilityLabel="Skip forward 30 seconds">
-                <SymbolView
-                  name={{ ios: 'goforward.30', android: 'forward_30', web: 'forward_30' }}
-                  tintColor={theme.text}
-                  size={50}
-                />
-              </Pressable>
-            </View>
-
-            <View style={styles.flexSpacer} />
-
-            {playbackDownload?.state === 'downloading' ? (
-              <View
-                style={styles.analyzeProgress}
-                accessibilityRole="progressbar"
-                accessibilityLabel={`Downloading episode${
-                  playbackDownload.progressPct != null ? `, ${playbackDownload.progressPct} percent` : ''
-                }`}>
-                <View style={styles.analyzeProgressRow}>
-                  <ActivityIndicator size="small" color={theme.accentSoft} />
-                  <Text style={styles.analyzeProgressText} numberOfLines={2}>
-                    Downloading…
-                    {playbackDownload.progressPct != null ? ` ${playbackDownload.progressPct}%` : ''}
-                    {' · plays when ready, so ad skips match this copy'}
-                  </Text>
-                </View>
-                <View style={styles.analyzeBarTrack}>
-                  {playbackDownload.progressPct != null ? (
-                    <View
-                      style={[
-                        styles.analyzeBarFill,
-                        { width: `${playbackDownload.progressPct}%` as unknown as number },
-                      ]}
-                    />
-                  ) : (
-                    <View style={[styles.analyzeBarFill, styles.analyzeBarIndeterminate]} />
-                  )}
-                </View>
-              </View>
-            ) : null}
-
-            {playbackDownload?.state === 'caching' ? (
-              // Playing while it downloads: skips turn on once the saved copy is complete.
-              <Text
-                style={styles.streamCacheNote}
-                numberOfLines={1}
-                accessibilityLabel={`Ad skip ready after download${
-                  playbackDownload.progressPct != null ? `, ${playbackDownload.progressPct} percent` : ''
-                }`}>
-                {streamCacheNotice(playbackDownload.progressPct)}
-              </Text>
-            ) : null}
-
-            {playbackDownload?.state === 'cache-error' ? (
-              <View style={styles.streamCacheErrorRow} accessibilityRole="alert">
-                <Text style={styles.streamCacheNote} numberOfLines={2}>
-                  {playbackDownload.message ?? 'Ad skipping is off for this play.'}
-                </Text>
-                <Pressable
-                  onPress={() => void playback.retryPlaybackDownload()}
-                  hitSlop={6}
-                  accessibilityRole="button"
-                  accessibilityLabel="Retry download for ad skipping">
-                  <Text style={styles.downloadErrorAction}>Retry</Text>
-                </Pressable>
-              </View>
-            ) : null}
-
-            {playbackDownload?.state === 'error' ? (
-              <View style={styles.mismatchWarning} accessibilityRole="alert">
-                <View style={styles.mismatchWarningRow}>
-                  <SymbolView
-                    name={{ ios: 'exclamationmark.triangle', android: 'warning', web: 'warning' }}
-                    tintColor={theme.accentWarn}
-                    size={16}
-                  />
-                  <Text style={styles.mismatchWarningText} numberOfLines={3}>
-                    {playbackDownload.message ?? "Couldn't download this episode for ad skipping."}
-                  </Text>
-                </View>
-                <View style={styles.downloadErrorActions}>
-                  <Pressable
-                    onPress={() => void playback.retryPlaybackDownload()}
-                    hitSlop={6}
-                    accessibilityRole="button"
-                    accessibilityLabel="Retry download">
-                    <Text style={styles.downloadErrorAction}>Retry</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => void playback.streamWithoutSkipping()}
-                    hitSlop={6}
-                    accessibilityRole="button"
-                    accessibilityLabel="Stream without ad skipping">
-                    <Text style={styles.downloadErrorAction}>Stream without ad skipping</Text>
-                  </Pressable>
-                </View>
-              </View>
-            ) : null}
-
-            {isAnalyzing && !playbackDownload ? (
-              <View
-                style={styles.analyzeProgress}
-                accessibilityRole="progressbar"
-                accessibilityLabel={
-                  analyzeEtaLabel
-                    ? `${analyzeStageLabel ?? 'Analyzing'}, ${analyzeEtaLabel}`
-                    : `${analyzeStageLabel ?? 'Analyzing'} in progress`
-                }>
-                <View style={styles.analyzeProgressRow}>
-                  <ActivityIndicator size="small" color={theme.accentSoft} />
-                  <Text style={styles.analyzeProgressText} numberOfLines={1}>
-                    {analyzeStageLabel ?? 'Analyzing'}
-                    {analyzeEtaLabel ? ` · ${analyzeEtaLabel}` : ''}
-                  </Text>
-                </View>
-                <View style={styles.analyzeBarTrack}>
-                  {analyzeProgressPct != null ? (
-                    <View
-                      style={[
-                        styles.analyzeBarFill,
-                        { width: `${analyzeProgressPct}%` as unknown as number },
-                      ]}
-                    />
-                  ) : (
-                    <View style={[styles.analyzeBarFill, styles.analyzeBarIndeterminate]} />
-                  )}
-                </View>
-              </View>
-            ) : null}
-
-            {audioMismatchWarning && segs.length > 0 ? (
-              <View style={styles.mismatchWarning}>
-                <View style={styles.mismatchWarningRow}>
-                  <SymbolView
-                    name={{ ios: 'exclamationmark.triangle', android: 'warning', web: 'warning' }}
-                    tintColor={theme.accentWarn}
-                    size={16}
-                  />
-                  <Text style={styles.mismatchWarningText} numberOfLines={2}>
-                    {audioMismatchWarning}
-                  </Text>
-                </View>
-              </View>
-            ) : null}
-
-            <View style={styles.actionStrip}>
-              <Pressable
-                style={styles.actionItem}
-                onPress={cyclePlaybackRate}
-                hitSlop={6}
-                accessibilityLabel={`Playback speed ${playbackRate} times. Tap to change`}>
-                <Text style={styles.actionValue}>{playbackRate}×</Text>
-                <Text style={styles.actionCaption}>Speed</Text>
-              </Pressable>
-
-              <Pressable
-                style={styles.actionItem}
-                onPress={onAdSkipPress}
-                hitSlop={6}
-                accessibilityLabel="Ad skip">
-                <Text
-                  style={[
-                    styles.actionValue,
-                    autoSkipActive && styles.actionValueActive,
-                  ]}>
-                  {adSkipHint}
-                </Text>
-                <Text style={styles.actionCaption}>Ad-skip</Text>
-              </Pressable>
-
-              <Pressable
-                style={styles.actionItem}
-                onPress={() => requestAnalyze(true)}
-                hitSlop={6}
-                accessibilityLabel={
-                  segs.length > 0
-                    ? 'Force re-prepare ad analysis'
-                    : 'Prepare ad analysis'
-                }
-                // Manual Prepare is allowed with auto-skip off; prevent duplicate uploads.
-                disabled={isAnalyzing}>
-                <SymbolView
-                  name={{ ios: 'sparkles', android: 'auto_awesome', web: 'auto_awesome' }}
-                  tintColor={isAnalyzing ? theme.textMuted : theme.textSecondary}
-                  size={22}
-                />
-                <Text style={styles.actionCaption}>{prepareCaption}</Text>
-              </Pressable>
-
-              <Pressable
-                style={styles.actionItem}
-                onPress={onMorePress}
-                hitSlop={6}
-                accessibilityLabel="Queue actions">
-                <SymbolView
-                  name={{ ios: 'list.bullet', android: 'queue_music', web: 'queue_music' }}
-                  tintColor={theme.textSecondary}
-                  size={22}
-                />
-                <Text style={styles.actionCaption}>
-                  {queueLength > 0 ? `Queue ${queueLength}` : 'Queue'}
-                </Text>
-              </Pressable>
-            </View>
-          </>
-        ) : (
-          <View style={styles.detailsContent}>
-            <Text style={styles.detailsEyebrow}>EPISODE DETAILS</Text>
-            <Text style={styles.detailsTitle}>{episode.title}</Text>
-            <Pressable
-              onPress={openShow}
-              accessibilityRole="link"
-              accessibilityLabel={`Open ${episode.podcastTitle ?? 'show'} episodes`}
-              style={({ pressed }) => [styles.showLinkLeft, pressed && styles.showLinkPressed]}>
-              <Text style={[styles.detailsShow, styles.showLinkText]}>{episode.podcastTitle ?? 'Podcast'}</Text>
-            </Pressable>
-            <View style={styles.detailsDivider} />
-            {chapters.length > 0 && (
-              <>
-                <Text style={styles.detailsHeading}>Chapters</Text>
-                {chapters.map((chapter, idx) => (
-                  <Pressable
-                    key={`${chapter.startMs}-${idx}`}
-                    onPress={() => seekToTimestamp(chapter.startMs)}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Play chapter ${idx + 1}: ${chapter.title}, at ${formatMs(chapter.startMs)}`}
-                    accessibilityState={{ selected: idx === chapterIdx }}
-                    style={({ pressed }) => [
-                      styles.chapterRow,
-                      idx === chapterIdx && styles.chapterRowCurrent,
-                      pressed && styles.showLinkPressed,
-                    ]}>
-                    <Text style={styles.chapterTime}>{formatMs(chapter.startMs)}</Text>
-                    <Text
-                      style={[styles.chapterTitle, idx === chapterIdx && styles.chapterTitleCurrent]}
-                      numberOfLines={2}>
-                      {chapter.title}
-                    </Text>
-                  </Pressable>
-                ))}
-                <View style={styles.detailsDivider} />
-              </>
-            )}
-            <Text style={styles.detailsHeading}>Show notes</Text>
-            {showNotes ? (
-              <Text style={styles.detailsText}>
-                {showNotesParts.map((part, idx) =>
-                  part.type === 'timestamp' ? (
-                    <Text
-                      key={`ts-${idx}-${part.raw}`}
-                      style={styles.timestampLink}
-                      onPress={() => seekToTimestamp(part.ms)}
-                      accessibilityRole="link"
-                      accessibilityLabel={`Seek to ${part.raw}`}>
-                      {part.raw}
-                    </Text>
-                  ) : (
-                    part.text
-                  ),
-                )}
-              </Text>
-            ) : notesStatus === 'loading' ? (
-              <Text style={styles.detailsText}>Loading show notes…</Text>
-            ) : notesStatus === 'failed' ? (
-              <View>
-                <Text style={styles.detailsText}>
-                  Couldn’t load show notes (the podcast’s feed didn’t respond).
-                </Text>
-                <Pressable
-                  onPress={playback.retryShowNotes}
-                  hitSlop={8}
-                  accessibilityRole="button"
-                  style={({ pressed }) => [styles.retryNotes, pressed && styles.showLinkPressed]}>
-                  <Text style={styles.timestampLink}>Try again</Text>
-                </Pressable>
-              </View>
-            ) : (
-              <Text style={styles.detailsText}>
-                No show notes are available for this episode.
-              </Text>
-            )}
-            {!!aboutShow && (
-              <>
-                <View style={styles.detailsDivider} />
-                <Text style={styles.detailsHeading}>About the show</Text>
-                <Text style={styles.detailsText} numberOfLines={aboutExpanded || !aboutIsLong ? undefined : 4}>
-                  {aboutShow}
-                </Text>
-                {aboutIsLong && (
-                  <Pressable
-                    onPress={() => setAboutExpanded((v) => !v)}
-                    hitSlop={8}
-                    accessibilityRole="button"
-                    style={({ pressed }) => [styles.retryNotes, pressed && styles.showLinkPressed]}>
-                    <Text style={styles.timestampLink}>{aboutExpanded ? 'Less' : 'More'}</Text>
-                  </Pressable>
-                )}
-              </>
             )}
           </View>
         )}
       </ScrollView>
 
-      <Modal
-        visible={skipSheetVisible}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setSkipSheetVisible(false)}>
-        <Pressable
-          style={styles.sheetBackdrop}
-          onPress={() => setSkipSheetVisible(false)}
-          accessibilityLabel="Dismiss skip segments">
-          <Pressable
-            style={[styles.sheet, { paddingBottom: Math.max(insets.bottom, 16) }]}
-            onPress={(e) => e.stopPropagation()}>
-            <View style={styles.sheetHandle} />
-            <View style={styles.sheetHeader}>
-              <View style={styles.sheetHeaderText}>
-                <Text style={styles.sheetTitle}>Skippable segments</Text>
-                <Text style={styles.sheetSubtitle}>
-                  {segs.length} {segs.length === 1 ? 'segment' : 'segments'} detected
-                </Text>
-              </View>
-              <Pressable
-                onPress={() => setSkipSheetVisible(false)}
-                hitSlop={10}
-                accessibilityLabel="Close">
-                <SymbolView
-                  name={{ ios: 'xmark', android: 'close', web: 'close' }}
-                  tintColor={theme.textMuted}
-                  size={22}
-                />
-              </Pressable>
-            </View>
-
-            <View style={styles.sheetAutoRow}>
-              <View style={styles.sheetAutoCopy}>
-                <Text style={styles.sheetAutoLabel}>Auto-skip</Text>
-                <Text style={styles.sheetAutoHint}>
-                  {autoSkipActive
-                    ? 'Jump past ads automatically'
-                    : 'Tap a segment below to jump'}
-                </Text>
-              </View>
-              <Switch
-                value={!!autoSkipActive}
-                onValueChange={onSheetAutoSkipChange}
-                trackColor={{ false: theme.border, true: theme.accent }}
-                thumbColor={theme.text}
-                ios_backgroundColor={theme.border}
-                accessibilityLabel="Toggle auto-skip"
-              />
-            </View>
-
-            <ScrollView
-              style={styles.sheetList}
-              bounces={false}
-              showsVerticalScrollIndicator={false}>
-              {segs.map((seg, idx) => {
-                const conf =
-                  typeof seg.confidence === 'number' && Number.isFinite(seg.confidence)
-                    ? Math.round(seg.confidence * 100)
-                    : null;
-                return (
-                  <Pressable
-                    key={`${seg.start_ms}-${seg.end_ms}-${idx}`}
-                    style={({ pressed }) => [
-                      styles.segRow,
-                      pressed && styles.segRowPressed,
-                      idx < segs.length - 1 && styles.segRowBorder,
-                    ]}
-                    onPress={() => onSegmentPress(seg.start_ms)}
-                    accessibilityLabel={`${segmentTypeLabel(seg.type)}, ${formatMs(seg.start_ms)} to ${formatMs(seg.end_ms)}${seg.sample_text ? `, ${seg.sample_text}` : ''}`}>
-                    <View style={styles.segDot} />
-                    <View style={styles.segBody}>
-                      <Text style={styles.segType}>{segmentTypeLabel(seg.type)}</Text>
-                      <Text style={styles.segMeta}>
-                        {formatMs(seg.start_ms)}–{formatMs(seg.end_ms)}
-                        {conf != null ? ` · ${conf}%` : ''}
-                      </Text>
-                      {seg.sample_text ? (
-                        <Text style={styles.segSample} numberOfLines={2}>
-                          {seg.sample_text}
-                        </Text>
-                      ) : null}
-                    </View>
-                    <SymbolView
-                      name={{
-                        ios: 'forward.end.fill',
-                        android: 'skip_next',
-                        web: 'skip_next',
-                      }}
-                      tintColor={theme.textMuted}
-                      size={18}
-                    />
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-            <Pressable
-              style={styles.reportBtn}
-              onPress={() => {
-                setSkipSheetVisible(false);
-                setReportVisible(true);
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Report bad skip">
-              <Text style={styles.reportText}>Report bad skip</Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <AdSkipSheet
+        visible={adSheet}
+        onClose={() => setAdSheet(false)}
+        line={line}
+        segments={segs}
+        autoSkip={playback.autoSkip}
+        onAutoSkipChange={(v) => void playback.setAutoSkip(v)}
+        adDetectionEnabled={playback.adDetectionEnabled}
+        skipSettings={playback.skipSettings}
+        showTitle={episode.podcastTitle}
+        onOpenShowSettings={() => setSettingsSheet(true)}
+        onSegmentPress={(startMs) => {
+          setAdSheet(false);
+          void seek(startMs);
+        }}
+        onAction={onAction}
+        busy={isAnalyzing(playback.analyzeStatus) || downloading}
+        onReport={() => {
+          setAdSheet(false);
+          setReportVisible(true);
+        }}
+      />
+      <ShowSettingsSheet
+        visible={settingsSheet}
+        onClose={() => setSettingsSheet(false)}
+        show={{ collectionId: episode.collectionId, feedUrl: episode.feedUrl, title: episode.podcastTitle }}
+      />
       <ReportSkipSheet
         visible={reportVisible}
         onClose={() => setReportVisible(false)}
-        episode={opened ? null : playback.episode}
-        positionMs={playback.positionMs}
-        skipMap={playback.skipMap}
+        episode={episode}
+        positionMs={positionMs}
+        skipMap={skipMap}
       />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  showLink: { alignSelf: 'center', borderRadius: 6, paddingHorizontal: 6 },
-  showLinkLeft: { alignSelf: 'flex-start', borderRadius: 6 },
-  showLinkPressed: { opacity: 0.55 },
-  showLinkText: { textDecorationLine: 'underline' },
-  container: {
-    flex: 1,
-    backgroundColor: theme.background,
-  },
-  scroll: {
-    flex: 1,
-  },
-  content: {
-    paddingHorizontal: 28,
-    alignItems: 'center',
-    flexGrow: 1,
-  },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    height: 44,
-  },
-  chevronBtn: {
-    width: 44,
-    height: 44,
+  container: { flex: 1, backgroundColor: theme.background },
+  flex: { flex: 1, minWidth: 0 },
+  emptyWrap: { paddingHorizontal: 32, alignItems: 'center', justifyContent: 'center' },
+  topBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, height: 52, gap: 4 },
+  topBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  pinned: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 0, paddingRight: 4 },
+  pinnedTitle: { fontFamily: font.semi, fontSize: 14, color: theme.text },
+  pinnedPlay: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: theme.text,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  topTabs: {
-    flex: 1,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignSelf: 'stretch',
-    gap: 4,
-  },
-  topTab: {
-    minWidth: 88,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
-  },
-  topTabActive: {
-    borderBottomColor: theme.accent,
-  },
-  topTabLabel: {
-    color: theme.textMuted,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  topTabLabelActive: {
-    color: theme.text,
-  },
-  topBarFiller: {
-    width: 44,
-  },
-  emptyWrap: {
-    alignItems: 'center',
-    paddingHorizontal: 32,
-  },
-  emptyTitle: {
-    color: theme.text,
-    fontSize: 22,
-    fontWeight: '700',
-    marginBottom: 8,
-  },
-  emptySub: {
-    color: theme.textSecondary,
-    fontSize: 15,
-    textAlign: 'center',
-    lineHeight: 22,
-  },
-  artWrap: {
-    marginTop: 4,
-    marginBottom: 28,
-    shadowColor: '#000',
-    shadowOpacity: 0.5,
-    shadowRadius: 28,
-    shadowOffset: { width: 0, height: 14 },
-    elevation: 14,
-  },
-  art: {
-    width: ART_SIZE,
-    height: ART_SIZE,
-    borderRadius: 20,
-    backgroundColor: theme.surfaceElevated,
-    borderWidth: 1,
-    borderColor: theme.border,
-  },
-  artPlaceholder: {
-    backgroundColor: theme.border,
-  },
-  title: {
-    color: theme.text,
-    fontFamily: displayFontFamily,
-    fontSize: 26,
-    fontWeight: '600',
-    textAlign: 'center',
-    letterSpacing: -0.35,
-    lineHeight: 32,
-    paddingHorizontal: 4,
-  },
-  show: {
-    color: theme.accentSoft,
-    fontSize: 15,
-    fontWeight: '500',
-    marginTop: 8,
-    marginBottom: 32,
-    textAlign: 'center',
-  },
-  scrubBlock: {
-    width: '100%',
-    marginBottom: 4,
-  },
-  times: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 6,
-  },
-  time: {
-    color: theme.textMuted,
-    fontFamily: monoFontFamily,
-    fontSize: 10,
-    fontVariant: ['tabular-nums'],
-    fontWeight: '500',
-  },
-  controls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 40,
-    marginTop: 20,
-    marginBottom: 28,
-  },
-  skipBtn: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
+  cover: { alignSelf: 'center', marginTop: 4 },
+  title: { fontFamily: font.display, fontSize: 22, lineHeight: 28, letterSpacing: -0.2, color: theme.text, marginTop: 22 },
+  subline: { flexDirection: 'row', alignItems: 'center', marginTop: 6 },
+  showName: { fontFamily: font.medium, fontSize: 14.5, color: theme.text, textDecorationLine: 'underline' },
+  scrubBlock: { marginTop: 14 },
+  times: { flexDirection: 'row', justifyContent: 'space-between', marginTop: -2 },
+  transport: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14, marginBottom: 20 },
+  side: { width: 64, alignItems: 'center', gap: 3 },
+  sideValue: { fontFamily: font.monoMedium, fontSize: 15, color: theme.text, height: 24, textAlignVertical: 'center', lineHeight: 24 },
+  sideIcon: { height: 24, justifyContent: 'center' },
+  sideCaption: { fontFamily: font.body, fontSize: 11.5, color: theme.textSecondary },
+  skip: { width: 52, height: 52, alignItems: 'center', justifyContent: 'center' },
+  skipText: { fontFamily: font.monoMedium, fontSize: 16, color: theme.text },
+  play: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    backgroundColor: theme.text,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  playBtn: {
-    width: 78,
-    height: 78,
-    borderRadius: 39,
-    backgroundColor: theme.accent,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  flexSpacer: {
-    flexGrow: 1,
-    minHeight: 12,
-  },
-  detailsContent: {
-    width: '100%',
-    alignItems: 'flex-start',
-    paddingTop: 24,
-    paddingBottom: 24,
-  },
-  detailsEyebrow: {
-    color: theme.accentSoft,
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-    marginBottom: 12,
-  },
-  detailsTitle: {
-    color: theme.text,
-    fontFamily: displayFontFamily,
-    fontSize: 28,
-    fontWeight: '600',
-    lineHeight: 30,
-  },
-  detailsShow: {
-    color: theme.textSecondary,
-    fontSize: 15,
-    marginTop: 8,
-  },
-  detailsDivider: {
-    width: '100%',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.border,
-    marginVertical: 24,
-  },
-  retryNotes: { alignSelf: 'flex-start', marginTop: 8 },
-  detailsHeading: {
-    color: theme.text,
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 10,
-  },
-  showWithChapter: { marginBottom: 6 },
-  chapterLine: { alignSelf: 'center', maxWidth: '90%', marginBottom: 26 },
-  chapterLineText: { color: theme.textSecondary, fontSize: 13, textAlign: 'center' },
-  chapterRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-  },
-  chapterRowCurrent: { backgroundColor: theme.border },
-  chapterTime: {
-    color: theme.accentSoft,
-    fontSize: 14,
-    fontVariant: ['tabular-nums'],
-    minWidth: 56,
-    paddingTop: 1,
-  },
-  chapterTitle: { flex: 1, color: theme.textSecondary, fontSize: 15, lineHeight: 21 },
-  chapterTitleCurrent: { color: theme.text, fontWeight: '600' },
-  detailsText: {
-    color: theme.textSecondary,
-    fontSize: 16,
-    lineHeight: 24,
-  },
-  timestampLink: {
-    color: theme.accentSoft,
-    textDecorationLine: 'underline',
-    fontVariant: ['tabular-nums'],
-  },
-  actionStrip: {
-    width: '100%',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    paddingTop: 8,
-    paddingHorizontal: 4,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: theme.border,
-    paddingBottom: 4,
-  },
-  actionItem: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: 10,
-  },
-  actionValue: {
-    color: theme.text,
-    fontSize: 16,
-    fontWeight: '700',
-    minHeight: 22,
-    textAlign: 'center',
-  },
-  actionValueActive: {
-    color: theme.accentSoft,
-  },
-  actionCaption: {
-    color: theme.textMuted,
-    fontSize: 11,
-    fontWeight: '500',
-  },
-  analyzeProgress: {
-    width: '100%',
-    marginBottom: 10,
-    paddingHorizontal: 2,
-  },
-  analyzeProgressRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 8,
-  },
-  analyzeProgressText: {
-    flex: 1,
-    color: theme.textSecondary,
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  analyzeBarTrack: {
-    height: 3,
-    borderRadius: 2,
-    backgroundColor: theme.progressTrack,
-    overflow: 'hidden',
-  },
-  analyzeBarFill: {
-    height: 3,
-    borderRadius: 2,
-    backgroundColor: theme.progressFill,
-  },
-  analyzeBarIndeterminate: {
-    width: '40%',
-    opacity: 0.55,
-  },
-  mismatchWarning: {
-    width: '100%',
-    marginBottom: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    backgroundColor: 'rgba(255, 193, 7, 0.12)',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 193, 7, 0.3)',
-  },
-  mismatchWarningRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-  },
-  streamCacheNote: {
-    flexShrink: 1,
-    color: theme.textSecondary,
-    fontSize: 12,
-    fontWeight: '500',
-    textAlign: 'center',
-    marginBottom: 10,
-  },
-  streamCacheErrorRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'center',
-    gap: 12,
-    paddingHorizontal: 8,
-  },
-  downloadErrorActions: {
-    flexDirection: 'row',
-    gap: 20,
-    marginTop: 8,
-    paddingLeft: 24,
-  },
-  downloadErrorAction: {
-    color: theme.accentWarn,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  mismatchWarningText: {
-    flex: 1,
-    color: theme.accentWarn,
-    fontSize: 12,
-    fontWeight: '500',
-    lineHeight: 17,
-  },
-  reportBtn: {
-    alignSelf: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    marginTop: 4,
-  },
-  reportText: { color: theme.accentWarn, fontSize: 13, fontWeight: '600' },
-  sheetBackdrop: {
-    flex: 1,
-    justifyContent: 'flex-end',
-    backgroundColor: 'rgba(0, 0, 0, 0.55)',
-  },
-  sheet: {
-    backgroundColor: theme.surface,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    maxHeight: '72%',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.border,
-  },
-  sheetHandle: {
-    alignSelf: 'center',
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: theme.border,
-    marginBottom: 14,
-  },
-  sheetHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-  },
-  sheetHeaderText: {
-    flex: 1,
-    paddingRight: 12,
-  },
-  sheetTitle: {
-    color: theme.text,
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  sheetSubtitle: {
-    color: theme.textMuted,
-    fontSize: 13,
-    marginTop: 4,
-  },
-  sheetAutoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: theme.surfaceElevated,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    marginBottom: 8,
-  },
-  sheetAutoCopy: {
-    flex: 1,
-    paddingRight: 12,
-  },
-  sheetAutoLabel: {
-    color: theme.text,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  sheetAutoHint: {
-    color: theme.textMuted,
-    fontSize: 12,
-    marginTop: 2,
-  },
-  sheetList: {
-    flexGrow: 0,
-  },
-  segRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 14,
-    gap: 12,
-  },
-  segRowPressed: {
-    opacity: 0.7,
-  },
-  segRowBorder: {
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.border,
-  },
-  segDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: theme.accent,
-  },
-  segBody: {
-    flex: 1,
-  },
-  segType: {
-    color: theme.text,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  segMeta: {
-    color: theme.textSecondary,
-    fontSize: 13,
-    marginTop: 2,
-    fontVariant: ['tabular-nums'],
-  },
-  segSample: {
-    color: theme.textMuted,
-    fontSize: 12,
-    lineHeight: 16,
-    marginTop: 4,
-  },
+  section: { marginTop: 28 },
+  sectionRule: { marginBottom: 24 },
+  sectionLabel: { marginBottom: 10 },
+  chapter: { flexDirection: 'row', alignItems: 'baseline', gap: 12, paddingVertical: 10, paddingHorizontal: 10, marginHorizontal: -10, borderRadius: 10 },
+  chapterOn: { backgroundColor: 'rgba(255,255,255,0.07)' },
+  chapterTime: { fontFamily: font.mono, fontSize: 13, color: theme.textSecondary, minWidth: 54, fontVariant: ['tabular-nums'] },
+  chapterTitle: { flex: 1, fontFamily: font.body, fontSize: 15, lineHeight: 21, color: theme.textSecondary },
+  chapterTitleOn: { fontFamily: font.semi, color: theme.text },
+  timestamp: { fontFamily: font.mono, color: theme.accent, textDecorationLine: 'underline' },
+  inlineLink: { alignSelf: 'flex-start', marginTop: 8 },
 });

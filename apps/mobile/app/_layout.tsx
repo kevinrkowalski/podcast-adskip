@@ -1,4 +1,7 @@
 import { useFonts } from 'expo-font';
+import { SchibstedGrotesk_600SemiBold, SchibstedGrotesk_700Bold } from '@expo-google-fonts/schibsted-grotesk';
+import { Inter_400Regular, Inter_500Medium, Inter_600SemiBold } from '@expo-google-fonts/inter';
+import { JetBrainsMono_400Regular, JetBrainsMono_500Medium } from '@expo-google-fonts/jetbrains-mono';
 import { DarkTheme, Stack, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
@@ -10,6 +13,7 @@ import 'react-native-reanimated';
 import '@/src/queue/backgroundRefresh';
 import { PlaybackProvider } from '@/src/store/PlaybackContext';
 import { OverlayHost } from '@/components/OverlayHost';
+import { EpisodeSheetHost } from '@/components/EpisodeSheet';
 import { hydrateApiBaseUrl, hydrateAppKey } from '@/src/api/backend';
 import { pruneExpiredAudioCache } from '@/src/api/audioUpload';
 import { theme } from '@/constants/Colors';
@@ -38,7 +42,13 @@ const AppDarkTheme = {
 
 export default function RootLayout() {
   const [loaded, error] = useFonts({
-    SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
+    SchibstedGrotesk_600SemiBold,
+    SchibstedGrotesk_700Bold,
+    Inter_400Regular,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    JetBrainsMono_400Regular,
+    JetBrainsMono_500Medium,
   });
 
   useEffect(() => {
@@ -79,19 +89,19 @@ function RootLayoutNav() {
               contentStyle: { backgroundColor: theme.background },
               headerStyle: { backgroundColor: theme.background },
               headerTintColor: theme.text,
-              headerTitleStyle: { fontFamily: displayFontFamily, fontSize: 20, fontWeight: '600' },
+              headerTitleStyle: { fontFamily: displayFontFamily, fontSize: 18 },
               headerShadowVisible: false,
             }}>
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
             <Stack.Screen name="podcast/[id]" options={{ title: 'Podcast' }} />
             <Stack.Screen
               name="now-playing"
-              options={{ headerShown: false, animation: 'slide_from_right' }}
+              options={{ headerShown: false, animation: 'slide_from_bottom' }}
             />
             <Stack.Screen name="settings" options={{ title: 'Settings' }} />
-            <Stack.Screen name="queue" options={{ title: 'Queue' }} />
           </Stack>
           <OverlayHost />
+          <EpisodeSheetHost />
         </PlaybackProvider>
       </ThemeProvider>
     </SafeAreaProvider>

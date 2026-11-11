@@ -1,3 +1,5 @@
+import type { Episode } from '@/src/types';
+
 /** Tiny imperative bus so any code (not just components) can open the action sheet or a toast. */
 export type SheetAction = {
   label: string;
@@ -36,5 +38,20 @@ export function subscribeToast(l: ToastListener): () => void {
   toastListeners.add(l);
   return () => {
     toastListeners.delete(l);
+  };
+}
+
+type EpisodeSheetListener = (ep: Episode) => void;
+const episodeSheetListeners = new Set<EpisodeSheetListener>();
+
+/** Open the episode sheet (notes and actions) for `ep` from anywhere. */
+export function showEpisodeSheet(ep: Episode) {
+  episodeSheetListeners.forEach((l) => l(ep));
+}
+
+export function subscribeEpisodeSheet(l: EpisodeSheetListener): () => void {
+  episodeSheetListeners.add(l);
+  return () => {
+    episodeSheetListeners.delete(l);
   };
 }

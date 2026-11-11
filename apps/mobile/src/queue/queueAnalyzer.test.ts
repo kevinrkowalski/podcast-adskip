@@ -18,6 +18,7 @@ jest.mock('@/src/db/storage', () => ({
   getAutoSkipEnabled: jest.fn(),
   isPodcastAdDetectionEnabled: jest.fn(),
   getCachedSkipMap: jest.fn(),
+  cacheSkipMap: jest.fn(async () => undefined),
 }));
 jest.mock('@/src/api/audioUpload', () => ({
   getCachedAudioPath: jest.fn(),

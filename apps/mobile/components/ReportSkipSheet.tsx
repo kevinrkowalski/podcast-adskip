@@ -17,6 +17,7 @@ import { submitFeedback, toFeedbackSegment, type FeedbackKind } from '@/src/api/
 import { formatMs, segmentTypeLabel } from '@/src/player/skipLogic';
 import { showToast } from '@/src/ui/overlayBus';
 import { theme } from '@/constants/Colors';
+import { font } from '@/constants/Typography';
 
 type Props = {
   visible: boolean;
@@ -142,7 +143,7 @@ export function ReportSkipSheet({ visible, onClose, episode, positionMs, skipMap
               disabled={!kind || sending}
               onPress={() => void submit()}
               accessibilityRole="button">
-              {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>Send report</Text>}
+              {sending ? <ActivityIndicator color={theme.accentInk} /> : <Text style={styles.submitText}>Send report</Text>}
             </Pressable>
           </Pressable>
         </Pressable>
@@ -155,8 +156,8 @@ const styles = StyleSheet.create({
   backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.55)' },
   sheet: {
     backgroundColor: theme.surface,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
     paddingHorizontal: 20,
     paddingTop: 10,
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -170,7 +171,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.border,
     marginBottom: 12,
   },
-  title: { color: theme.text, fontSize: 18, fontWeight: '700' },
+  title: { color: theme.text, fontSize: 18, fontFamily: font.semi },
   sub: { color: theme.textMuted, fontSize: 13, marginTop: 4, marginBottom: 14 },
   kindRow: { flexDirection: 'row', gap: 8 },
   kindBtn: {
@@ -183,12 +184,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   kindBtnOn: { borderColor: theme.accent },
-  kindText: { color: theme.textSecondary, fontSize: 13, fontWeight: '600' },
+  kindText: { color: theme.textSecondary, fontSize: 13, fontFamily: font.semi },
   kindTextOn: { color: theme.text },
   label: {
-    color: theme.accentSoft,
+    color: theme.textMuted,
     fontSize: 10,
-    fontWeight: '700',
+    fontFamily: font.semi,
     letterSpacing: 1.6,
     marginTop: 16,
     marginBottom: 6,
@@ -215,5 +216,5 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     alignItems: 'center',
   },
-  submitText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  submitText: { color: theme.accentInk, fontFamily: font.semi, fontSize: 15 },
 });

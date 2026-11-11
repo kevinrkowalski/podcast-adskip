@@ -36,3 +36,14 @@ test('turning auto-add on with a future-dated episode in the feed still works', 
   const r = detectNewEpisodes(state, [ep('real', '2026-11-03T00:00:00Z')], now + 2 * day);
   expect(r.toAdd.map((e) => e.guid)).toEqual(['real']);
 });
+
+test('drag and drop keeps the playing episode pinned at the top', () => {
+  const { moveToIndex } = jest.requireActual('./queueLogic') as typeof import('./queueLogic');
+  const q = ['now', 'a', 'b', 'c'].map((g) => ep(g, '2026-11-01T00:00:00Z'));
+  const ids = (list: Episode[]) => list.map((e) => e.guid).join(',');
+  expect(ids(moveToIndex(q, 3, 1, 'now'))).toBe('now,c,a,b');
+  expect(ids(moveToIndex(q, 1, 3, 'now'))).toBe('now,b,c,a');
+  expect(ids(moveToIndex(q, 2, 0, 'now'))).toBe('now,b,a,c'); // can't land above the playing one
+  expect(moveToIndex(q, 0, 2, 'now')).toBe(q); // the playing one doesn't move
+  expect(ids(moveToIndex(q, 0, 2, null))).toBe('a,b,now,c'); // nothing playing: free order
+});

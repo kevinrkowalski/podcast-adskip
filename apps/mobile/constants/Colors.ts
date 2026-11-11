@@ -1,53 +1,46 @@
 /**
- * Editorial midnight palette: deep evergreen-charcoal, warm paper text, and
- * restrained brass accents. The app intentionally keeps the same palette in
- * both system color modes for a consistent listening experience.
+ * Quiet dark palette: near-black with a slight green bias, warm paper text and one
+ * soft brass accent. Amber is reserved for ad segments. The app keeps the same palette
+ * in both system colour modes.
  */
 
-const accent = '#90663E';
-const accentSoft = '#CBA978';
-const tint = accentSoft;
+const accent = '#D9B27C';
+
+export const theme = {
+  text: '#F3F1EC',
+  textSecondary: '#A9AFAA',
+  textMuted: '#737B76',
+  background: '#0E1211',
+  surface: '#161C1A',
+  surfaceElevated: '#1F2725',
+  /** Solid hairline / control-track colour. */
+  border: '#262E2B',
+  accent,
+  /** Text and icons drawn on top of `accent`. */
+  accentInk: '#1A1408',
+  accentSoft: accent,
+  accentWarn: '#E7A64B',
+  /** Ad segments (scrubber marks, status dots, segment pills). */
+  ad: '#E7A64B',
+  adSoft: 'rgba(231, 166, 75, 0.16)',
+  success: '#8CC3A4',
+  danger: '#E08C80',
+  adMark: '#E7A64B',
+  progressTrack: 'rgba(255, 255, 255, 0.14)',
+  progressFill: '#F3F1EC',
+  miniBar: '#1F2725',
+  tabBar: '#161C1A',
+  scrim: 'rgba(0, 0, 0, 0.62)',
+};
 
 const palette = {
-  text: '#F2EEE5',
-  textSecondary: '#B4B8AE',
-  background: '#101714',
-  surface: '#18211D',
-  surfaceElevated: '#202B26',
-  border: '#2B3932',
-  tint,
-  accent,
-  accentSoft,
-  tabIconDefault: '#7F8A82',
-  tabIconSelected: tint,
-  success: '#83B69A',
-  danger: '#D9857A',
-  adMark: 'rgba(203, 169, 120, 0.58)',
-  progressTrack: '#2B3932',
-  progressFill: '#CBA978',
+  ...theme,
+  tint: accent,
+  tabIconDefault: theme.textMuted,
+  tabIconSelected: theme.text,
 };
 
 export default {
   light: palette,
   dark: palette,
-};
-
-export const theme = {
-  text: '#F2EEE5',
-  textSecondary: '#B4B8AE',
-  textMuted: '#7F8A82',
-  background: '#101714',
-  surface: '#18211D',
-  surfaceElevated: '#202B26',
-  border: '#2B3932',
-  accent,
-  accentSoft,
-  accentWarn: '#E2BA7C',
-  success: '#83B69A',
-  danger: '#D9857A',
-  adMark: 'rgba(203, 169, 120, 0.58)',
-  progressTrack: '#2B3932',
-  progressFill: '#CBA978',
-  miniBar: '#151E1A',
-  tabBar: '#131B17',
 };

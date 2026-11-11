@@ -21,7 +21,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Episode, SkipMap } from '@/src/types';
-import { getAutoSkipEnabled, getCachedSkipMap, isPodcastAdDetectionEnabled } from '@/src/db/storage';
+import { cacheSkipMap, getAutoSkipEnabled, getCachedSkipMap, isPodcastAdDetectionEnabled } from '@/src/db/storage';
 import { getCachedAudioMd5, getCachedAudioPath, isAudioCacheOverBudget } from '@/src/api/audioUpload';
 import { getSkipMap } from '@/src/api/backend';
 
@@ -45,7 +45,7 @@ type AnalyzerState = {
 };
 
 /** Server job started by the analyzer that hasn't finished yet. */
-type ServerJob = { guid: string; audioMd5: string | null; sinceMs: number };
+type ServerJob = { guid: string; audioMd5: string | null; sinceMs: number; enclosureUrl?: string };
 
 let state: AnalyzerState = { failed: {}, failedAt: {} };
 let hydrated = false;
@@ -60,6 +60,32 @@ let rateLimitedUntilMs = 0;
 /** Guids whose analysis succeeded this session: never re-uploaded by the analyzer. */
 const analyzedThisSession = new Set<string>();
 let scheduleTimer: ReturnType<typeof setTimeout> | null = null;
+/** The episode being downloaded/uploaded right now (the queue shows it as "checking"). */
+let activeGuid: string | null = null;
+const activityListeners = new Set<() => void>();
+
+function notifyActivity(): void {
+  activityListeners.forEach((l) => {
+    try {
+      l();
+    } catch (e) {
+      console.warn('[queueAnalyzer] activity listener failed:', e);
+    }
+  });
+}
+
+/** Guids the analyzer is working on: the one in flight and the one the server still has. */
+export function getQueueAnalysisBusyGuids(): string[] {
+  return [activeGuid, serverJob?.guid].filter((g): g is string => !!g);
+}
+
+/** Called whenever an analysis starts or finishes (so queue rows can refresh their status). */
+export function subscribeQueueAnalysis(listener: () => void): () => void {
+  activityListeners.add(listener);
+  return () => {
+    activityListeners.delete(listener);
+  };
+}
 
 /** Same analyze flow as Prepare/play (download, fingerprint, upload). Injected by PlaybackContext. */
 export type AnalyzeResult =
@@ -221,11 +247,21 @@ async function waitingOnServer(): Promise<boolean> {
   try {
     const map = await getSkipMap(serverJob.guid, serverJob.audioMd5);
     if (BUSY.has(map.status)) return true;
+    if (map.status === 'ready') {
+      // Keep the finished map so the queue (and the player, once it has checked it against
+      // the downloaded file) can use it without asking again.
+      try {
+        await cacheSkipMap(serverJob.guid, map, serverJob.enclosureUrl);
+      } catch (e) {
+        console.warn('[queueAnalyzer] Could not save finished map for', serverJob.guid, e);
+      }
+    }
   } catch (e) {
     console.warn('[queueAnalyzer] Could not poll server job', serverJob.guid, e);
     return true;
   }
   serverJob = null;
+  notifyActivity();
   return false;
 }
 
@@ -258,6 +294,8 @@ async function analyzeNext(): Promise<void> {
     }
 
     console.log('[queueAnalyzer] Background analysis for queued episode:', episode.guid);
+    activeGuid = episode.guid;
+    notifyActivity();
     try {
       const result = await analyzeFunction(episode);
       if (result?.status === 'rate_limited') {
@@ -275,7 +313,7 @@ async function analyzeNext(): Promise<void> {
         delete state.failedAt[episode.guid];
         if (BUSY.has(result.status)) {
           const md5 = typeof result.audio_md5 === 'string' ? result.audio_md5.toLowerCase() : null;
-          serverJob = { guid: episode.guid, audioMd5: md5, sinceMs: Date.now() };
+          serverJob = { guid: episode.guid, audioMd5: md5, sinceMs: Date.now(), enclosureUrl: episode.enclosureUrl };
         }
         console.log('[queueAnalyzer] Analyzed:', episode.guid, 'status:', result.status);
       }
@@ -283,6 +321,8 @@ async function analyzeNext(): Promise<void> {
       recordFailure(episode.guid);
       console.warn('[queueAnalyzer] Error analyzing', episode.guid, error);
     }
+    activeGuid = null;
+    notifyActivity();
     await persistState();
     // Look for the next one (waitingOnServer() holds it back while the server works).
     const pause = rateLimitedUntilMs - Date.now();
@@ -338,6 +378,8 @@ export function __resetForTesting(): void {
   rerunRequested = false;
   hydrated = false;
   serverJob = null;
+  activeGuid = null;
+  activityListeners.clear();
   rateLimitedUntilMs = 0;
   analyzedThisSession.clear();
   earliestRunMs = 0;

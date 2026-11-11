@@ -7,17 +7,20 @@ type Props = {
   positionMs: number;
   durationMs: number;
   segments?: AdSegment[];
+  /** Chapter start times, drawn as small breaks in the track. */
+  chapterStartsMs?: number[];
   onSeek: (ms: number) => void;
   onScrubbingChange?: (ms: number | null) => void;
 };
 
 /**
- * Tappable + draggable timeline. Ad segments show as rose overlays.
+ * Tappable + draggable timeline. Ad segments show in amber; chapters as small breaks.
  */
 export function Scrubber({
   positionMs,
   durationMs,
   segments = [],
+  chapterStartsMs = [],
   onSeek,
   onScrubbingChange,
 }: Props) {
@@ -104,6 +107,16 @@ export function Scrubber({
             />
           );
         })}
+        {chapterStartsMs.map((ms, i) => {
+          if (!durationMs || ms <= 0 || ms >= durationMs) return null;
+          return (
+            <View
+              key={`ch-${ms}-${i}`}
+              pointerEvents="none"
+              style={[styles.chapterTick, { left: `${(ms / durationMs) * 100}%` } as object]}
+            />
+          );
+        })}
       </View>
       <View
         pointerEvents="none"
@@ -114,11 +127,7 @@ export function Scrubber({
 }
 
 const styles = StyleSheet.create({
-  hit: {
-    width: '100%',
-    height: 32,
-    justifyContent: 'center',
-  },
+  hit: { width: '100%', height: 32, justifyContent: 'center' },
   track: {
     width: '100%',
     height: 4,
@@ -127,26 +136,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     position: 'relative',
   },
-  fill: {
-    height: '100%',
-    backgroundColor: theme.progressFill,
-  },
-  adMark: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    backgroundColor: theme.adMark,
-  },
-  thumb: {
-    position: 'absolute',
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: theme.text,
-    top: 9,
-    shadowColor: '#000',
-    shadowOpacity: 0.4,
-    shadowRadius: 3,
-    elevation: 3,
-  },
+  fill: { height: '100%', backgroundColor: theme.progressFill },
+  adMark: { position: 'absolute', top: 0, bottom: 0, backgroundColor: theme.adMark },
+  chapterTick: { position: 'absolute', top: 0, bottom: 0, width: 2, marginLeft: -1, backgroundColor: theme.background },
+  thumb: { position: 'absolute', width: 14, height: 14, borderRadius: 7, backgroundColor: theme.text, top: 9 },
 });

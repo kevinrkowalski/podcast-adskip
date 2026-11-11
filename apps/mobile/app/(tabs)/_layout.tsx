@@ -1,106 +1,77 @@
 import React from 'react';
-import { SymbolView } from 'expo-symbols';
 import { Tabs } from 'expo-router';
-import { View, StyleSheet } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BottomTabBar } from 'expo-router/build/react-navigation/bottom-tabs';
 
 import { theme } from '@/constants/Colors';
-import { useClientOnlyValue } from '@/components/useClientOnlyValue';
+import { font } from '@/constants/Typography';
 import { MiniPlayer } from '@/components/MiniPlayer';
-import { useUpNextCount } from '@/src/queue/queueStore';
+import { Icon, type IconName } from '@/components/ui';
 
 export const unstable_settings = {
   initialRouteName: 'index',
 };
 
-function TabBarWithMini(props: React.ComponentProps<typeof BottomTabBar>) {
+const TAB_ICONS: Record<string, IconName> = { index: 'listen', shows: 'shows', search: 'search' };
+
+type TabBarProps = Parameters<NonNullable<React.ComponentProps<typeof Tabs>['tabBar']>>[0];
+
+/** Mini player and tabs as one floating unit over the screen's content. */
+function Dock({ state, descriptors, navigation }: TabBarProps) {
   const insets = useSafeAreaInsets();
   return (
-    <View
-      style={StyleSheet.flatten([
-        styles.tabChrome,
-        // Keep both the mini player and tab bar above edge-to-edge system navigation.
-        { paddingBottom: insets.bottom },
-      ])}>
+    <View pointerEvents="box-none" style={[styles.dock, { bottom: insets.bottom + 10 }]}>
       <MiniPlayer />
-      <BottomTabBar {...props} />
+      <View style={styles.tabs} accessibilityRole="tablist">
+        {state.routes.map((route, index) => {
+          const focused = state.index === index;
+          const label = String(descriptors[route.key]?.options.title ?? route.name);
+          const color = focused ? theme.text : theme.textMuted;
+          return (
+            <Pressable
+              key={route.key}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: focused }}
+              accessibilityLabel={label}
+              onPress={() => {
+                const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
+                if (!focused && !event.defaultPrevented) navigation.navigate(route.name, route.params);
+              }}
+              style={[styles.tab, focused && styles.tabOn]}>
+              <Icon name={TAB_ICONS[route.name] ?? 'shows'} size={22} color={color} />
+              <Text style={[styles.tabLabel, { color }]}>{label}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
     </View>
   );
 }
 
 export default function TabLayout() {
-  const queueCount = useUpNextCount();
   return (
     <Tabs
       initialRouteName="index"
-      tabBar={(props) => <TabBarWithMini {...props} />}
-      screenOptions={{
-        tabBarActiveTintColor: theme.accent,
-        tabBarInactiveTintColor: theme.textMuted,
-        headerShown: useClientOnlyValue(false, false),
-        tabBarStyle: {
-          backgroundColor: theme.tabBar,
-          borderTopColor: theme.border,
-          borderTopWidth: StyleSheet.hairlineWidth,
-          height: 58,
-          paddingBottom: 6,
-          paddingTop: 4,
-        },
-        tabBarLabelStyle: {
-          fontSize: 10,
-          fontWeight: '600',
-          letterSpacing: 0.25,
-        },
-        sceneStyle: { backgroundColor: theme.background },
-      }}>
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: 'Library',
-          tabBarIcon: ({ color }) => (
-            <SymbolView
-              name={{ ios: 'books.vertical', android: 'library_books', web: 'library_books' }}
-              tintColor={color}
-              size={24}
-            />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="search"
-        options={{
-          title: 'Search',
-          tabBarIcon: ({ color }) => (
-            <SymbolView
-              name={{ ios: 'magnifyingglass', android: 'search', web: 'search' }}
-              tintColor={color}
-              size={24}
-            />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="up-next"
-        options={{
-          title: 'Queue',
-          tabBarBadge: queueCount > 0 ? (queueCount > 99 ? '99+' : queueCount) : undefined,
-          tabBarBadgeStyle: { backgroundColor: theme.accent, color: '#fff', fontSize: 10 },
-          tabBarIcon: ({ color }) => (
-            <SymbolView
-              name={{ ios: 'list.bullet', android: 'queue_music', web: 'queue_music' }}
-              tintColor={color}
-              size={24}
-            />
-          ),
-        }}
-      />
+      tabBar={(props) => <Dock {...props} />}
+      screenOptions={{ headerShown: false, sceneStyle: { backgroundColor: theme.background } }}>
+      <Tabs.Screen name="index" options={{ title: 'Listen' }} />
+      <Tabs.Screen name="shows" options={{ title: 'Shows' }} />
+      <Tabs.Screen name="search" options={{ title: 'Search' }} />
     </Tabs>
   );
 }
 
 const styles = StyleSheet.create({
-  tabChrome: {
+  dock: { position: 'absolute', left: 10, right: 10, gap: 8 },
+  tabs: {
+    flexDirection: 'row',
     backgroundColor: theme.tabBar,
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.border,
+    padding: 6,
   },
+  tab: { flex: 1, alignItems: 'center', gap: 2, paddingVertical: 7, borderRadius: 18 },
+  tabOn: { backgroundColor: 'rgba(255,255,255,0.07)' },
+  tabLabel: { fontFamily: font.medium, fontSize: 11 },
 });

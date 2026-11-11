@@ -7,6 +7,7 @@ import {
   type SheetRequest,
 } from '@/src/ui/overlayBus';
 import { theme } from '@/constants/Colors';
+import { font } from '@/constants/Typography';
 
 /**
  * App-wide action sheet (no 3-button limit like Android's Alert) and toast.
@@ -89,8 +90,8 @@ const styles = StyleSheet.create({
   backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.55)' },
   sheet: {
     backgroundColor: theme.surface,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
     paddingHorizontal: 16,
     paddingTop: 10,
     borderTopWidth: StyleSheet.hairlineWidth,
@@ -104,7 +105,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.border,
     marginBottom: 12,
   },
-  title: { color: theme.text, fontSize: 16, fontWeight: '700', marginBottom: 2 },
+  title: { color: theme.text, fontSize: 16, fontFamily: font.semi, marginBottom: 2 },
   message: { color: theme.textMuted, fontSize: 13, marginBottom: 4 },
   action: {
     paddingVertical: 14,
@@ -112,7 +113,7 @@ const styles = StyleSheet.create({
     borderBottomColor: theme.border,
   },
   actionPressed: { backgroundColor: theme.surfaceElevated },
-  actionText: { color: theme.text, fontSize: 15, fontWeight: '500' },
+  actionText: { color: theme.text, fontSize: 15, fontFamily: font.medium },
   cancel: { borderBottomWidth: 0, marginTop: 4 },
   toast: {
     position: 'absolute',
@@ -125,5 +126,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 10,
   },
-  toastText: { color: theme.text, fontSize: 13, fontWeight: '500', textAlign: 'center' },
+  toastText: { color: theme.text, fontSize: 13, fontFamily: font.medium, textAlign: 'center' },
 });

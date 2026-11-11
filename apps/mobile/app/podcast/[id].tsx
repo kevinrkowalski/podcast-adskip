@@ -3,14 +3,13 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
-  Image,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import { Stack, useFocusEffect, useLocalSearchParams, useRouter, type Href } from 'expo-router';
-import { SymbolView } from 'expo-symbols';
+import { Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { lookupPodcastWithEpisodes } from '@/src/api/itunes';
 import {
   getCachedRssXml,
@@ -31,18 +30,21 @@ import {
   type PlaybackPosition,
   type PodcastSkipSettings,
 } from '@/src/db/storage';
-import { formatMs } from '@/src/player/skipLogic';
+import { formatDurationWords } from '@/src/player/adSkipLine';
 import { syncAndroidAutoCatalog } from '@/src/player/androidAutoCatalog';
 import { usePlayback } from '@/src/store/PlaybackContext';
-import { isAutoQueueEnabled, setAutoQueueEnabled, useQueue } from '@/src/queue/queueStore';
-import { showQueueActions } from '@/src/queue/queueActions';
+import { isAutoQueueEnabled, useQueue } from '@/src/queue/queueStore';
 import { isPlayed, usePlayedVersion } from '@/src/played/playedStore';
-import { ShowSettingsCard } from '@/components/ShowSettingsCard';
+import { EpisodeProgress } from '@/components/EpisodeProgress';
+import { FloatingMiniPlayer } from '@/components/MiniPlayer';
+import { ShowSettingsSheet } from '@/components/ShowSettingsSheet';
+import { Button, Chip, Cover, Divider, Group, Icon, Sheet, ToggleRow, type } from '@/components/ui';
+import { showEpisodeSheet } from '@/src/ui/overlayBus';
 import type { Episode, PodcastSearchResult } from '@/src/types';
 import { theme } from '@/constants/Colors';
 import { listEpisodes } from '@/src/ui/episodeList';
 import { htmlToPlainText } from '@/src/ui/htmlText';
-import { displayFontFamily } from '@/constants/Typography';
+import { font } from '@/constants/Typography';
 
 const EPISODES_PAGE_SIZE = 20;
 /** First RSS parse budget — never full archive on open. */
@@ -74,8 +76,10 @@ export default function PodcastDetailScreen() {
     title?: string;
     artwork?: string;
   }>();
-  const router = useRouter();
-  const { episode: currentEpisode, openEpisode, setEpisodePlayed, setPodcastAdDetection, setPodcastSkipSetting } = usePlayback();
+  const { episode: currentEpisode, isPlaying, playEpisode, togglePlay } = usePlayback();
+  const insets = useSafeAreaInsets();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [filterOpen, setFilterOpen] = useState(false);
   const [show, setShow] = useState<PodcastSearchResult | null>(null);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
   const [visibleCount, setVisibleCount] = useState(EPISODES_PAGE_SIZE);
@@ -333,50 +337,13 @@ export default function PodcastDetailScreen() {
     }
   };
 
-  const onToggleAdDetection = async (enabled: boolean) => {
-    if (!show?.feedUrl) return;
-    setAdDetectionEnabled(enabled);
-    await setPodcastAdDetection(
-      { collectionId: show.collectionId, feedUrl: show.feedUrl },
-      enabled,
-    );
-  };
+  /** Tap a row: notes and actions in the episode sheet (the loaded episode opens the player). */
+  const onOpen = (ep: Episode) => showEpisodeSheet(ep);
 
-  const onToggleAutoQueue = async (enabled: boolean) => {
-    if (!show?.feedUrl) return;
-    setAutoQueue(enabled);
-    // Everything already listed counts as seen: only later releases are added.
-    await setAutoQueueEnabled(
-      { collectionId: show.collectionId, feedUrl: show.feedUrl },
-      enabled,
-      episodes,
-    );
-  };
-
-  const onToggleSkipSetting = async (
-    setting: keyof PodcastSkipSettings,
-    enabled: boolean,
-  ) => {
-    if (!show?.feedUrl || !skipSettings) return;
-    const updated = { ...skipSettings, [setting]: enabled };
-    setSkipSettings(updated);
-    await setPodcastSkipSetting(
-      { collectionId: show.collectionId, feedUrl: show.feedUrl },
-      { [setting]: enabled },
-    );
-  };
-
-  const onPlay = (ep: Episode) => {
-    // Open the same player screen without loading audio or starting analysis;
-    // playback + auto-analyze start on the first Play tap there.
-    // openEpisode sets state synchronously before navigating, so Now Playing
-    // does not mount on the empty "Nothing playing" flash.
-    try {
-      openEpisode(ep);
-      router.push('/now-playing' as Href);
-    } catch (err) {
-      console.error('[podcast-detail] Failed to open episode:', err);
-    }
+  /** The row's play button: start it now, or pause/resume if it is the loaded episode. */
+  const onPlayPress = (ep: Episode) => {
+    if (ep.guid === currentEpisode?.guid) void togglePlay();
+    else void playEpisode(ep);
   };
 
   const playedVersion = usePlayedVersion();
@@ -451,11 +418,6 @@ export default function PodcastDetailScreen() {
       if (episodesRef.current.length) void refreshPositions(episodesRef.current);
     }, [refreshPositions]),
   );
-  const onSetPlayed = async (ep: Episode, value: boolean) => {
-    await setEpisodePlayed(ep, value);
-    void refreshPositions(episodesRef.current);
-  };
-
   const displayedEpisodes = listedEpisodes.slice(0, visibleCount);
   const queuedGuids = new Set(queue.map((e) => e.guid));
   const hasMoreEpisodes =
@@ -465,15 +427,28 @@ export default function PodcastDetailScreen() {
   // ~3 lines; shorter descriptions show in full with no toggle.
   const aboutIsLong = aboutText.length > 180 || aboutText.split('\n').length > 3;
 
+  const artwork = show?.artworkUrl600 || show?.artworkUrl100;
+  const filterLabel = `${listPrefs.hidePlayed ? 'Unplayed' : 'All'} · ${listPrefs.oldestFirst ? 'Oldest' : 'Newest'}`;
+
   return (
     <View style={styles.container}>
       <Stack.Screen
         options={{
-          title: show?.collectionName ?? 'Podcast',
+          title: '',
           headerStyle: { backgroundColor: theme.background },
           headerTintColor: theme.text,
-          headerTitleStyle: { fontFamily: displayFontFamily, fontSize: 20, fontWeight: '600' },
           headerShadowVisible: false,
+          headerRight: () =>
+            show ? (
+              <Pressable
+                onPress={() => setSettingsOpen(true)}
+                hitSlop={12}
+                accessibilityRole="button"
+                accessibilityLabel="Show settings"
+                style={styles.headerBtn}>
+                <Icon name="tune" size={22} color={theme.text} />
+              </Pressable>
+            ) : null,
         }}
       />
       {loading && !show && <ActivityIndicator color={theme.accent} style={{ marginTop: 24 }} />}
@@ -481,7 +456,8 @@ export default function PodcastDetailScreen() {
       <FlatList
         data={displayedEpisodes}
         keyExtractor={(item) => item.guid}
-        contentContainerStyle={{ paddingBottom: 120 }}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: insets.bottom + 96, paddingHorizontal: 20 }}
         onEndReached={() => {
           void loadMore();
         }}
@@ -489,28 +465,41 @@ export default function PodcastDetailScreen() {
         ListHeaderComponent={
           show ? (
             <View style={styles.header}>
-              {!!(show.artworkUrl600 || show.artworkUrl100) && (
-                <Image
-                  source={{ uri: show.artworkUrl600 || show.artworkUrl100 }}
-                  style={styles.art}
-                />
-              )}
-              <View style={styles.headerMeta}>
-                <Text style={styles.showEyebrow}>PODCAST</Text>
-                <Text style={styles.title}>{show.collectionName}</Text>
-                <Text style={styles.artist}>{show.artistName}</Text>
-                <Pressable
-                  style={[styles.subBtn, isSub && styles.unsubBtn, subBusy && { opacity: 0.6 }]}
-                  onPress={onToggleSubscribe}
-                  disabled={subBusy}>
-                  <Text style={[styles.subText, isSub && styles.unsubText]}>
-                    {isSub ? 'Unsubscribe' : 'Subscribe'}
+              <View style={styles.hero}>
+                <Cover uri={artwork} size={92} />
+                <View style={styles.flex}>
+                  <Text style={styles.title} numberOfLines={3}>
+                    {show.collectionName}
                   </Text>
-                </Pressable>
+                  {!!show.artistName && (
+                    <Text style={[type.meta, { marginTop: 2 }]} numberOfLines={1}>
+                      {show.artistName}
+                    </Text>
+                  )}
+                  <View style={styles.subRow}>
+                    {isSub ? (
+                      <Chip
+                        label="Subscribed"
+                        trailing="check"
+                        onPress={subBusy ? undefined : onToggleSubscribe}
+                        accessibilityLabel="Subscribed. Tap to unsubscribe"
+                      />
+                    ) : (
+                      <Button
+                        kind="accent"
+                        label="Subscribe"
+                        icon="plus"
+                        onPress={onToggleSubscribe}
+                        disabled={subBusy}
+                        style={styles.subBtn}
+                      />
+                    )}
+                  </View>
+                </View>
               </View>
               {!!aboutText && (
                 <View style={styles.about}>
-                  <Text style={styles.aboutText} numberOfLines={aboutExpanded || !aboutIsLong ? undefined : 3}>
+                  <Text style={type.meta} numberOfLines={aboutExpanded || !aboutIsLong ? undefined : 3}>
                     {aboutText}
                   </Text>
                   {aboutIsLong && (
@@ -518,33 +507,21 @@ export default function PodcastDetailScreen() {
                       onPress={() => setAboutExpanded((v) => !v)}
                       hitSlop={8}
                       accessibilityRole="button"
-                      accessibilityLabel={aboutExpanded ? 'Show less of the description' : 'Show the full description'}>
-                      <Text style={styles.aboutToggle}>{aboutExpanded ? 'Less' : 'More'}</Text>
+                      accessibilityLabel={aboutExpanded ? 'Show less of the description' : 'Show the full description'}
+                      style={{ alignSelf: 'flex-start', marginTop: 6 }}>
+                      <Text style={type.link}>{aboutExpanded ? 'Less' : 'More'}</Text>
                     </Pressable>
                   )}
                 </View>
               )}
-              <ShowSettingsCard
-                autoQueue={autoQueue}
-                onAutoQueueChange={onToggleAutoQueue}
-                adDetectionEnabled={adDetectionEnabled}
-                onAdDetectionChange={onToggleAdDetection}
-                skipSettings={skipSettings}
-                onSkipSettingChange={onToggleSkipSetting}
-              />
+              <Divider style={{ marginTop: 20 }} />
               <View style={styles.epHeadingRow}>
-                <Text style={styles.epHeading}>Episodes</Text>
-              </View>
-              <View style={styles.listToggles}>
-                <ListToggle
-                  label="Hide played"
-                  on={listPrefs.hidePlayed}
-                  onPress={() => onListPrefChange({ hidePlayed: !listPrefs.hidePlayed })}
-                />
-                <ListToggle
-                  label="Oldest first"
-                  on={listPrefs.oldestFirst}
-                  onPress={() => onListPrefChange({ oldestFirst: !listPrefs.oldestFirst })}
+                <Text style={[type.heading, styles.flex]}>Episodes</Text>
+                <Chip
+                  label={filterLabel}
+                  trailing="down"
+                  onPress={() => setFilterOpen(true)}
+                  accessibilityLabel={`Filter and sort: ${filterLabel}`}
                 />
               </View>
               {!!sourceHint && <Text style={styles.sourceHint}>{sourceHint}</Text>}
@@ -555,7 +532,7 @@ export default function PodcastDetailScreen() {
           !loading && !error && show ? (
             <Text style={styles.empty}>
               {listPrefs.hidePlayed && episodes.length
-                ? 'Every episode loaded so far is played. Turn off “Hide played” to see them.'
+                ? 'Every episode loaded so far is played. Change the filter to see them.'
                 : 'No episodes found yet.'}
             </Text>
           ) : null
@@ -570,224 +547,112 @@ export default function PodcastDetailScreen() {
         renderItem={({ item }) => {
           const pos = positions[item.guid];
           const dur = pos?.durationMs ?? item.durationMs;
-          const showResume =
-            pos && isMeaningfulPosition(pos.positionMs, dur);
+          const showResume = !!pos && isMeaningfulPosition(pos.positionMs, dur);
           const played = isPlayed(item.guid);
-          const pct =
-            showResume && dur && dur > 0
-              ? Math.min(99, Math.round((pos.positionMs / dur) * 100))
-              : null;
+          const isCurrent = item.guid === currentEpisode?.guid;
+          const date = item.pubDate ? Date.parse(item.pubDate) : NaN;
+          const meta = [
+            Number.isFinite(date)
+              ? new Date(date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+              : null,
+            showResume && dur && dur > pos.positionMs
+              ? `${formatDurationWords(dur - pos.positionMs)} left`
+              : item.duration,
+            !item.enclosureUrl ? 'no audio' : null,
+            played ? 'Played' : null,
+            isCurrent ? 'Playing' : queuedGuids.has(item.guid) ? 'In queue' : null,
+          ]
+            .filter(Boolean)
+            .join(' · ');
           return (
-            <Pressable
-              style={[styles.epRow, !item.enclosureUrl && styles.epDisabled, played && styles.epPlayed]}
-              onPress={() => onPlay(item)}
-              disabled={!item.enclosureUrl}>
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={styles.epTitle} numberOfLines={2}>
+            <View style={[styles.epRow, played && !isCurrent && styles.epPlayed]}>
+              <Pressable
+                style={({ pressed }) => [styles.flex, pressed && { opacity: 0.6 }]}
+                onPress={() => onOpen(item)}
+                accessibilityRole="button"
+                accessibilityLabel={`${item.title}. ${meta}`}>
+                <Text style={type.metaMuted} numberOfLines={1}>
+                  {meta}
+                </Text>
+                <Text style={[type.title, { marginTop: 3 }]} numberOfLines={2}>
                   {item.title}
                 </Text>
-                <Text style={styles.epMeta}>
-                  {item.pubDate ? new Date(item.pubDate).toLocaleDateString() : ''}
-                  {item.duration ? ` · ${item.duration}` : ''}
-                  {!item.enclosureUrl ? ' · no audio' : ''}
-                  {played ? ' · ✓ Played' : ''}
-                  {queuedGuids.has(item.guid) && item.guid !== currentEpisode?.guid ? ' · Queued' : ''}
-                  {showResume
-                    ? ` · Resume ${formatMs(pos.positionMs)}${pct != null ? ` (${pct}%)` : ''}`
-                    : ''}
-                </Text>
                 {showResume && dur && dur > 0 ? (
-                  <View style={styles.resumeTrack}>
-                    <View
-                      style={[
-                        styles.resumeFill,
-                        { width: `${Math.min(100, (pos.positionMs / dur) * 100)}%` as unknown as number },
-                      ]}
-                    />
-                  </View>
+                  <EpisodeProgress positionMs={pos.positionMs} durationMs={dur} />
                 ) : null}
-              </View>
+              </Pressable>
               {!!item.enclosureUrl && (
                 <Pressable
-                  onPress={() =>
-                    showQueueActions(item, {
-                      isCurrent: item.guid === currentEpisode?.guid,
-                      onSetPlayed: (ep, v) => void onSetPlayed(ep, v),
-                    })
-                  }
+                  onPress={() => onPlayPress(item)}
                   hitSlop={8}
-                  style={styles.moreBtn}
-                  accessibilityLabel={`Queue actions for ${item.title}`}>
-                  <SymbolView
-                    name={{ ios: 'ellipsis', android: 'more_vert', web: 'more_vert' }}
-                    size={18}
-                    tintColor={theme.textMuted}
-                  />
+                  style={({ pressed }) => [styles.playBtn, pressed && { opacity: 0.6 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={isCurrent && isPlaying ? `Pause ${item.title}` : `Play ${item.title}`}>
+                  <Icon name={isCurrent && isPlaying ? 'pause' : 'play'} size={20} color={theme.text} />
                 </Pressable>
               )}
-              <View style={styles.playChip}>
-                <Text style={styles.playChipText}>{played ? '✓' : showResume ? '↻' : '▶'}</Text>
-              </View>
-            </Pressable>
+            </View>
           );
         }}
       />
+      <FloatingMiniPlayer />
+      <ShowSettingsSheet
+        visible={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        show={show ? { collectionId: show.collectionId, feedUrl: show.feedUrl, title: show.collectionName } : null}
+        knownEpisodes={episodes}
+      />
+      <Sheet visible={filterOpen} onClose={() => setFilterOpen(false)} title="Episodes">
+        <Group>
+          <ToggleRow
+            label="Hide played"
+            value={listPrefs.hidePlayed}
+            onChange={(v) => onListPrefChange({ hidePlayed: v })}
+          />
+          <Divider />
+          <ToggleRow
+            label="Oldest first"
+            hint="For shows you listen to in order"
+            value={listPrefs.oldestFirst}
+            onChange={(v) => onListPrefChange({ oldestFirst: v })}
+          />
+        </Group>
+      </Sheet>
     </View>
   );
 }
 
-/** A pill toggle for the episode list (Hide played / Oldest first). */
-function ListToggle({ label, on, onPress }: { label: string; on: boolean; onPress: () => void }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      hitSlop={6}
-      accessibilityRole="switch"
-      accessibilityState={{ checked: on }}
-      style={({ pressed }) => [styles.toggle, on && styles.toggleOn, pressed && { opacity: 0.7 }]}>
-      <Text style={[styles.toggleText, on && styles.toggleTextOn]}>{label}</Text>
-    </Pressable>
-  );
-}
-
 const styles = StyleSheet.create({
-  listToggles: { flexDirection: 'row', gap: 8, marginTop: 10 },
-  toggle: {
-    borderWidth: 1,
-    borderColor: theme.border,
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
-  toggleOn: { backgroundColor: theme.accent, borderColor: theme.accent },
-  toggleText: { color: theme.textSecondary, fontSize: 13, fontWeight: '600' },
-  toggleTextOn: { color: theme.text },
-  container: {
-    flex: 1,
-    backgroundColor: theme.background,
-    paddingHorizontal: 16,
-  },
-  header: { marginBottom: 8, paddingTop: 8 },
-  art: {
-    width: 136,
-    height: 136,
-    borderRadius: 19,
-    backgroundColor: theme.surfaceElevated,
-    borderWidth: 1,
-    borderColor: theme.border,
-    alignSelf: 'center',
-    marginBottom: 18,
-    shadowColor: '#000',
-    shadowOpacity: 0.28,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 8,
-  },
-  headerMeta: { alignItems: 'center', marginBottom: 20 },
-  about: { marginBottom: 20 },
-  aboutText: { color: theme.textSecondary, fontSize: 14, lineHeight: 20 },
-  aboutToggle: { color: theme.accentSoft, fontWeight: '600', fontSize: 14, marginTop: 6 },
-  showEyebrow: {
-    color: theme.accentSoft,
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 2,
-    marginBottom: 6,
-  },
-  title: {
-    color: theme.text,
-    fontFamily: displayFontFamily,
-    fontSize: 27,
-    fontWeight: '600',
-    textAlign: 'center',
-    letterSpacing: -0.3,
-    lineHeight: 33,
-    paddingHorizontal: 10,
-  },
-  artist: {
-    color: theme.textSecondary,
-    marginVertical: 6,
-    fontSize: 14,
-  },
-  subBtn: {
-    backgroundColor: theme.accent,
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 22,
-    marginTop: 8,
-  },
-  unsubBtn: {
-    backgroundColor: theme.surfaceElevated,
-    borderWidth: 1,
-    borderColor: theme.border,
-  },
-  subText: { color: '#fff', fontWeight: '700' },
-  unsubText: { color: theme.danger },
-
-  epHeadingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 20,
-    marginBottom: 4,
-    gap: 8,
-  },
-  epHeading: {
-    color: theme.text,
-    fontFamily: displayFontFamily,
-    fontSize: 22,
-    fontWeight: '600',
-  },
-  sourceHint: {
-    color: theme.textMuted,
-    fontSize: 12,
-    marginBottom: 8,
-  },
+  container: { flex: 1, backgroundColor: theme.background },
+  flex: { flex: 1, minWidth: 0 },
+  headerBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+  header: { paddingTop: 4 },
+  hero: { flexDirection: 'row', gap: 16 },
+  title: { fontFamily: font.display, fontSize: 22, lineHeight: 27, letterSpacing: -0.2, color: theme.text },
+  subRow: { flexDirection: 'row', marginTop: 12 },
+  subBtn: { minHeight: 36, paddingHorizontal: 14 },
+  about: { marginTop: 16 },
+  epHeadingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 18, marginBottom: 4 },
+  sourceHint: { fontFamily: font.body, fontSize: 12, color: theme.textMuted, marginBottom: 2 },
   epRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 16,
+    gap: 12,
+    paddingVertical: 14,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: theme.border,
-    gap: 12,
   },
-  epDisabled: { opacity: 0.45 },
   epPlayed: { opacity: 0.55 },
-  epTitle: { color: theme.text, fontSize: 15, fontWeight: '600' },
-  epMeta: { color: theme.textMuted, fontSize: 12, marginTop: 4 },
-  resumeTrack: {
-    height: 3,
-    borderRadius: 2,
-    backgroundColor: theme.progressTrack,
-    marginTop: 8,
-    overflow: 'hidden',
-  },
-  resumeFill: {
-    height: 3,
-    borderRadius: 2,
-    backgroundColor: theme.progressFill,
-  },
-  moreBtn: { width: 28, height: 36, alignItems: 'center', justifyContent: 'center' },
-  playChip: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: theme.surface,
+  playBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: theme.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  playChipText: { color: theme.accent, fontSize: 12, fontWeight: '700' },
-  error: { color: theme.danger, marginTop: 16 },
-  loadMore: {
-    color: theme.textMuted,
-    textAlign: 'center',
-    fontSize: 12,
-    paddingVertical: 16,
-  },
-  empty: {
-    color: theme.textMuted,
-    textAlign: 'center',
-    marginTop: 24,
-    fontSize: 14,
-  },
+  error: { fontFamily: font.body, color: theme.danger, marginTop: 16, paddingHorizontal: 20 },
+  loadMore: { fontFamily: font.body, color: theme.textMuted, textAlign: 'center', fontSize: 12, paddingVertical: 16 },
+  empty: { fontFamily: font.body, color: theme.textMuted, marginTop: 24, fontSize: 14, lineHeight: 20 },
 });

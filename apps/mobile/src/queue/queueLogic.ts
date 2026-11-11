@@ -87,6 +87,26 @@ export function moveInQueue(
 }
 
 /**
+ * Move the item at `from` to position `to` (drag and drop), with the same pinning as
+ * moveInQueue: the playing item at index 0 stays put and nothing lands above it.
+ */
+export function moveToIndex(
+  queue: Episode[],
+  from: number,
+  to: number,
+  playingGuid?: string | null,
+): Episode[] {
+  const min = isPlayingAtTop(queue, playingGuid) ? 1 : 0;
+  if (from < min || from >= queue.length) return queue;
+  const target = Math.max(min, Math.min(queue.length - 1, to));
+  if (target === from) return queue;
+  const next = [...queue];
+  const [item] = next.splice(from, 1);
+  next.splice(target, 0, item);
+  return next;
+}
+
+/**
  * Auto-advance: drop the finished episode; the next playable item becomes
  * index 0 (it stays in the queue, so the add-on-play that follows is a no-op).
  */

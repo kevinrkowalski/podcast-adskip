@@ -50,7 +50,8 @@ import {
 } from '@/src/queue/autoQueueRefresh';
 import { isBackgroundRefreshEnabled, setBackgroundRefreshEnabled } from '@/src/queue/backgroundRefresh';
 import { theme } from '@/constants/Colors';
-import { displayFontFamily } from '@/constants/Typography';
+import { font } from '@/constants/Typography';
+import { Button, Divider, Group, Icon, Label, ToggleRow, type } from '@/components/ui';
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
@@ -226,100 +227,104 @@ export default function SettingsScreen() {
         <ActivityIndicator color={theme.accent} style={{ marginTop: 32 }} />
       ) : (
         <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
+          style={styles.flex}
+          contentContainerStyle={{ paddingBottom: insets.bottom + 32, paddingHorizontal: 20, gap: 10 }}
+          showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled">
-          <Text style={styles.section}>Backend</Text>
-          <Text style={styles.label}>API URL</Text>
-          <TextInput
-            style={styles.input}
-            value={apiUrl}
-            onChangeText={setApiUrlState}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            placeholder={DEFAULT_API_URL}
-            placeholderTextColor={theme.textMuted}
-          />
-          <Text style={styles.hint}>
-            Default: EXPO_PUBLIC_API_URL or {DEFAULT_API_URL}. Physical devices need your LAN IP.
-          </Text>
-          {isInsecureRemoteApiUrl(apiUrl) && (
-            <Text style={styles.warning}>
-              This server is reached over plain http, so your App Key travels unencrypted across the
-              internet. Use https:// for a server outside your home network.
-            </Text>
-          )}
-          <Text style={[styles.label, { marginTop: 14 }]}>App Key</Text>
-          <TextInput
-            style={styles.input}
-            value={appKey}
-            onChangeText={setAppKeyState}
-            autoCapitalize="none"
-            autoCorrect={false}
-            secureTextEntry
-            placeholder="X-App-Key (optional)"
-            placeholderTextColor={theme.textMuted}
-          />
-          <Text style={styles.hint}>
-            Must match API APP_KEY. Overrides EXPO_PUBLIC_APP_KEY when set. Reset clears the stored key.
-          </Text>
-          <View style={styles.rowActions}>
-            <Pressable style={styles.btn} onPress={onSaveApi} disabled={saving}>
-              {saving ? (
-                <ActivityIndicator color="#fff" size="small" />
-              ) : (
-                <Text style={styles.btnText}>Save & ping</Text>
-              )}
-            </Pressable>
-            <Pressable style={styles.btnSecondary} onPress={onResetApi}>
-              <Text style={styles.btnSecondaryText}>Reset default</Text>
-            </Pressable>
-          </View>
-          {!!health && <Text style={styles.health}>{health}</Text>}
-
-          <Text style={[styles.section, { marginTop: 28 }]}>Ad detection</Text>
-          <View style={styles.switchRow}>
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={styles.switchLabel}>Ad detection & auto-skip</Text>
-              <Text style={styles.hint}>Off disables automatic analysis and skipping. You can still tap Prepare on an episode to request a manual analysis; its audio is uploaded to the configured API.</Text>
-            </View>
-            <Switch
+          <Label style={styles.first}>Ad skipping</Label>
+          <Group>
+            <ToggleRow
+              label="Skip ads automatically"
+              hint="Checks episodes for ads and skips them. Per-show choices are on each show's page. When off, you can still check a single episode by hand."
               value={autoSkip}
-              onValueChange={onToggleAutoSkip}
-              trackColor={{ false: theme.border, true: theme.accentSoft }}
-              thumbColor={autoSkip ? theme.accent : '#ccc'}
+              onChange={(v) => void onToggleAutoSkip(v)}
             />
-          </View>
+          </Group>
 
-          <BackgroundRefreshSettings />
-
-          <Text style={[styles.section, { marginTop: 28 }]}>Storage</Text>
-          <Pressable style={styles.btnDanger} onPress={onClearCache}>
-            <Text style={styles.btnText}>Clear on-device cache & downloads</Text>
-          </Pressable>
-          <Text style={styles.hint}>
-            Downloaded analysis audio and its associated local skip maps expire after 14 days. Server skip maps are retained for up to 90 days and may be restored when you play an episode.
-          </Text>
-          {!!cacheMsg && <Text style={styles.health}>{cacheMsg}</Text>}
-
-          <Text style={[styles.section, { marginTop: 28 }]}>Library</Text>
-          <Pressable
-            style={[styles.btn, importing && styles.btnDisabled]}
-            onPress={() => void onImportOpml()}
-            disabled={importing}>
-            {importing ? (
-              <ActivityIndicator color="#fff" size="small" />
-            ) : (
-              <Text style={styles.btnText}>Import OPML</Text>
+          <Label style={styles.section}>Server</Label>
+          <Group style={styles.pad}>
+            <Text style={styles.fieldLabel}>Address</Text>
+            <TextInput
+              style={styles.input}
+              value={apiUrl}
+              onChangeText={setApiUrlState}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              placeholder={DEFAULT_API_URL}
+              placeholderTextColor={theme.textMuted}
+              accessibilityLabel="Server address"
+            />
+            {isInsecureRemoteApiUrl(apiUrl) && (
+              <Text style={styles.warning}>
+                This server is reached over plain http, so your app key travels unencrypted across the internet. Use
+                https:// for a server outside your home network.
+              </Text>
             )}
-          </Pressable>
-          <Text style={styles.hint}>
-            Add shows from an .opml or .xml export. Existing subscriptions stay; duplicates are skipped.
-          </Text>
-          {!!importStatus && <Text style={styles.health}>{importStatus}</Text>}
+            <Text style={[styles.fieldLabel, { marginTop: 12 }]}>App key</Text>
+            <TextInput
+              style={styles.input}
+              value={appKey}
+              onChangeText={setAppKeyState}
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+              placeholder="Optional"
+              placeholderTextColor={theme.textMuted}
+              accessibilityLabel="App key"
+            />
+            <Text style={styles.hint}>Must match the server's APP_KEY. Reset clears the saved address and key.</Text>
+            <View style={styles.actions}>
+              {saving ? (
+                <ActivityIndicator color={theme.accent} style={{ width: 110, height: 40 }} />
+              ) : (
+                <Button kind="accent" label="Save and test" onPress={() => void onSaveApi()} style={styles.smallBtn} />
+              )}
+              <Button kind="secondary" label="Reset" onPress={() => void onResetApi()} style={styles.smallBtn} />
+            </View>
+            {!!health && (
+              <Text style={[styles.status, { color: health.startsWith('OK') ? theme.success : theme.danger }]}>
+                {health.startsWith('OK') ? `Connected · ${health.replace(/^OK · /, '')}` : health}
+              </Text>
+            )}
+          </Group>
+
+          <Label style={styles.section}>Library</Label>
+          <Group>
+            <BackgroundRefreshSettings />
+            <Divider />
+            <Pressable
+              onPress={() => void onImportOpml()}
+              disabled={importing}
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.navRow, (pressed || importing) && { opacity: 0.6 }]}>
+              <View style={styles.flex}>
+                <Text style={type.rowTitle}>Import subscriptions (OPML)</Text>
+                <Text style={type.rowHint}>
+                  {importStatus ?? 'From an .opml or .xml export. Shows you already have are skipped.'}
+                </Text>
+              </View>
+              {importing ? <ActivityIndicator color={theme.accent} size="small" /> : <Icon name="right" size={18} color={theme.textMuted} />}
+            </Pressable>
+          </Group>
 
           {Platform.OS === 'android' && <PlaybackDiagnostics />}
+
+          <Label style={styles.section}>Storage</Label>
+          <Group>
+            <Pressable
+              onPress={onClearCache}
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.navRow, pressed && { opacity: 0.6 }]}>
+              <View style={styles.flex}>
+                <Text style={[type.rowTitle, { color: theme.danger }]}>Clear cache and downloads</Text>
+                <Text style={type.rowHint}>
+                  {cacheMsg ??
+                    'Downloads and their saved skips are removed after 14 days anyway. The server keeps its results for up to 90 days.'}
+                </Text>
+              </View>
+            </Pressable>
+          </Group>
         </ScrollView>
       )}
     </View>
@@ -371,29 +376,24 @@ function BackgroundRefreshSettings() {
 
   return (
     <>
-      <Text style={[styles.section, { marginTop: 28 }]}>Background refresh</Text>
-      <View style={styles.switchRow}>
-        <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={styles.switchLabel}>Background refresh</Text>
-          <Text style={styles.hint}>
-            Checks feeds of shows with "Auto-add new episodes" about every 8 hours while the app is closed (and whenever you open the app) and adds new releases to the queue. Android decides the exact timing; it never plays or analyzes anything.
-          </Text>
-        </View>
-        <Switch
-          value={enabled}
-          onValueChange={(v) => void onToggle(v)}
-          trackColor={{ false: theme.border, true: theme.accentSoft }}
-          thumbColor={enabled ? theme.accent : '#ccc'}
-        />
-      </View>
-      <Text style={styles.hint}>Last refreshed: {lastText}</Text>
+      <ToggleRow
+        label="Check for new episodes in the background"
+        hint="About every 8 hours, for shows that add new episodes to the queue. Android picks the exact time. Nothing is played or checked for ads."
+        value={enabled}
+        onChange={(v) => void onToggle(v)}
+      />
+      <Divider />
       <Pressable
-        style={[styles.btnSecondary, refreshing && styles.btnDisabled]}
         onPress={() => void onRefreshNow()}
-        disabled={refreshing}>
-        <Text style={styles.btnSecondaryText}>{refreshing ? 'Refreshing…' : 'Refresh now'}</Text>
+        disabled={refreshing}
+        accessibilityRole="button"
+        style={({ pressed }) => [styles.navRow, (pressed || refreshing) && { opacity: 0.6 }]}>
+        <View style={styles.flex}>
+          <Text style={type.rowTitle}>{refreshing ? 'Checking…' : 'Check now'}</Text>
+          <Text style={type.rowHint}>{refreshMsg ?? `Last checked: ${lastText}`}</Text>
+        </View>
+        {refreshing && <ActivityIndicator color={theme.accent} size="small" />}
       </Pressable>
-      {!!refreshMsg && <Text style={styles.health}>{refreshMsg}</Text>}
     </>
   );
 }
@@ -424,142 +424,92 @@ function PlaybackDiagnostics() {
 
   return (
     <>
-      <Text style={[styles.section, { marginTop: 28 }]}>Background playback</Text>
-      <Text style={styles.hint}>
-        Battery optimization:{' '}
-        {unrestricted == null ? 'unknown' : unrestricted ? 'off (good)' : 'ON — may stop audio with the screen off'}
-      </Text>
-      {unrestricted === false && (
-        <Pressable style={styles.btn} onPress={requestIgnoreBatteryOptimizations}>
-          <Text style={styles.btnText}>Allow background playback</Text>
-        </Pressable>
-      )}
-      <Pressable style={styles.btnSecondary} onPress={openAppDetailsSettings}>
-        <Text style={styles.btnSecondaryText}>Open App info (set Battery to Unrestricted)</Text>
-      </Pressable>
-      <Text style={styles.hint}>
-        On OnePlus/OxygenOS also set App info → Battery → Unrestricted (or Allow background activity).
-      </Text>
-
-      <Text style={[styles.section, { marginTop: 28 }]}>Playback event log</Text>
-      <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
-        <Pressable style={styles.btnSecondary} onPress={showLog}>
-          <Text style={styles.btnSecondaryText}>{log ? 'Refresh log' : 'Show log'}</Text>
-        </Pressable>
-        <Pressable style={styles.btnSecondary} onPress={() => void shareLog()}>
-          <Text style={styles.btnSecondaryText}>Share log</Text>
-        </Pressable>
+      <Label style={styles.section}>Background playback</Label>
+      <Group>
         <Pressable
-          style={styles.btnSecondary}
-          onPress={() => {
-            clearPlaybackEventLog();
-            setLog(null);
-          }}>
-          <Text style={styles.btnSecondaryText}>Clear</Text>
+          onPress={unrestricted === false ? requestIgnoreBatteryOptimizations : undefined}
+          disabled={unrestricted !== false}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.navRow, pressed && { opacity: 0.6 }]}>
+          <View style={styles.flex}>
+            <Text style={type.rowTitle}>Allow background playback</Text>
+            <Text style={type.rowHint}>
+              {unrestricted == null
+                ? 'Battery optimisation: unknown'
+                : unrestricted
+                  ? 'Battery optimisation is off for this app'
+                  : 'Battery optimisation is on and may stop audio with the screen off. Tap to allow.'}
+            </Text>
+          </View>
+          {unrestricted != null && (
+            <Text style={[styles.state, { color: unrestricted ? theme.success : theme.danger }]}>
+              {unrestricted ? 'Allowed' : 'Restricted'}
+            </Text>
+          )}
         </Pressable>
-      </View>
-      {!!log && (
-        <Text selectable style={[styles.hint, { fontFamily: 'monospace', fontSize: 11 }]}>
-          {log.split('\n').reverse().join('\n')}
-        </Text>
-      )}
+        <Divider />
+        <Pressable
+          onPress={openAppDetailsSettings}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.navRow, pressed && { opacity: 0.6 }]}>
+          <View style={styles.flex}>
+            <Text style={type.rowTitle}>Open app info</Text>
+            <Text style={type.rowHint}>On OnePlus / OxygenOS also set Battery to Unrestricted there.</Text>
+          </View>
+          <Icon name="right" size={18} color={theme.textMuted} />
+        </Pressable>
+        <Divider />
+        <View style={styles.navRow}>
+          <Text style={[type.rowTitle, styles.flex]}>Playback log</Text>
+          <Pressable onPress={showLog} hitSlop={8} accessibilityRole="button">
+            <Text style={styles.logAction}>{log ? 'Refresh' : 'Show'}</Text>
+          </Pressable>
+          <Pressable onPress={() => void shareLog()} hitSlop={8} accessibilityRole="button">
+            <Text style={styles.logAction}>Share</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              clearPlaybackEventLog();
+              setLog(null);
+            }}
+            hitSlop={8}
+            accessibilityRole="button">
+            <Text style={styles.logAction}>Clear</Text>
+          </Pressable>
+        </View>
+        {!!log && (
+          <Text selectable style={styles.log}>
+            {log.split('\n').reverse().join('\n')}
+          </Text>
+        )}
+      </Group>
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: theme.background,
-    paddingHorizontal: 16,
-    paddingTop: 8,
-  },
-  section: {
-    color: theme.text,
-    fontFamily: displayFontFamily,
-    fontSize: 23,
-    fontWeight: '600',
-    marginBottom: 14,
-    letterSpacing: -0.2,
-  },
-  label: {
-    color: theme.textSecondary,
-    fontSize: 13,
-    fontWeight: '600',
-    marginBottom: 6,
-  },
+  container: { flex: 1, backgroundColor: theme.background },
+  flex: { flex: 1, minWidth: 0 },
+  first: { marginTop: 8 },
+  section: { marginTop: 18 },
+  pad: { paddingVertical: 14 },
+  fieldLabel: { fontFamily: font.medium, fontSize: 13, color: theme.textSecondary, marginBottom: 6 },
   input: {
-    backgroundColor: theme.surface,
-    borderWidth: 1,
-    borderColor: theme.border,
-    borderRadius: 12,
+    backgroundColor: theme.background,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    height: 44,
+    fontFamily: font.mono,
+    fontSize: 13.5,
     color: theme.text,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 15,
   },
-  hint: {
-    color: theme.textMuted,
-    fontSize: 12,
-    marginTop: 6,
-    lineHeight: 16,
-  },
-  rowActions: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 12,
-  },
-  btn: {
-    backgroundColor: theme.accent,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 12,
-    minWidth: 120,
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-  },
-  btnDisabled: { opacity: 0.55 },
-  btnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
-  btnSecondary: {
-    backgroundColor: theme.surfaceElevated,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: theme.border,
-  },
-  btnSecondaryText: { color: theme.textSecondary, fontWeight: '600', fontSize: 14 },
-  btnDanger: {
-    backgroundColor: theme.surfaceElevated,
-    borderWidth: 1,
-    borderColor: theme.danger,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  switchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: theme.surface,
-    borderRadius: 14,
-    padding: 14,
-  },
-  switchLabel: {
-    color: theme.text,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  warning: {
-    color: theme.danger,
-    fontSize: 12,
-    marginTop: 6,
-    lineHeight: 16,
-  },
-  health: {
-    color: theme.textSecondary,
-    fontSize: 13,
-    marginTop: 10,
-  },
+  hint: { fontFamily: font.body, fontSize: 12.5, lineHeight: 17, color: theme.textMuted, marginTop: 8 },
+  warning: { fontFamily: font.body, fontSize: 12.5, lineHeight: 17, color: theme.danger, marginTop: 8 },
+  actions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 14 },
+  smallBtn: { minHeight: 40, paddingHorizontal: 16 },
+  status: { fontFamily: font.medium, fontSize: 13, marginTop: 12 },
+  navRow: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 13 },
+  state: { fontFamily: font.medium, fontSize: 13 },
+  logAction: { fontFamily: font.medium, fontSize: 13.5, color: theme.accent },
+  log: { fontFamily: font.mono, fontSize: 11, lineHeight: 16, color: theme.textSecondary, paddingBottom: 14 },
 });
